@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Envs
+.env
+.env.*
+venv/
+.venv/
+
+# OS/Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Data/output
+data/
+*.parquet
+*.csv
+*.json
+*.json.gz
+
+# Local cache/logs
+cache/
+logs/
+
+# Databricks
+*.dbc
+*.dbfs
+
+# Repo-specific
+AGENTS.md

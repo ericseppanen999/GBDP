@@ -1,0 +1,14 @@
+pipelines:
+  nightly:
+    stages:
+      - fetch_schedules
+      - fetch_rosters
+      - fetch_transactions
+      - fetch_games
+      - fetch_pbp
+      - fetch_pitches
+      - silver_normalize
+      - identity_resolve
+      - gold_publish
+      - quality_checks
+      - audit_report

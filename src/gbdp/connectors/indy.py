@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Dict, Iterable, List
+
+from gbdp.bronze.writer import RawPayload
+from gbdp.connectors.base import BaseConnector, Partition
+from gbdp.utils.io import data_root, sha256_bytes
+from gbdp.utils.time import daterange, parse_date, utc_now
+
+
+class IndyLocalConnector(BaseConnector):
+    """
+    Local-file connector for independent leagues.
+    Expects JSON files in data/manual/indy/<entity>/dt=YYYY-MM-DD/*.json
+    """
+
+    source = "indy_local"
+
+    def list_partitions(self, start_date: str, end_date: str, entity: str) -> List[Partition]:
+        start = parse_date(start_date)
+        end = parse_date(end_date)
+        return [Partition(dt=d.isoformat(), entity=entity, keys={}) for d in daterange(start, end)]
+
+    def fetch_partition(self, partition: Partition) -> RawPayload:
+        base = data_root() / "manual" / "indy" / partition.entity / f"dt={partition.dt}"
+        records = []
+        if base.exists():
+            for f in base.glob("*.json"):
+                records.append(json.loads(f.read_text(encoding="utf-8")))
+        body_text = json.dumps(records, ensure_ascii=True)
+        checksum = sha256_bytes(body_text.encode("utf-8"))
+        return RawPayload(
+            source=self.source,
+            entity=partition.entity,
+            dt=partition.dt,
+            url=str(base),
+            params={},
+            status_code=200,
+            fetched_at_utc=utc_now().isoformat(),
+            checksum=checksum,
+            content_type="application/json",
+            body_text=body_text,
+        )
+
+    def parse_payload(self, payload: RawPayload) -> Iterable[Dict[str, Any]]:
+        try:
+            data = json.loads(payload.body_text)
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return [data]
+        except json.JSONDecodeError:
+            return []
+        return []
+

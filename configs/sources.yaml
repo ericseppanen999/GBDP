@@ -1,0 +1,163 @@
+mlb_statsapi:
+  base_url: "https://statsapi.mlb.com/api/v1"
+  endpoints:
+    schedule:
+      path: "/schedule"
+      required_params: ["sportId", "startDate", "endDate"]
+      default_params:
+        sportId: 1
+    rosters:
+      path: "/teams/{teamId}/roster"
+      required_params: ["teamId", "season"]
+      default_params:
+        rosterType: "active"
+    transactions:
+      path: "/transactions"
+      required_params: ["sportId", "startDate", "endDate"]
+      default_params:
+        sportId: 1
+    teams:
+      path: "/teams"
+      required_params: ["sportId"]
+      default_params:
+        sportId: 1
+
+mlb_statcast:
+  base_url: "https://baseballsavant.mlb.com/statcast_search/csv"
+  endpoints:
+    pitches:
+      required_params: ["game_date_gt", "game_date_lt"]
+      default_params:
+        all: "true"
+
+npb_spaia:
+  base_url: "https://spaia.jp/baseball/npb/api"
+  endpoints:
+    schedules:
+      path: "/schedules"
+      required_params: ["Year"]
+    game_schedule:
+      path: "/game_schedule"
+      required_params: []
+    games_by_date:
+      path: "/games_info_by_date"
+      required_params: ["gameDate"]
+    weekly_schedule:
+      path: "/weekly_schedule"
+      required_params: ["from", "to"]
+    monthly_schedule:
+      path: "/game_calendar"
+      required_params: ["year", "month"]
+    directory:
+      path: "/directory"
+      required_params: []
+    player_info:
+      path: "/player_by_team"
+      required_params: ["person_info_id"]
+    rosters_by_team:
+      path: "/players_by_team"
+      required_params: ["team_id", "year"]
+    batter_list:
+      path: "/batter_list"
+      required_params: ["team", "year"]
+    pitcher_list:
+      path: "/pitcher_list"
+      required_params: ["team", "year"]
+    staff_list:
+      path: "/staff_list"
+      required_params: ["team", "year"]
+    standings:
+      path: "/official_stats_history"
+      required_params: ["GameAssortment", "Year"]
+    hitting_stats_career:
+      path: "/hitting_stats_career"
+      required_params: []
+    hitting_stats_by_year:
+      path: "/hitting_stats_by_year"
+      required_params: ["player_id"]
+    hitting_stats_by_month:
+      path: "/hitting_stats_by_month"
+      required_params: ["player_id", "year"]
+    hitting_stats_by_game:
+      path: "/hitting_stats_by_game"
+      required_params: ["player_id", "year"]
+    player_pitching_detail_saber:
+      path: "/player_pitching_detail_saber"
+      required_params: ["year", "order_by", "is_desc", "teams"]
+    player_batting_detail_saber:
+      path: "/player_batting_detail_saber"
+      required_params: ["year", "order_by", "is_desc", "teams"]
+    related_players:
+      path: "/related_players"
+      required_params: ["player_id"]
+    same_draft_year_players:
+      path: "/same_draft_year_players"
+      required_params: ["player_id"]
+    live_games:
+      path: "/live_games"
+      required_params: ["GameID"]
+    game_over_view:
+      path: "/game_over_view"
+      required_params: ["gameId"]
+    prediction_game:
+      path: "/prediction_game"
+      required_params: ["GameID"]
+    current_score:
+      path: "/current_score"
+      required_params: ["game_id"]
+    starting_members_for_flash:
+      path: "/starting_members_for_flash"
+      required_params: ["gameId"]
+    flash_atbat_history:
+      path: "/flash_atbat_history"
+      required_params: ["gameId"]
+    game_text_pbp:
+      path: "/game_text_pbp"
+      required_params: ["GameID"]
+    both_batter_stats:
+      path: "/both_batter_stats"
+      required_params: ["gameId", "matchday"]
+    both_pitcher_game_stats:
+      path: "/both_pitcher_game_stats"
+      required_params: ["gameId", "matchday"]
+
+indy_local:
+  base_url: "local"
+  endpoints:
+    games:
+      path: "manual/indy/games"
+      required_params: []
+    rosters:
+      path: "manual/indy/rosters"
+      required_params: []
+    boxscore_batting:
+      path: "manual/indy/boxscore_batting"
+      required_params: []
+    boxscore_pitching:
+      path: "manual/indy/boxscore_pitching"
+      required_params: []
+
+retrosheet_local:
+  base_url: "local"
+  endpoints:
+    allplayers:
+      path: "manual/retrosheet/allplayers.csv"
+      required_params: []
+    gameinfo:
+      path: "manual/retrosheet/gameinfo.csv"
+      required_params: []
+    teamstats:
+      path: "manual/retrosheet/teamstats.csv"
+      required_params: []
+    batting:
+      path: "manual/retrosheet/batting.csv"
+      required_params: []
+    pitching:
+      path: "manual/retrosheet/pitching.csv"
+      required_params: []
+    fielding:
+      path: "manual/retrosheet/fielding.csv"
+      required_params: []
+    plays:
+      path: "manual/retrosheet/plays.csv"
+      required_params: []

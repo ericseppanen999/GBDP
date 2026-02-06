@@ -1,0 +1,25 @@
+[project]
+name = "gbdp"
+version = "0.1.0"
+description = "Global Baseball Data Platform ingestion"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.31.0",
+  "pyarrow>=14.0.0",
+  "python-dateutil>=2.8.2",
+  "pydantic>=2.5.0",
+  "PyYAML>=6.0.1",
+  "duckdb>=0.10.0",
+  "fastapi>=0.110.0",
+  "uvicorn>=0.27.0",
+]
+
+[project.scripts]
+gbdp = "gbdp.cli:main"
+
+[tool.black]
+line-length = 100
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

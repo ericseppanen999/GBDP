@@ -1,0 +1,13 @@
+quality:
+  thresholds:
+    mlb_pitch_coverage_pct: 0.9
+    npb_pbp_coverage_pct: 0.7
+  uniqueness:
+    - table: "gbdp_gold.fact_game"
+      columns: ["game_id"]
+    - table: "gbdp_gold.fact_boxscore_batting"
+      columns: ["game_id", "player_id", "dt"]
+  referential_integrity:
+    - child: "gbdp_gold.fact_pitch"
+      parent: "gbdp_gold.fact_plate_appearance"
+      key: "pa_id"

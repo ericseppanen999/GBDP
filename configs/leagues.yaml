@@ -1,0 +1,19 @@
+leagues:
+  MLB:
+    league_id: "018f1e98-0f71-7c10-bf86-8f0c1b6b2a01"
+    country: "USA"
+    level: "major"
+    season_start_month: 3
+    season_end_month: 10
+  NPB:
+    league_id: "018f1e98-0f71-7c10-bf86-8f0c1b6b2a02"
+    country: "JPN"
+    level: "major"
+    season_start_month: 3
+    season_end_month: 10
+  INDY:
+    league_id: "018f1e98-0f71-7c10-bf86-8f0c1b6b2a03"
+    country: "USA"
+    level: "independent"
+    season_start_month: 4
+    season_end_month: 9
