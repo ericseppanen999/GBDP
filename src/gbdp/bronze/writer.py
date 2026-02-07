@@ -7,11 +7,16 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 import os
 
-from gbdp.utils.io import ensure_dir, stable_json_dumps, bronze_root
+from gbdp.utils.io import (
+    bronze_root,
+    path_exists,
+    stable_json_dumps,
+    write_bytes,
+    write_parquet_table,
+)
 from gbdp.utils.time import utc_now
 
 
@@ -53,11 +58,8 @@ class BronzeWriter:
 
     def write_raw(self, payload: RawPayload, force: bool = False) -> Path:
         path = self._raw_path(payload)
-        ensure_dir(path)
         filename = f"{payload.checksum}.json.gz"
         full_path = path / filename
-        if full_path.exists() and not force:
-            return full_path
         record = {
             "source": payload.source,
             "entity": payload.entity,
@@ -70,20 +72,18 @@ class BronzeWriter:
             "content_type": payload.content_type,
             "body_text": payload.body_text,
         }
-        with gzip.open(full_path, "wt", encoding="utf-8") as f:
-            json.dump(record, f, ensure_ascii=True)
-        return full_path
+        payload_bytes = json.dumps(record, ensure_ascii=True).encode("utf-8")
+        compressed = gzip.compress(payload_bytes)
+        if path_exists(full_path) and not force:
+            return full_path
+        return write_bytes(full_path, compressed, force=force)
 
     def write_parsed(self, payload: RawPayload, records: Iterable[Dict[str, Any]], force: bool = False) -> Path:
         path = self._parsed_path(payload)
-        ensure_dir(path)
         table = self._to_table(payload, records)
         filename = f"{payload.checksum}.parquet"
         full_path = path / filename
-        if full_path.exists() and not force:
-            return full_path
-        pq.write_table(table, full_path, use_dictionary=False)
-        return full_path
+        return write_parquet_table(table, full_path, force=force)
 
     def _to_table(self, payload: RawPayload, records: Iterable[Dict[str, Any]]) -> pa.Table:
         include_partition_cols = os.getenv("GBDP_INCLUDE_PARTITION_COLS", "false").lower() in (

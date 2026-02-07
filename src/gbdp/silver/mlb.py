@@ -5,10 +5,16 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-import pyarrow.dataset as ds
-
 from gbdp.silver.writer import write_parquet
-from gbdp.utils.io import bronze_root, silver_root, ensure_dir, stable_json_dumps, include_partition_cols_silver
+from gbdp.utils.io import (
+    bronze_root,
+    silver_root,
+    ensure_dir,
+    include_partition_cols_silver,
+    path_exists,
+    read_parquet_rows,
+    stable_json_dumps,
+)
 from gbdp.utils.time import daterange, parse_date
 
 
@@ -41,10 +47,9 @@ def _silver_path(root: Path, source: str, entity: str, dt: date) -> Path:
 
 def _read_bronze(source: str, entity: str, dt: date, root: Path) -> List[Dict[str, Any]]:
     path = _bronze_path(root, source, entity, dt)
-    if not path.exists():
+    if not path_exists(path):
         return []
-    dataset = ds.dataset(path, format="parquet")
-    return dataset.to_table().to_pylist()
+    return read_parquet_rows(path)
 
 
 def _normalize_games(root: Path, dt: date, force: bool) -> Path:

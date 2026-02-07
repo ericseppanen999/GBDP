@@ -6,7 +6,17 @@ from typing import Dict, List
 
 import yaml
 
-from gbdp.utils.io import data_root, ensure_dir, storage_format
+from gbdp.utils.io import (
+    data_root,
+    ensure_dir,
+    list_dir,
+    path_exists,
+    read_text,
+    spark_path,
+    storage_format,
+    write_parquet_table,
+    write_text,
+)
 from gbdp.utils.time import daterange, parse_date
 
 
@@ -38,7 +48,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
         table = rule["table"].split(".")[-1]
         cols = rule["columns"]
         path = root / "gold" / table / f"dt={dt.isoformat()}"
-        if not path.exists():
+        if not path_exists(path):
             continue
         cols_sql = ", ".join(cols)
         if fmt == "parquet":
@@ -59,7 +69,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
         key = rule["key"]
         child_path = root / "gold" / child / f"dt={dt.isoformat()}"
         parent_path = root / "gold" / parent / f"dt={dt.isoformat()}"
-        if not child_path.exists() or not parent_path.exists():
+        if not path_exists(child_path) or not path_exists(parent_path):
             continue
         if fmt == "parquet":
             con.execute(f"CREATE OR REPLACE VIEW c AS SELECT * FROM read_parquet('{child_path}/*.parquet')")
@@ -85,7 +95,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
         table = rule["table"].split(".")[-1]
         min_count = int(rule.get("min_count", 0))
         path = root / "gold" / table / f"dt={dt.isoformat()}"
-        if not path.exists():
+        if not path_exists(path):
             continue
         if fmt == "parquet":
             con.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet('{path}/*.parquet')")
@@ -107,7 +117,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
     thresholds = cfg.get("thresholds", {})
     if thresholds:
         game_path = root / "gold" / "fact_game" / f"dt={dt.isoformat()}"
-        if game_path.exists():
+        if path_exists(game_path):
             if fmt == "parquet":
                 con.execute(
                     f"CREATE OR REPLACE VIEW games AS SELECT DISTINCT game_id FROM read_parquet('{game_path}/*.parquet')"
@@ -116,7 +126,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
             else:
                 total_games = _spark_distinct_count(game_path, "game_id")
             pitch_path = root / "gold" / "fact_pitch" / f"dt={dt.isoformat()}"
-            if pitch_path.exists() and total_games > 0:
+            if path_exists(pitch_path) and total_games > 0:
                 if fmt == "parquet":
                     con.execute(
                         f"CREATE OR REPLACE VIEW pitches AS SELECT DISTINCT game_id FROM read_parquet('{pitch_path}/*.parquet')"
@@ -141,7 +151,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
     out_dir = root / "gold" / "audit_quality" / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
-    if out_path.exists() and not force:
+    if path_exists(out_path) and not force:
         return out_path
     _write_parquet(results, out_path)
     return out_path
@@ -156,13 +166,11 @@ def _load_quality_config() -> Dict:
 
 
 def _write_parquet(rows: List[Dict[str, object]], path: Path) -> None:
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
     if not rows:
         rows = [{"empty": True}]
+    import pyarrow as pa
     table = pa.Table.from_pylist(rows)
-    pq.write_table(table, path, use_dictionary=False)
+    write_parquet_table(table, path, force=True)
 
 
 def _schema_drift_checks(root: Path, dt: date) -> List[Dict[str, object]]:
@@ -172,18 +180,17 @@ def _schema_drift_checks(root: Path, dt: date) -> List[Dict[str, object]]:
     results: List[Dict[str, object]] = []
     from gbdp.utils.io import bronze_root as _bronze_root
     bronze_root = _bronze_root() / "parsed"
-    if not bronze_root.exists():
+    if not path_exists(bronze_root):
         return results
-    for source_dir in bronze_root.iterdir():
-        if not source_dir.is_dir():
-            continue
-        for entity_dir in source_dir.iterdir():
-            if not entity_dir.is_dir():
-                continue
+    for source_dir in list_dir(bronze_root, dirs_only=True):
+        for entity_dir in list_dir(source_dir, dirs_only=True):
             part_dir = entity_dir / f"dt={dt.isoformat()}"
-            if not part_dir.exists():
+            if not path_exists(part_dir):
                 continue
-            files = list(part_dir.glob("*.parquet"))
+            try:
+                files = list(part_dir.glob("*.parquet"))
+            except Exception:
+                continue
             if not files:
                 continue
             schema = pq.read_schema(files[0])
@@ -192,14 +199,22 @@ def _schema_drift_checks(root: Path, dt: date) -> List[Dict[str, object]]:
             ensure_dir(audit_dir)
             current_path = audit_dir / f"dt={dt.isoformat()}.json"
             prev = None
-            prev_files = sorted(audit_dir.glob("dt=*.json"))
+            try:
+                prev_files = sorted(audit_dir.glob("dt=*.json"))
+            except Exception:
+                prev_files = []
             if prev_files:
                 prev_path = prev_files[-1]
                 try:
-                    prev = json.loads(prev_path.read_text(encoding="utf-8"))
+                    prev = json.loads(read_text(prev_path, encoding="utf-8"))
                 except Exception:
                     prev = None
-            current_path.write_text(json.dumps(fields, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+            write_text(
+                current_path,
+                json.dumps(fields, ensure_ascii=True, sort_keys=True),
+                encoding="utf-8",
+                force=True,
+            )
             if prev and prev != fields:
                 results.append(
                     {
@@ -217,14 +232,14 @@ def _spark_count(path: Path) -> int:
     from pyspark.sql import SparkSession
 
     spark = SparkSession.builder.getOrCreate()
-    return spark.read.format("delta").load(str(path)).count()
+    return spark.read.format("delta").load(spark_path(path)).count()
 
 
 def _spark_distinct_count(path: Path, col: str) -> int:
     from pyspark.sql import SparkSession
 
     spark = SparkSession.builder.getOrCreate()
-    return spark.read.format("delta").load(str(path)).select(col).distinct().count()
+    return spark.read.format("delta").load(spark_path(path)).select(col).distinct().count()
 
 
 def _spark_uniqueness(path: Path, cols: List[str]) -> int:
@@ -232,7 +247,7 @@ def _spark_uniqueness(path: Path, cols: List[str]) -> int:
     from pyspark.sql import functions as F
 
     spark = SparkSession.builder.getOrCreate()
-    df = spark.read.format("delta").load(str(path))
+    df = spark.read.format("delta").load(spark_path(path))
     dupes = df.groupBy(cols).count().where(F.col("count") > 1).count()
     return dupes
 
@@ -242,7 +257,7 @@ def _spark_ref_integrity(child: Path, parent: Path, key: str) -> int:
     from pyspark.sql import functions as F
 
     spark = SparkSession.builder.getOrCreate()
-    c = spark.read.format("delta").load(str(child))
-    p = spark.read.format("delta").load(str(parent))
+    c = spark.read.format("delta").load(spark_path(child))
+    p = spark.read.format("delta").load(spark_path(parent))
     missing = c.join(p, c[key] == p[key], "left").where(c[key].isNotNull() & p[key].isNull()).count()
     return missing

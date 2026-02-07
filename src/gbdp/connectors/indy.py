@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, List
 
 from gbdp.bronze.writer import RawPayload
 from gbdp.connectors.base import BaseConnector, Partition
-from gbdp.utils.io import manual_root, sha256_bytes
+from gbdp.utils.io import list_dir, manual_root, path_exists, read_text, sha256_bytes
 from gbdp.utils.time import daterange, parse_date, utc_now
 
 
@@ -26,9 +26,14 @@ class IndyLocalConnector(BaseConnector):
     def fetch_partition(self, partition: Partition) -> RawPayload:
         base = manual_root() / "indy" / partition.entity / f"dt={partition.dt}"
         records = []
-        if base.exists():
-            for f in base.glob("*.json"):
-                records.append(json.loads(f.read_text(encoding="utf-8")))
+        if path_exists(base):
+            for f in list_dir(base):
+                if f.suffix.lower() != ".json":
+                    continue
+                try:
+                    records.append(json.loads(read_text(f, encoding="utf-8")))
+                except Exception:
+                    continue
         body_text = json.dumps(records, ensure_ascii=True)
         checksum = sha256_bytes(body_text.encode("utf-8"))
         return RawPayload(

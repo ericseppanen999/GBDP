@@ -5,10 +5,18 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List
 
-import pyarrow.dataset as ds
-
 from gbdp.utils.ids import ulid_from_key
-from gbdp.utils.io import gold_root, silver_root, ensure_dir, stable_json_dumps, storage_format
+from gbdp.utils.io import (
+    ensure_dir,
+    gold_root,
+    path_exists,
+    read_parquet_rows,
+    silver_root,
+    spark_path,
+    stable_json_dumps,
+    storage_format,
+    write_parquet_table,
+)
 from gbdp.utils.time import daterange, parse_date
 
 
@@ -44,9 +52,20 @@ def _publish_for_date(root: Path, dt: date, force: bool) -> List[Path]:
 
 def _read_gold_bridge(root: Path, dt: date) -> Dict[tuple, str]:
     path = root / "bridge_source_ids" / f"dt={dt.isoformat()}"
-    if not path.exists():
+    if not path_exists(path):
         return {}
-    data = ds.dataset(path, format="parquet").to_table().to_pylist()
+    fmt = storage_format()
+    if fmt == "parquet":
+        data = read_parquet_rows(path)
+    elif fmt == "delta":
+        try:
+            from pyspark.sql import SparkSession
+        except Exception as exc:
+            raise RuntimeError("pyspark is required for delta reads") from exc
+        spark = SparkSession.builder.getOrCreate()
+        data = [row.asDict() for row in spark.read.format("delta").load(spark_path(path)).collect()]
+    else:
+        data = []
     return {(r["entity_type"], r["source"], r["source_id"]): r["canonical_id"] for r in data}
 
 
@@ -493,7 +512,7 @@ def _write_run_expectancy(root: Path, dt: date, force: bool) -> Path:
     # Compute RE by base_state_before + outs_before using available runs_scored_on_play
     fmt = storage_format()
     path = root / "fact_plate_appearance" / f"dt={dt.isoformat()}"
-    if not path.exists():
+    if not path_exists(path):
         return _write_gold_table(root, "run_expectancy", dt, [], force)
     if fmt == "parquet":
         import duckdb
@@ -515,7 +534,7 @@ def _write_run_expectancy(root: Path, dt: date, force: bool) -> Path:
         from pyspark.sql import functions as F
 
         spark = SparkSession.builder.getOrCreate()
-        df = spark.read.format("delta").load(str(path))
+        df = spark.read.format("delta").load(spark_path(path))
         df = df.where("base_state_before IS NOT NULL AND outs_before IS NOT NULL")
         rows = [
             (r["base_state_before"], r["outs_before"], r["exp_runs"])
@@ -534,7 +553,7 @@ def _write_breakout_candidates(root: Path, dt: date, force: bool) -> Path:
     # Simple heuristic: top 20 HR on dt from boxscore_batting
     fmt = storage_format()
     path = root / "fact_boxscore_batting" / f"dt={dt.isoformat()}"
-    if not path.exists():
+    if not path_exists(path):
         return _write_gold_table(root, "breakout_candidates", dt, [], force)
     if fmt == "parquet":
         import duckdb
@@ -555,7 +574,7 @@ def _write_breakout_candidates(root: Path, dt: date, force: bool) -> Path:
         from pyspark.sql import functions as F
 
         spark = SparkSession.builder.getOrCreate()
-        df = spark.read.format("delta").load(str(path))
+        df = spark.read.format("delta").load(spark_path(path))
         rows = [
             (r["player_id"], r["hr"], r["h"], r["ab"])
             for r in df.where("player_id IS NOT NULL")
@@ -656,20 +675,18 @@ def _base_state_from_br(br1: Any, br2: Any, br3: Any) -> int | None:
 
 
 def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any]], force: bool) -> Path:
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
     out_dir = root / table / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
-    if out_path.exists() and not force:
+    if path_exists(out_path) and not force:
         return out_path
     if not rows:
         rows = [{"empty": True}]
     fmt = storage_format()
     if fmt == "parquet":
+        import pyarrow as pa
         table_data = pa.Table.from_pylist(rows)
-        pq.write_table(table_data, out_path, use_dictionary=False)
+        write_parquet_table(table_data, out_path, force=True)
     elif fmt == "delta":
         _write_delta(rows, out_dir)
     else:
@@ -684,23 +701,23 @@ def _write_delta(rows: List[Dict[str, Any]], out_dir: Path) -> None:
         raise RuntimeError("pyspark is required for delta writes") from exc
     spark = SparkSession.builder.getOrCreate()
     df = spark.createDataFrame(rows)
-    df.write.format("delta").mode("overwrite").save(str(out_dir))
+    df.write.format("delta").mode("overwrite").save(spark_path(out_dir))
 
 
 def _read_silver(root: Path, source: str, entity: str, dt: date) -> List[Dict[str, Any]]:
     path = silver_root() / source / entity / f"dt={dt.isoformat()}"
-    if not path.exists():
+    if not path_exists(path):
         return []
     fmt = storage_format()
     if fmt == "parquet":
-        return ds.dataset(path, format="parquet").to_table().to_pylist()
+        return read_parquet_rows(path)
     if fmt == "delta":
         try:
             from pyspark.sql import SparkSession
         except Exception as exc:
             raise RuntimeError("pyspark is required for delta reads") from exc
         spark = SparkSession.builder.getOrCreate()
-        df = spark.read.format("delta").load(str(path))
+        df = spark.read.format("delta").load(spark_path(path))
         return [row.asDict() for row in df.collect()]
     raise ValueError(f"Unsupported storage format: {fmt}")
 

@@ -22,7 +22,7 @@ from gbdp.silver.mlb import normalize_mlb
 from gbdp.silver.npb import normalize_npb
 from gbdp.silver.retrosheet import normalize_retrosheet
 from gbdp.gold.publish import publish_gold
-from gbdp.utils.io import gold_root, ensure_dir
+from gbdp.utils.io import bronze_root, gold_root, ensure_dir, path_exists, write_parquet_table
 
 
 @dataclass
@@ -46,8 +46,8 @@ def run_pipeline(
 ) -> List[StageResult]:
     cfg = _load_yaml(Path(sources_path))
     root = gold_root()
-    writer = BronzeWriter(root)
-    cache = ResponseCache(root / "cache")
+    writer = BronzeWriter(bronze_root())
+    cache = ResponseCache(bronze_root() / "cache")
 
     available = _pipeline_stages()
     ordered = stages or list(available.keys())
@@ -205,17 +205,15 @@ def _stage_audit(start, end, cfg, writer, cache, force):
 
 
 def _write_stage_audit(root: Path, dt: str, results: List[StageResult], force: bool) -> None:
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
     out_dir = root / "audit_stage_runs" / f"dt={dt}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
-    if out_path.exists() and not force:
+    if path_exists(out_path) and not force:
         return
     rows = [r.__dict__ for r in results]
+    import pyarrow as pa
     table = pa.Table.from_pylist(rows)
-    pq.write_table(table, out_path, use_dictionary=False)
+    write_parquet_table(table, out_path, force=True)
 
 
 def _load_yaml(path: Path) -> Dict:

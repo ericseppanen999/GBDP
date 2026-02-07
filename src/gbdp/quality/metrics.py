@@ -4,9 +4,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
-from gbdp.utils.io import storage_format, gold_root
-
-from gbdp.utils.io import data_root, ensure_dir
+from gbdp.utils.io import (
+    ensure_dir,
+    gold_root,
+    list_dir,
+    path_exists,
+    spark_path,
+    storage_format,
+    write_parquet_table,
+)
 
 
 def write_run_audit(run_id: str, dt: str, status: str, force: bool = False) -> Path:
@@ -26,7 +32,7 @@ def write_run_audit(run_id: str, dt: str, status: str, force: bool = False) -> P
     out_dir = root / "gold" / "audit_pipeline_runs" / f"dt={dt}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
-    if out_path.exists() and not force:
+    if path_exists(out_path) and not force:
         return out_path
     _write_parquet([row], out_path)
     return out_path
@@ -43,13 +49,11 @@ def _collect_row_counts(root: Path, dt: str) -> Dict[str, int]:
         con = duckdb.connect()
     counts: Dict[str, int] = {}
     gold_dir = root
-    if not gold_dir.exists():
+    if not path_exists(gold_dir):
         return counts
-    for table_dir in gold_dir.iterdir():
-        if not table_dir.is_dir():
-            continue
+    for table_dir in list_dir(gold_dir, dirs_only=True):
         part = table_dir / f"dt={dt}"
-        if not part.exists():
+        if not path_exists(part):
             continue
         if fmt == "parquet":
             con.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet('{part}/*.parquet')")
@@ -63,14 +67,12 @@ def _spark_count(path: Path) -> int:
     from pyspark.sql import SparkSession
 
     spark = SparkSession.builder.getOrCreate()
-    return spark.read.format("delta").load(str(path)).count()
+    return spark.read.format("delta").load(spark_path(path)).count()
 
 
 def _write_parquet(rows: List[Dict], path: Path) -> None:
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
     if not rows:
         rows = [{"empty": True}]
+    import pyarrow as pa
     table = pa.Table.from_pylist(rows)
-    pq.write_table(table, path, use_dictionary=False)
+    write_parquet_table(table, path, force=True)

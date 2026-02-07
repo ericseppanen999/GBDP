@@ -10,7 +10,15 @@ import pyarrow.dataset as ds
 from gbdp.identity.manual_overrides import load_manual_overrides
 from gbdp.identity.rules import player_match_key, team_match_key
 from gbdp.utils.ids import ulid_from_key
-from gbdp.utils.io import silver_root, gold_root, ensure_dir
+from gbdp.utils.io import (
+    ensure_dir,
+    gold_root,
+    path_exists,
+    silver_root,
+    spark_path,
+    storage_format,
+    write_parquet_table,
+)
 from gbdp.utils.time import daterange, parse_date
 
 
@@ -78,9 +86,9 @@ def _resolve_for_date(root: Path, dt: date, overrides: Dict[tuple, str], force: 
     out_dir = root / "bridge_source_ids" / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
-    if out_path.exists() and not force:
+    if path_exists(out_path) and not force:
         return out_path
-    _write_parquet(bridge_rows, out_path)
+    _write_output(bridge_rows, out_dir, out_path)
     return out_path
 
 
@@ -228,27 +236,43 @@ def _collect_team_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
 
 def _read_silver(root: Path, source: str, entity: str, dt: date) -> List[Dict[str, Any]]:
     path = root / "silver" / source / entity / f"dt={dt.isoformat()}"
-    if not path.exists():
+    if not path_exists(path):
         return []
-    dataset = ds.dataset(path, format="parquet")
-    return dataset.to_table().to_pylist()
+    fmt = storage_format()
+    if fmt == "parquet":
+        dataset = ds.dataset(path, format="parquet")
+        return dataset.to_table().to_pylist()
+    try:
+        from pyspark.sql import SparkSession
+    except Exception as exc:
+        raise RuntimeError("pyspark is required for delta reads") from exc
+    spark = SparkSession.builder.getOrCreate()
+    return spark.read.format("delta").load(spark_path(path)).toPandas().to_dict(orient="records")
 
 
-def _write_parquet(rows: List[Dict[str, Any]], path: Path) -> None:
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
+def _write_output(rows: List[Dict[str, Any]], out_dir: Path, out_path: Path) -> None:
     if not rows:
         rows = [{"empty": True}]
-    table = pa.Table.from_pylist(rows)
-    pq.write_table(table, path, use_dictionary=False)
+    fmt = storage_format()
+    if fmt == "parquet":
+        import pyarrow as pa
+        table = pa.Table.from_pylist(rows)
+        write_parquet_table(table, out_path, force=True)
+        return
+    try:
+        from pyspark.sql import SparkSession
+    except Exception as exc:
+        raise RuntimeError("pyspark is required for delta writes") from exc
+    spark = SparkSession.builder.getOrCreate()
+    df = spark.createDataFrame(rows)
+    df.write.format("delta").mode("overwrite").save(spark_path(out_dir))
 
 
 def _write_merge_events(root: Path, dt: date, overrides: List[Dict[str, str]], force: bool) -> None:
     out_dir = root / "merge_events" / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
-    if out_path.exists() and not force:
+    if path_exists(out_path) and not force:
         return
     rows: List[Dict[str, Any]] = []
     for o in overrides:
@@ -263,4 +287,4 @@ def _write_merge_events(root: Path, dt: date, overrides: List[Dict[str, str]], f
                 "dt": dt.isoformat(),
             }
         )
-    _write_parquet(rows, out_path)
+    _write_output(rows, out_dir, out_path)

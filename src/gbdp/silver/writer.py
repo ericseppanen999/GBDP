@@ -6,7 +6,7 @@ from typing import Iterable, List, Dict, Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from gbdp.utils.io import ensure_dir, storage_format
+from gbdp.utils.io import ensure_dir, storage_format, spark_path
 
 
 def write_parquet(rows: Iterable[Dict[str, Any]], path: Path, force: bool = False) -> Path:
@@ -34,4 +34,4 @@ def _write_delta(rows: List[Dict[str, Any]], out_dir: Path) -> None:
         raise RuntimeError("pyspark is required for delta writes") from exc
     spark = SparkSession.builder.getOrCreate()
     df = spark.createDataFrame(rows)
-    df.write.format("delta").mode("overwrite").save(str(out_dir))
+    df.write.format("delta").mode("overwrite").save(spark_path(out_dir))

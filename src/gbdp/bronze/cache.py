@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from gbdp.utils.io import ensure_dir, bronze_root
+from gbdp.utils.io import bronze_root, ensure_dir, path_exists, read_bytes, write_bytes
 
 
 class ResponseCache:
@@ -18,13 +18,14 @@ class ResponseCache:
 
     def get(self, key: str) -> Optional[Dict[str, Any]]:
         path = self._path(key)
-        if not path.exists():
+        if not path_exists(path):
             return None
-        with gzip.open(path, "rt", encoding="utf-8") as f:
-            return json.load(f)
+        data = read_bytes(path)
+        return json.loads(gzip.decompress(data).decode("utf-8"))
 
     def set(self, key: str, value: Dict[str, Any]) -> None:
         path = self._path(key)
         ensure_dir(path.parent)
-        with gzip.open(path, "wt", encoding="utf-8") as f:
-            json.dump(value, f, ensure_ascii=True)
+        payload = json.dumps(value, ensure_ascii=True).encode("utf-8")
+        compressed = gzip.compress(payload)
+        write_bytes(path, compressed, force=True)

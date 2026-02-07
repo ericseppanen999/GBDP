@@ -4,10 +4,15 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List
 
-import pyarrow.dataset as ds
-
 from gbdp.silver.writer import write_parquet
-from gbdp.utils.io import bronze_root, silver_root, ensure_dir, include_partition_cols_silver
+from gbdp.utils.io import (
+    bronze_root,
+    silver_root,
+    ensure_dir,
+    include_partition_cols_silver,
+    path_exists,
+    read_parquet_rows,
+)
 from gbdp.utils.time import daterange, parse_date
 
 
@@ -24,10 +29,8 @@ def normalize_retrosheet(
 def _normalize_entity(root: Path, entity: str, dt: date, force: bool) -> Path:
     path = bronze_root() / "parsed" / "retrosheet_local" / entity / f"dt={dt.isoformat()}"
     rows: List[Dict[str, Any]] = []
-    if path.exists():
-        files = list(path.glob("*.parquet"))
-        if files:
-            rows = ds.dataset(files, format="parquet").to_table().to_pylist()
+    if path_exists(path):
+        rows = read_parquet_rows(path)
 
     if entity == "gameinfo":
         include_partition_cols = include_partition_cols_silver()

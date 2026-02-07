@@ -3,13 +3,13 @@ from __future__ import annotations
 import csv
 import json
 import zipfile
-from io import TextIOWrapper
+from io import BytesIO, TextIOWrapper
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from gbdp.bronze.writer import RawPayload
 from gbdp.connectors.base import BaseConnector, Partition
-from gbdp.utils.io import manual_root, sha256_bytes
+from gbdp.utils.io import manual_root, path_exists, read_bytes, sha256_bytes
 from gbdp.utils.time import daterange, parse_date, utc_now
 
 
@@ -66,34 +66,35 @@ class RetrosheetLocalConnector(BaseConnector):
 
     def _source_location(self) -> str:
         zip_path = manual_root() / "csvdownloads.zip"
-        if zip_path.exists():
+        if path_exists(zip_path):
             return str(zip_path)
         return str(manual_root() / "retrosheet")
 
     def _read_rows(self, entity: str, dt: str) -> List[Dict[str, Any]]:
         zip_path = manual_root() / "csvdownloads.zip"
-        if zip_path.exists():
+        if path_exists(zip_path):
             return self._read_from_zip(zip_path, entity, dt)
         return self._read_from_dir(manual_root() / "retrosheet", entity, dt)
 
     def _read_from_dir(self, base: Path, entity: str, dt: str) -> List[Dict[str, Any]]:
         path = base / f"{entity}.csv"
-        if not path.exists():
+        if not path_exists(path):
             return []
-        with path.open("r", encoding="utf-8") as f:
-            return self._filter_rows(csv.DictReader(f), entity, dt)
+        data = read_bytes(path)
+        wrapper = TextIOWrapper(BytesIO(data), encoding="utf-8")
+        return self._filter_rows(csv.DictReader(wrapper), entity, dt)
 
     def _read_from_zip(self, zip_path: Path, entity: str, dt: str) -> List[Dict[str, Any]]:
         name = self._find_zip_member(zip_path, f"{entity}.csv")
         if not name:
             return []
-        with zipfile.ZipFile(zip_path, "r") as zf:
+        with zipfile.ZipFile(BytesIO(read_bytes(zip_path)), "r") as zf:
             with zf.open(name, "r") as bf:
                 wrapper = TextIOWrapper(bf, encoding="utf-8")
                 return self._filter_rows(csv.DictReader(wrapper), entity, dt)
 
     def _find_zip_member(self, zip_path: Path, filename: str) -> Optional[str]:
-        with zipfile.ZipFile(zip_path, "r") as zf:
+        with zipfile.ZipFile(BytesIO(read_bytes(zip_path)), "r") as zf:
             for name in zf.namelist():
                 if name.lower().endswith(filename.lower()):
                     return name
