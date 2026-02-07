@@ -1,1 +1,1 @@
-__all__ = ["npb", "mlb", "indy", "retrosheet", "writer"]
+__all__ = ["npb", "mlb", "indy", "retrosheet", "local_boxscore", "writer"]

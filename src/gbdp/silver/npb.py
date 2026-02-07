@@ -32,6 +32,22 @@ def normalize_npb(
             outputs.append(_normalize_game_pbp(root, d, force))
         elif entity == "standings":
             outputs.append(_normalize_standings(root, d, force))
+        elif entity == "game_batter_stats":
+            outputs.append(_normalize_game_stats(root, d, "game_batter_stats", "npb_spaia", force))
+        elif entity == "game_pitcher_stats":
+            outputs.append(_normalize_game_stats(root, d, "game_pitcher_stats", "npb_spaia", force))
+        elif entity == "player_batting_saber":
+            outputs.append(_normalize_player_stats(root, d, "player_batting_saber", force))
+        elif entity == "player_pitching_saber":
+            outputs.append(_normalize_player_stats(root, d, "player_pitching_saber", force))
+        elif entity == "player_stats_by_year":
+            outputs.append(_normalize_player_stats(root, d, "player_stats_by_year", force))
+        elif entity == "player_stats_by_month":
+            outputs.append(_normalize_player_stats(root, d, "player_stats_by_month", force))
+        elif entity == "player_stats_by_game":
+            outputs.append(_normalize_player_stats(root, d, "player_stats_by_game", force))
+        elif entity == "player_hitting_career":
+            outputs.append(_normalize_player_stats(root, d, "player_hitting_career", force))
         else:
             raise ValueError(f"Unsupported NPB silver entity: {entity}")
     return outputs
@@ -200,6 +216,54 @@ def _normalize_standings(root: Path, dt: date, force: bool) -> Path:
     return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 
 
+def _normalize_game_stats(root: Path, dt: date, entity: str, source: str, force: bool) -> Path:
+    rows = _read_bronze(entity, dt, root)
+    normalized: List[Dict[str, Any]] = []
+    include_partition_cols = include_partition_cols_silver()
+    for r in rows:
+        games = r.get("games")
+        if isinstance(games, str):
+            games = _parse_json_maybe(games)
+        if isinstance(games, dict):
+            games = games.get("games", [])
+        for g in games or []:
+            game_id = _as_str(g.get("game_id"))
+            payload = _parse_json_maybe(g.get("body_text"))
+            for item in _extract_list(payload):
+                row = {"game_id": game_id, "raw_json": stable_json_dumps(item)}
+                if include_partition_cols:
+                    row["dt"] = dt.isoformat()
+                    row["source"] = source
+                normalized.append(row)
+    out_dir = _silver_path(root, source, entity, dt)
+    ensure_dir(out_dir)
+    return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
+
+
+def _normalize_player_stats(root: Path, dt: date, entity: str, force: bool) -> Path:
+    rows = _read_bronze(entity, dt, root)
+    normalized: List[Dict[str, Any]] = []
+    include_partition_cols = include_partition_cols_silver()
+    for r in rows:
+        players = r.get("players")
+        if isinstance(players, str):
+            players = _parse_json_maybe(players)
+        if isinstance(players, dict):
+            players = players.get("players", [])
+        for p in players or []:
+            player_id = _as_str(p.get("player_id"))
+            payload = _parse_json_maybe(p.get("body_text"))
+            for item in _extract_list(payload):
+                row = {"player_id": player_id, "raw_json": stable_json_dumps(item)}
+                if include_partition_cols:
+                    row["dt"] = dt.isoformat()
+                    row["source"] = "npb_spaia"
+                normalized.append(row)
+    out_dir = _silver_path(root, "npb_spaia", entity, dt)
+    ensure_dir(out_dir)
+    return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
+
+
 def _parse_json_maybe(value: Any) -> Any:
     if value is None:
         return None
@@ -223,6 +287,19 @@ def _extract_player_list(payload: Any) -> List[Dict[str, Any]]:
             if key in payload and isinstance(payload[key], list):
                 return [p for p in payload[key] if isinstance(p, dict)]
         return [payload] if payload else []
+    return []
+
+
+def _extract_list(payload: Any) -> List[Dict[str, Any]]:
+    if payload is None:
+        return []
+    if isinstance(payload, list):
+        return [p for p in payload if isinstance(p, dict)]
+    if isinstance(payload, dict):
+        for key in ("data", "stats", "list", "items"):
+            if key in payload and isinstance(payload[key], list):
+                return [p for p in payload[key] if isinstance(p, dict)]
+        return [payload]
     return []
 
 

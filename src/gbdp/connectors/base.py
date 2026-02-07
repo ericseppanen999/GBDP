@@ -10,6 +10,7 @@ import requests
 
 from gbdp.bronze.cache import ResponseCache
 from gbdp.bronze.writer import BronzeWriter, RawPayload
+from gbdp.bronze.request_log import write_request_log
 from gbdp.utils.io import request_hash, sha256_bytes
 from gbdp.utils.logging import get_logger
 from gbdp.utils.time import utc_now
@@ -58,6 +59,19 @@ class BaseConnector:
         key = request_hash(url, params)
         cached = self.cache.get(key)
         if cached is not None:
+            write_request_log(
+                {
+                    "source": self.source,
+                    "url": cached["url"],
+                    "params": cached["params"],
+                    "status_code": cached["status_code"],
+                    "cached": True,
+                    "latency_ms": 0,
+                    "retries": 0,
+                    "fetched_at_utc": cached["fetched_at_utc"],
+                    "dt": cached["fetched_at_utc"][:10],
+                }
+            )
             return RawPayload(
                 source=self.source,
                 entity="unknown",
@@ -76,7 +90,9 @@ class BaseConnector:
         for attempt in range(1, self.retries + 1):
             try:
                 self._throttle()
+                start = time.time()
                 resp = requests.get(url, params=params, headers=headers, timeout=self.timeout)
+                latency_ms = int((time.time() - start) * 1000)
                 body_text = resp.text
                 checksum = sha256_bytes(body_text.encode("utf-8"))
                 fetched_at = utc_now().isoformat()
@@ -90,6 +106,19 @@ class BaseConnector:
                     "body_text": body_text,
                 }
                 self.cache.set(key, payload)
+                write_request_log(
+                    {
+                        "source": self.source,
+                        "url": url,
+                        "params": params,
+                        "status_code": resp.status_code,
+                        "cached": False,
+                        "latency_ms": latency_ms,
+                        "retries": attempt - 1,
+                        "fetched_at_utc": fetched_at,
+                        "dt": fetched_at[:10],
+                    }
+                )
                 return RawPayload(
                     source=self.source,
                     entity="unknown",

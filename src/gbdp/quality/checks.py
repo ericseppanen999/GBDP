@@ -47,7 +47,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
     for rule in cfg.get("uniqueness", []):
         table = rule["table"].split(".")[-1]
         cols = rule["columns"]
-        path = root / "gold" / table / f"dt={dt.isoformat()}"
+        path = root / table / f"dt={dt.isoformat()}"
         if not path_exists(path):
             continue
         cols_sql = ", ".join(cols)
@@ -67,8 +67,8 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
         child = rule["child"].split(".")[-1]
         parent = rule["parent"].split(".")[-1]
         key = rule["key"]
-        child_path = root / "gold" / child / f"dt={dt.isoformat()}"
-        parent_path = root / "gold" / parent / f"dt={dt.isoformat()}"
+        child_path = root / child / f"dt={dt.isoformat()}"
+        parent_path = root / parent / f"dt={dt.isoformat()}"
         if not path_exists(child_path) or not path_exists(parent_path):
             continue
         if fmt == "parquet":
@@ -94,7 +94,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
     for rule in cfg.get("row_count_min", []):
         table = rule["table"].split(".")[-1]
         min_count = int(rule.get("min_count", 0))
-        path = root / "gold" / table / f"dt={dt.isoformat()}"
+        path = root / table / f"dt={dt.isoformat()}"
         if not path_exists(path):
             continue
         if fmt == "parquet":
@@ -116,7 +116,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
     # Completeness thresholds (coverage of games)
     thresholds = cfg.get("thresholds", {})
     if thresholds:
-        game_path = root / "gold" / "fact_game" / f"dt={dt.isoformat()}"
+        game_path = root / "fact_game" / f"dt={dt.isoformat()}"
         if path_exists(game_path):
             if fmt == "parquet":
                 con.execute(
@@ -125,7 +125,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                 total_games = con.execute("SELECT COUNT(*) FROM games").fetchone()[0]
             else:
                 total_games = _spark_distinct_count(game_path, "game_id")
-            pitch_path = root / "gold" / "fact_pitch" / f"dt={dt.isoformat()}"
+            pitch_path = root / "fact_pitch" / f"dt={dt.isoformat()}"
             if path_exists(pitch_path) and total_games > 0:
                 if fmt == "parquet":
                     con.execute(
@@ -144,11 +144,69 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                         "dt": dt.isoformat(),
                     }
                 )
+            # NPB PBP coverage
+            pa_path = root / "gold" / "fact_plate_appearance" / f"dt={dt.isoformat()}"
+            if path_exists(pa_path) and thresholds.get("npb_pbp_coverage_pct") is not None:
+                if fmt == "parquet":
+                    con.execute(
+                        f"CREATE OR REPLACE VIEW games_npb AS SELECT DISTINCT game_id FROM read_parquet('{game_path}/*.parquet') WHERE source='npb_spaia'"
+                    )
+                    total_npb = con.execute("SELECT COUNT(*) FROM games_npb").fetchone()[0]
+                    con.execute(
+                        f"CREATE OR REPLACE VIEW pa_npb AS SELECT DISTINCT game_id FROM read_parquet('{pa_path}/*.parquet') WHERE source='npb_spaia'"
+                    )
+                    with_pbp = con.execute("SELECT COUNT(*) FROM pa_npb").fetchone()[0]
+                else:
+                    from pyspark.sql import SparkSession
+                    from pyspark.sql import functions as F
+
+                    spark = SparkSession.builder.getOrCreate()
+                    games_df = spark.read.format("delta").load(spark_path(game_path)).where("source = 'npb_spaia'")
+                    total_npb = games_df.select("game_id").distinct().count()
+                    pa_df = spark.read.format("delta").load(spark_path(pa_path)).where("source = 'npb_spaia'")
+                    with_pbp = pa_df.select("game_id").distinct().count()
+                pct_npb = (with_pbp / total_npb) if total_npb else 0
+                results.append(
+                    {
+                        "check": "npb_pbp_coverage",
+                        "pct": pct_npb,
+                        "threshold": float(thresholds.get("npb_pbp_coverage_pct", 0)),
+                        "ok": pct_npb >= float(thresholds.get("npb_pbp_coverage_pct", 0)),
+                        "dt": dt.isoformat(),
+                    }
+                )
+
+    # Base/out validity checks
+    pa_path = root / "fact_plate_appearance" / f"dt={dt.isoformat()}"
+    if path_exists(pa_path):
+        if fmt == "parquet":
+            con.execute(f"CREATE OR REPLACE VIEW pa AS SELECT * FROM read_parquet('{pa_path}/*.parquet')")
+            invalid_base = con.execute(
+                "SELECT COUNT(*) FROM pa WHERE (base_state_before IS NOT NULL AND (base_state_before < 0 OR base_state_before > 7)) "
+                "OR (base_state_after IS NOT NULL AND (base_state_after < 0 OR base_state_after > 7))"
+            ).fetchone()[0]
+            invalid_outs = con.execute(
+                "SELECT COUNT(*) FROM pa WHERE (outs_before IS NOT NULL AND (outs_before < 0 OR outs_before > 3)) "
+                "OR (outs_after IS NOT NULL AND (outs_after < 0 OR outs_after > 3))"
+            ).fetchone()[0]
+        else:
+            invalid_base = _spark_invalid_range(pa_path, "base_state_before", 0, 7) + _spark_invalid_range(
+                pa_path, "base_state_after", 0, 7
+            )
+            invalid_outs = _spark_invalid_range(pa_path, "outs_before", 0, 3) + _spark_invalid_range(
+                pa_path, "outs_after", 0, 3
+            )
+        results.append(
+            {"check": "base_state_range", "invalid": invalid_base, "dt": dt.isoformat(), "ok": invalid_base == 0}
+        )
+        results.append(
+            {"check": "outs_range", "invalid": invalid_outs, "dt": dt.isoformat(), "ok": invalid_outs == 0}
+        )
 
     # Schema drift detection for bronze parsed
     results.extend(_schema_drift_checks(root, dt))
 
-    out_dir = root / "gold" / "audit_quality" / f"dt={dt.isoformat()}"
+    out_dir = root / "audit_quality" / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
     if path_exists(out_path) and not force:
@@ -261,3 +319,15 @@ def _spark_ref_integrity(child: Path, parent: Path, key: str) -> int:
     p = spark.read.format("delta").load(spark_path(parent))
     missing = c.join(p, c[key] == p[key], "left").where(c[key].isNotNull() & p[key].isNull()).count()
     return missing
+
+
+def _spark_invalid_range(path: Path, col: str, min_val: int, max_val: int) -> int:
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
+
+    spark = SparkSession.builder.getOrCreate()
+    df = spark.read.format("delta").load(spark_path(path))
+    return (
+        df.where(F.col(col).isNotNull() & ((F.col(col) < min_val) | (F.col(col) > max_val)))
+        .count()
+    )

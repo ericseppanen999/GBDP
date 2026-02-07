@@ -97,6 +97,12 @@ def is_dbfs_path(path: Path) -> bool:
     return _is_dbfs_path(path)
 
 
+def dbfs_uri(path: Path) -> str:
+    if _is_dbfs_path(path):
+        return _to_dbfs_uri(path)
+    return str(path)
+
+
 def _from_dbfs_uri(uri: str) -> Path:
     if uri.startswith("dbfs:/"):
         return Path("/dbfs/" + uri[len("dbfs:/") :])

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -9,6 +9,7 @@ from gbdp.utils.ids import ulid_from_key
 from gbdp.utils.io import (
     ensure_dir,
     gold_root,
+    list_dir,
     path_exists,
     read_parquet_rows,
     silver_root,
@@ -17,6 +18,7 @@ from gbdp.utils.io import (
     storage_format,
     write_parquet_table,
 )
+from gbdp.utils.time import utc_now
 from gbdp.utils.time import daterange, parse_date
 
 
@@ -47,6 +49,8 @@ def _publish_for_date(root: Path, dt: date, force: bool) -> List[Path]:
     outputs.append(_write_fact_boxscore_pitching(root, dt, bridge, force))
     outputs.append(_write_run_expectancy(root, dt, force))
     outputs.append(_write_breakout_candidates(root, dt, force))
+    outputs.append(_write_feature_player_rolling_30d(root, dt, force))
+    outputs.append(_write_fact_contract(root, dt, force))
     return outputs
 
 
@@ -102,10 +106,17 @@ def _write_dim_team(root: Path, dt: date, bridge: Dict[tuple, str], force: bool)
         rows.extend(_team_rows_from_game(r, "NPB", bridge, "npb_spaia"))
     for r in _read_silver(root, "indy_local", "games", dt):
         rows.extend(_team_rows_from_game(r, "INDY", bridge, "indy_local"))
+    for r in _read_silver(root, "kbo_local", "games", dt):
+        rows.extend(_team_rows_from_game(r, "KBO", bridge, "kbo_local"))
+    for r in _read_silver(root, "lmb_local", "games", dt):
+        rows.extend(_team_rows_from_game(r, "LMB", bridge, "lmb_local"))
     for r in _read_silver(root, "retrosheet_local", "games", dt):
         rows.extend(_team_rows_from_game(r, "MLB", bridge, "retrosheet_local"))
     dedup = {(r["team_id"], r["team_name"]): r for r in rows}
-    return _write_gold_table(root, "dim_team", dt, list(dedup.values()), force)
+    scd_rows = _apply_scd2(
+        root, "dim_team", dt, list(dedup.values()), key_field="team_id", attr_fields=["team_name", "team_abbrev", "home_city", "league_id"]
+    )
+    return _write_gold_table(root, "dim_team", dt, scd_rows, force)
 
 
 def _team_rows_from_game(row: Dict[str, Any], league_code: str, bridge: Dict[tuple, str], source: str):
@@ -145,10 +156,17 @@ def _write_dim_player(root: Path, dt: date, bridge: Dict[tuple, str], force: boo
         rows.append(_player_row(r, "NPB", bridge, "npb_spaia"))
     for r in _read_silver(root, "indy_local", "rosters", dt):
         rows.append(_player_row(r, "INDY", bridge, "indy_local"))
+    for r in _read_silver(root, "kbo_local", "rosters", dt):
+        rows.append(_player_row(r, "KBO", bridge, "kbo_local"))
+    for r in _read_silver(root, "lmb_local", "rosters", dt):
+        rows.append(_player_row(r, "LMB", bridge, "lmb_local"))
     for r in _read_silver(root, "retrosheet_local", "rosters", dt):
         rows.append(_player_row(r, "MLB", bridge, "retrosheet_local"))
     dedup = {r["player_id"]: r for r in rows if r.get("player_id")}
-    return _write_gold_table(root, "dim_player", dt, list(dedup.values()), force)
+    scd_rows = _apply_scd2(
+        root, "dim_player", dt, list(dedup.values()), key_field="player_id", attr_fields=["primary_name", "bats", "throws", "primary_position", "league_id"]
+    )
+    return _write_gold_table(root, "dim_player", dt, scd_rows, force)
 
 
 def _player_row(r: Dict[str, Any], league_code: str, bridge: Dict[tuple, str], source: str) -> Dict[str, Any]:
@@ -207,6 +225,24 @@ def _write_dim_season(root: Path, dt: date, force: bool) -> Path:
             "season_end_dt": f"{year}-10-31",
             "dt": dt.isoformat(),
         },
+        {
+            "season_id": ulid_from_key(f"season:KBO:{year}", dt.isoformat()),
+            "league_id": _league_id_for_code("KBO"),
+            "season_year": year,
+            "season_type": "regular",
+            "season_start_dt": f"{year}-03-01",
+            "season_end_dt": f"{year}-10-31",
+            "dt": dt.isoformat(),
+        },
+        {
+            "season_id": ulid_from_key(f"season:LMB:{year}", dt.isoformat()),
+            "league_id": _league_id_for_code("LMB"),
+            "season_year": year,
+            "season_type": "regular",
+            "season_start_dt": f"{year}-03-01",
+            "season_end_dt": f"{year}-09-30",
+            "dt": dt.isoformat(),
+        },
     ]
     return _write_gold_table(root, "dim_season", dt, rows, force)
 
@@ -216,6 +252,8 @@ def _write_fact_game(root: Path, dt: date, bridge: Dict[tuple, str], force: bool
     rows.extend(_fact_game_from_silver(root, dt, "mlb_statsapi", "MLB", bridge))
     rows.extend(_fact_game_from_silver(root, dt, "npb_spaia", "NPB", bridge))
     rows.extend(_fact_game_from_silver(root, dt, "indy_local", "INDY", bridge))
+    rows.extend(_fact_game_from_silver(root, dt, "kbo_local", "KBO", bridge))
+    rows.extend(_fact_game_from_silver(root, dt, "lmb_local", "LMB", bridge))
     rows.extend(_fact_game_from_silver(root, dt, "retrosheet_local", "MLB", bridge))
     return _write_gold_table(root, "fact_game", dt, rows, force)
 
@@ -255,6 +293,10 @@ def _write_fact_roster(root: Path, dt: date, bridge: Dict[tuple, str], force: bo
         rows.append(_fact_roster_row(r, "npb_spaia", "NPB", bridge, dt))
     for r in _read_silver(root, "indy_local", "rosters", dt):
         rows.append(_fact_roster_row(r, "indy_local", "INDY", bridge, dt))
+    for r in _read_silver(root, "kbo_local", "rosters", dt):
+        rows.append(_fact_roster_row(r, "kbo_local", "KBO", bridge, dt))
+    for r in _read_silver(root, "lmb_local", "rosters", dt):
+        rows.append(_fact_roster_row(r, "lmb_local", "LMB", bridge, dt))
     for r in _read_silver(root, "retrosheet_local", "rosters", dt):
         rows.append(_fact_roster_row(r, "retrosheet_local", "MLB", bridge, dt))
     return _write_gold_table(root, "fact_roster", dt, rows, force)
@@ -319,6 +361,7 @@ def _write_fact_pitch(root: Path, dt: date, bridge: Dict[tuple, str], force: boo
                 "plate_z": r.get("plate_z"),
                 "result": r.get("description"),
                 "dt": dt.isoformat(),
+                "source": "mlb_statcast",
             }
         )
     return _write_gold_table(root, "fact_pitch", dt, rows, force)
@@ -352,31 +395,12 @@ def _write_fact_plate_appearance(root: Path, dt: date, bridge: Dict[tuple, str],
                 "base_state_after": None,
                 "outs_after": r.get("outs_when_up"),
                 "dt": dt.isoformat(),
+                "source": "mlb_statcast",
             }
     rows.extend(pa_map.values())
     # NPB from PBP (minimal)
-    for r in _read_silver(root, "npb_spaia", "game_pbp", dt):
-        rows.append(
-            {
-                "pa_id": ulid_from_key(f"pa:npb:{r.get('game_id')}:{r.get('event_id')}", dt.isoformat()),
-                "game_id": ulid_from_key(f"game:npb_spaia:{r.get('game_id')}", dt.isoformat()),
-                "inning": r.get("inning"),
-                "is_top_inning": r.get("top_bottom") == "1",
-                "batting_team_id": None,
-                "fielding_team_id": None,
-                "batter_id": bridge.get(("player", "npb_spaia", str(r.get("play_player_id")))),
-                "pitcher_id": None,
-                "event_type": "UNKNOWN",
-                "rbi": None,
-                "runs_scored_on_play": None,
-                "outs_on_play": None,
-                "base_state_before": None,
-                "outs_before": None,
-                "base_state_after": None,
-                "outs_after": None,
-                "dt": dt.isoformat(),
-            }
-        )
+    npb_rows = _read_silver(root, "npb_spaia", "game_pbp", dt)
+    rows.extend(_reconstruct_npb_pa(npb_rows, dt, bridge))
     # Retrosheet plays
     for r in _read_silver(root, "retrosheet_local", "game_pbp", dt):
         event_type = _map_retrosheet_event(r)
@@ -406,6 +430,7 @@ def _write_fact_plate_appearance(root: Path, dt: date, bridge: Dict[tuple, str],
                 "base_state_after": base_after,
                 "outs_after": outs_after,
                 "dt": dt.isoformat(),
+                "source": "retrosheet_local",
             }
         )
     return _write_gold_table(root, "fact_plate_appearance", dt, rows, force)
@@ -425,6 +450,7 @@ def _write_fact_standings(root: Path, dt: date, bridge: Dict[tuple, str], force:
                 "pct": r.get("pct"),
                 "gb": r.get("gb"),
                 "dt": dt.isoformat(),
+                "source": "npb_spaia",
             }
         )
     return _write_gold_table(root, "fact_standings", dt, rows, force)
@@ -448,6 +474,45 @@ def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str],
                 "rbi": r.get("rbi"),
                 "r": r.get("r"),
                 "dt": dt.isoformat(),
+                "source": "indy_local",
+            }
+        )
+    for r in _read_silver(root, "kbo_local", "boxscore_batting", dt):
+        rows.append(
+            {
+                "game_id": ulid_from_key(f"game:kbo:{r.get('game_id')}", dt.isoformat()),
+                "team_id": bridge.get(("team", "kbo_local", str(r.get("team_id")))),
+                "player_id": bridge.get(("player", "kbo_local", str(r.get("player_id")))),
+                "ab": r.get("ab"),
+                "h": r.get("h"),
+                "2b": r.get("2b"),
+                "3b": r.get("3b"),
+                "hr": r.get("hr"),
+                "bb": r.get("bb"),
+                "so": r.get("so"),
+                "rbi": r.get("rbi"),
+                "r": r.get("r"),
+                "dt": dt.isoformat(),
+                "source": "kbo_local",
+            }
+        )
+    for r in _read_silver(root, "lmb_local", "boxscore_batting", dt):
+        rows.append(
+            {
+                "game_id": ulid_from_key(f"game:lmb:{r.get('game_id')}", dt.isoformat()),
+                "team_id": bridge.get(("team", "lmb_local", str(r.get("team_id")))),
+                "player_id": bridge.get(("player", "lmb_local", str(r.get("player_id")))),
+                "ab": r.get("ab"),
+                "h": r.get("h"),
+                "2b": r.get("2b"),
+                "3b": r.get("3b"),
+                "hr": r.get("hr"),
+                "bb": r.get("bb"),
+                "so": r.get("so"),
+                "rbi": r.get("rbi"),
+                "r": r.get("r"),
+                "dt": dt.isoformat(),
+                "source": "lmb_local",
             }
         )
     for r in _read_silver(root, "retrosheet_local", "boxscore_batting", dt):
@@ -466,6 +531,7 @@ def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str],
                 "rbi": r.get("rbi"),
                 "r": r.get("r"),
                 "dt": dt.isoformat(),
+                "source": "retrosheet_local",
             }
         )
     return _write_gold_table(root, "fact_boxscore_batting", dt, rows, force)
@@ -487,6 +553,41 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
                 "so": r.get("so"),
                 "hr": r.get("hr"),
                 "dt": dt.isoformat(),
+                "source": "indy_local",
+            }
+        )
+    for r in _read_silver(root, "kbo_local", "boxscore_pitching", dt):
+        rows.append(
+            {
+                "game_id": ulid_from_key(f"game:kbo:{r.get('game_id')}", dt.isoformat()),
+                "team_id": bridge.get(("team", "kbo_local", str(r.get("team_id")))),
+                "player_id": bridge.get(("player", "kbo_local", str(r.get("player_id")))),
+                "ip": r.get("ip"),
+                "h": r.get("h"),
+                "r": r.get("r"),
+                "er": r.get("er"),
+                "bb": r.get("bb"),
+                "so": r.get("so"),
+                "hr": r.get("hr"),
+                "dt": dt.isoformat(),
+                "source": "kbo_local",
+            }
+        )
+    for r in _read_silver(root, "lmb_local", "boxscore_pitching", dt):
+        rows.append(
+            {
+                "game_id": ulid_from_key(f"game:lmb:{r.get('game_id')}", dt.isoformat()),
+                "team_id": bridge.get(("team", "lmb_local", str(r.get("team_id")))),
+                "player_id": bridge.get(("player", "lmb_local", str(r.get("player_id")))),
+                "ip": r.get("ip"),
+                "h": r.get("h"),
+                "r": r.get("r"),
+                "er": r.get("er"),
+                "bb": r.get("bb"),
+                "so": r.get("so"),
+                "hr": r.get("hr"),
+                "dt": dt.isoformat(),
+                "source": "lmb_local",
             }
         )
     for r in _read_silver(root, "retrosheet_local", "boxscore_pitching", dt):
@@ -503,6 +604,7 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
                 "so": r.get("so"),
                 "hr": r.get("hr"),
                 "dt": dt.isoformat(),
+                "source": "retrosheet_local",
             }
         )
     return _write_gold_table(root, "fact_boxscore_pitching", dt, rows, force)
@@ -591,6 +693,94 @@ def _write_breakout_candidates(root: Path, dt: date, force: bool) -> Path:
     return _write_gold_table(root, "breakout_candidates", dt, out_rows, force)
 
 
+def _write_feature_player_rolling_30d(root: Path, dt: date, force: bool) -> Path:
+    # Rolling 30d from fact_boxscore_batting across leagues
+    fmt = storage_format()
+    if fmt == "parquet":
+        import duckdb
+        con = duckdb.connect()
+        paths = []
+        for offset in range(0, 30):
+            d = (dt - timedelta(days=offset)).isoformat()
+            path = root / "fact_boxscore_batting" / f"dt={d}"
+            if path_exists(path):
+                paths.append(f"{path}/*.parquet")
+        if not paths:
+            return _write_gold_table(root, "feature_player_rolling_30d", dt, [], force)
+        paths_sql = ", ".join(f"'{p}'" for p in paths)
+        con.execute(f"CREATE OR REPLACE VIEW b AS SELECT * FROM read_parquet([{paths_sql}])")
+        rows = con.execute(
+            """
+            SELECT
+              player_id,
+              SUM(ab) AS ab,
+              SUM(h) AS h,
+              SUM(hr) AS hr,
+              SUM(rbi) AS rbi,
+              SUM(bb) AS bb,
+              SUM(so) AS so
+            FROM b
+            WHERE player_id IS NOT NULL
+            GROUP BY 1
+            """
+        ).fetchall()
+        out_rows = [
+            {"player_id": r[0], "ab": int(r[1] or 0), "h": int(r[2] or 0), "hr": int(r[3] or 0),
+             "rbi": int(r[4] or 0), "bb": int(r[5] or 0), "so": int(r[6] or 0), "window_days": 30, "dt": dt.isoformat()}
+            for r in rows
+        ]
+        return _write_gold_table(root, "feature_player_rolling_30d", dt, out_rows, force)
+    else:
+        from pyspark.sql import SparkSession
+        from pyspark.sql import functions as F
+        spark = SparkSession.builder.getOrCreate()
+        start_dt = (dt - timedelta(days=29)).isoformat()
+        dfs = []
+        for offset in range(0, 30):
+            d = (dt - timedelta(days=offset)).isoformat()
+            path = root / "fact_boxscore_batting" / f"dt={d}"
+            if path_exists(path):
+                dfs.append(spark.read.format("delta").load(spark_path(path)))
+        if not dfs:
+            return _write_gold_table(root, "feature_player_rolling_30d", dt, [], force)
+        df = dfs[0]
+        for part in dfs[1:]:
+            df = df.unionByName(part, allowMissingColumns=True)
+        df = df.where((F.col("dt") >= start_dt) & (F.col("dt") <= dt.isoformat()))
+        agg = (
+            df.where("player_id IS NOT NULL")
+            .groupBy("player_id")
+            .agg(
+                F.sum("ab").alias("ab"),
+                F.sum("h").alias("h"),
+                F.sum("hr").alias("hr"),
+                F.sum("rbi").alias("rbi"),
+                F.sum("bb").alias("bb"),
+                F.sum("so").alias("so"),
+            )
+        )
+        out_rows = [
+            {
+                "player_id": r["player_id"],
+                "ab": int(r["ab"] or 0),
+                "h": int(r["h"] or 0),
+                "hr": int(r["hr"] or 0),
+                "rbi": int(r["rbi"] or 0),
+                "bb": int(r["bb"] or 0),
+                "so": int(r["so"] or 0),
+                "window_days": 30,
+                "dt": dt.isoformat(),
+            }
+            for r in agg.collect()
+        ]
+        return _write_gold_table(root, "feature_player_rolling_30d", dt, out_rows, force)
+
+
+def _write_fact_contract(root: Path, dt: date, force: bool) -> Path:
+    # Placeholder until contract sources are integrated
+    return _write_gold_table(root, "fact_contract", dt, [], force)
+
+
 def _map_event_type(value: Any) -> str:
     if not value:
         return "UNKNOWN"
@@ -653,6 +843,106 @@ def _map_retrosheet_event(r: Dict[str, Any]) -> str:
     return "UNKNOWN"
 
 
+def _reconstruct_npb_pa(rows: List[Dict[str, Any]], dt: date, bridge: Dict[tuple, str]) -> List[Dict[str, Any]]:
+    # Best-effort base/out reconstruction using text info; falls back to UNKNOWN
+    by_game: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        gid = str(r.get("game_id") or "")
+        by_game.setdefault(gid, []).append(r)
+    out: List[Dict[str, Any]] = []
+    for gid, items in by_game.items():
+        items.sort(key=lambda x: (x.get("inning") or 0, x.get("play_seq_no") or x.get("event_id") or 0))
+        bases = [0, 0, 0]
+        outs = 0
+        last_inning = None
+        last_top = None
+        for r in items:
+            inning = r.get("inning")
+            top = r.get("top_bottom")
+            if (inning, top) != (last_inning, last_top):
+                bases = [0, 0, 0]
+                outs = 0
+                last_inning, last_top = inning, top
+            text = (r.get("text_info_text") or r.get("text_info_name") or "").lower()
+            event_type, outs_on_play, bases_after = _npb_infer_event(text, bases)
+            base_before = _bases_to_state(bases)
+            outs_before = outs
+            outs = min(3, outs + outs_on_play)
+            base_after = _bases_to_state(bases_after)
+            outs_after = outs
+            bases = bases_after
+            out.append(
+                {
+                    "pa_id": ulid_from_key(f"pa:npb:{gid}:{r.get('event_id') or r.get('play_seq_no')}", dt.isoformat()),
+                    "game_id": ulid_from_key(f"game:npb_spaia:{gid}", dt.isoformat()),
+                    "inning": inning,
+                    "is_top_inning": str(top) == "1",
+                    "batting_team_id": None,
+                    "fielding_team_id": None,
+                    "batter_id": bridge.get(("player", "npb_spaia", str(r.get("play_player_id")))),
+                    "pitcher_id": None,
+                    "event_type": event_type,
+                    "rbi": None,
+                    "runs_scored_on_play": None,
+                    "outs_on_play": outs_on_play,
+                    "base_state_before": base_before,
+                    "outs_before": outs_before,
+                    "base_state_after": base_after,
+                    "outs_after": outs_after,
+                    "dt": dt.isoformat(),
+                    "source": "npb_spaia",
+                }
+            )
+    return out
+
+
+def _npb_infer_event(text: str, bases: List[int]) -> tuple[str, int, List[int]]:
+    # bases: [on1, on2, on3]
+    t = text or ""
+    if "三重殺" in t or "triple play" in t:
+        return "TP", 3, [0, 0, 0]
+    if "併殺" in t or "double play" in t:
+        return "DP", 2, [0, 0, 0]
+    if "本塁打" in t or "ホームラン" in t or "home run" in t:
+        return "HR", 0, [0, 0, 0]
+    if "三塁打" in t or "triple" in t:
+        return "3B", 0, [0, 0, 1]
+    if "二塁打" in t or "double" in t:
+        return "2B", 0, _advance_bases(bases, 2)
+    if "安打" in t or "ヒット" in t or "single" in t:
+        return "1B", 0, _advance_bases(bases, 1)
+    if "四球" in t or "死球" in t or "walk" in t or "hbp" in t:
+        return "BB", 0, _advance_bases(bases, 1)
+    if "犠打" in t or "犠飛" in t or "sacrifice" in t:
+        return "SAC", 1, bases
+    if "アウト" in t or "out" in t or "フライ" in t or "ゴロ" in t:
+        return "OUT", 1, bases
+    return "UNKNOWN", 0, bases
+
+
+def _advance_bases(bases: List[int], bases_taken: int) -> List[int]:
+    # Simplified forced advance
+    b1, b2, b3 = bases
+    if bases_taken == 1:
+        if b1:
+            if b2:
+                b3 = 1
+            b2 = 1
+        b1 = 1
+    elif bases_taken == 2:
+        if b2:
+            b3 = 1
+        if b1:
+            b3 = 1
+        b2 = 1
+        b1 = 0
+    return [b1, b2, b3]
+
+
+def _bases_to_state(bases: List[int]) -> int:
+    return (1 if bases[0] else 0) + (2 if bases[1] else 0) + (4 if bases[2] else 0)
+
+
 def _base_state_from_statcast(r: Dict[str, Any]) -> int | None:
     on_1b = r.get("on_1b")
     on_2b = r.get("on_2b")
@@ -682,26 +972,82 @@ def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any
         return out_path
     if not rows:
         rows = [{"empty": True}]
+    now = utc_now().isoformat()
+    for r in rows:
+        if "dt" not in r:
+            r["dt"] = dt.isoformat()
+        if "ingested_at_utc" not in r:
+            r["ingested_at_utc"] = now
     fmt = storage_format()
     if fmt == "parquet":
         import pyarrow as pa
         table_data = pa.Table.from_pylist(rows)
         write_parquet_table(table_data, out_path, force=True)
     elif fmt == "delta":
-        _write_delta(rows, out_dir)
+        _write_delta(rows, out_dir, table)
     else:
         raise ValueError(f"Unsupported storage format: {fmt}")
     return out_path
 
 
-def _write_delta(rows: List[Dict[str, Any]], out_dir: Path) -> None:
+def _write_delta(rows: List[Dict[str, Any]], out_dir: Path, table: str) -> None:
     try:
         from pyspark.sql import SparkSession
     except Exception as exc:
         raise RuntimeError("pyspark is required for delta writes") from exc
     spark = SparkSession.builder.getOrCreate()
     df = spark.createDataFrame(rows)
-    df.write.format("delta").mode("overwrite").save(spark_path(out_dir))
+    key_cols = _gold_primary_keys().get(table)
+    if not key_cols:
+        df.write.format("delta").mode("overwrite").save(spark_path(out_dir))
+        return
+    try:
+        from delta.tables import DeltaTable
+    except Exception:
+        df.write.format("delta").mode("overwrite").save(spark_path(out_dir))
+        return
+    path = spark_path(out_dir)
+    if not _delta_exists(spark, path):
+        df.write.format("delta").mode("overwrite").save(path)
+        return
+    delta_table = DeltaTable.forPath(spark, path)
+    cond = " AND ".join([f"t.{c} = s.{c}" for c in key_cols])
+    (
+        delta_table.alias("t")
+        .merge(df.alias("s"), cond)
+        .whenMatchedUpdateAll()
+        .whenNotMatchedInsertAll()
+        .execute()
+    )
+
+
+def _delta_exists(spark, path: str) -> bool:
+    try:
+        spark.read.format("delta").load(path).limit(1).collect()
+        return True
+    except Exception:
+        return False
+
+
+def _gold_primary_keys() -> Dict[str, List[str]]:
+    return {
+        "dim_league": ["league_id", "dt"],
+        "dim_team": ["team_id", "valid_from_dt"],
+        "dim_player": ["player_id", "valid_from_dt"],
+        "dim_season": ["season_id"],
+        "fact_game": ["game_id", "dt"],
+        "fact_roster": ["team_id", "player_id", "season_id", "dt"],
+        "fact_transaction": ["transaction_id"],
+        "fact_contract": ["contract_id", "dt"],
+        "fact_plate_appearance": ["pa_id", "dt"],
+        "fact_pitch": ["pitch_id", "dt"],
+        "fact_boxscore_batting": ["game_id", "player_id", "dt"],
+        "fact_boxscore_pitching": ["game_id", "player_id", "dt"],
+        "fact_standings": ["team_id", "season_id", "dt"],
+        "run_expectancy": ["base_state", "outs", "dt"],
+        "breakout_candidates": ["player_id", "dt"],
+        "feature_player_rolling_30d": ["player_id", "dt"],
+    }
 
 
 def _read_silver(root: Path, source: str, entity: str, dt: date) -> List[Dict[str, Any]]:
@@ -720,6 +1066,114 @@ def _read_silver(root: Path, source: str, entity: str, dt: date) -> List[Dict[st
         df = spark.read.format("delta").load(spark_path(path))
         return [row.asDict() for row in df.collect()]
     raise ValueError(f"Unsupported storage format: {fmt}")
+
+
+def _apply_scd2(
+    root: Path,
+    table: str,
+    dt: date,
+    new_rows: List[Dict[str, Any]],
+    key_field: str,
+    attr_fields: List[str],
+) -> List[Dict[str, Any]]:
+    prev_dt = _latest_dt_before(root, table, dt)
+    if not prev_dt:
+        for r in new_rows:
+            r["valid_from_dt"] = dt.isoformat()
+            r["valid_to_dt"] = None
+            r["is_current"] = True
+        return new_rows
+    prev_rows = _read_gold_snapshot(root, table, prev_dt)
+    return _scd2_merge(prev_rows, new_rows, key_field, attr_fields, dt, prev_dt)
+
+
+def _attrs_equal(a: Dict[str, Any], b: Dict[str, Any], fields: List[str]) -> bool:
+    for f in fields:
+        if a.get(f) != b.get(f):
+            return False
+    return True
+
+
+def _scd2_merge(
+    prev_rows: List[Dict[str, Any]],
+    new_rows: List[Dict[str, Any]],
+    key_field: str,
+    attr_fields: List[str],
+    dt: date,
+    prev_dt: date,
+) -> List[Dict[str, Any]]:
+    prev_by_key: Dict[str, Dict[str, Any]] = {str(r.get(key_field)): r for r in prev_rows if r.get(key_field)}
+    out_rows: List[Dict[str, Any]] = []
+    seen_keys = set()
+    prev_dt_str = prev_dt.isoformat()
+    for r in new_rows:
+        key = str(r.get(key_field))
+        seen_keys.add(key)
+        prev = prev_by_key.get(key)
+        if not prev:
+            r["valid_from_dt"] = dt.isoformat()
+            r["valid_to_dt"] = None
+            r["is_current"] = True
+            out_rows.append(r)
+            continue
+        if _attrs_equal(prev, r, attr_fields):
+            r["valid_from_dt"] = prev.get("valid_from_dt") or prev_dt_str
+            r["valid_to_dt"] = None
+            r["is_current"] = True
+            out_rows.append(r)
+        else:
+            prev_closed = dict(prev)
+            prev_closed["valid_to_dt"] = (dt - timedelta(days=1)).isoformat()
+            prev_closed["is_current"] = False
+            out_rows.append(prev_closed)
+            r["valid_from_dt"] = dt.isoformat()
+            r["valid_to_dt"] = None
+            r["is_current"] = True
+            out_rows.append(r)
+    for key, prev in prev_by_key.items():
+        if key in seen_keys:
+            continue
+        prev_closed = dict(prev)
+        prev_closed["valid_to_dt"] = (dt - timedelta(days=1)).isoformat()
+        prev_closed["is_current"] = False
+        out_rows.append(prev_closed)
+    return out_rows
+
+
+def _latest_dt_before(root: Path, table: str, dt: date) -> date | None:
+    base = root / table
+    if not path_exists(base):
+        return None
+    candidates: List[date] = []
+    for part in list_dir(base, dirs_only=True):
+        name = part.name
+        if not name.startswith("dt="):
+            continue
+        try:
+            d = date.fromisoformat(name.split("=", 1)[1])
+        except Exception:
+            continue
+        if d < dt:
+            candidates.append(d)
+    if not candidates:
+        return None
+    return sorted(candidates)[-1]
+
+
+def _read_gold_snapshot(root: Path, table: str, dt: date) -> List[Dict[str, Any]]:
+    path = root / table / f"dt={dt.isoformat()}"
+    if not path_exists(path):
+        return []
+    fmt = storage_format()
+    if fmt == "parquet":
+        return read_parquet_rows(path)
+    try:
+        from pyspark.sql import SparkSession
+    except Exception as exc:
+        raise RuntimeError("pyspark is required for delta reads") from exc
+    spark = SparkSession.builder.getOrCreate()
+    df = spark.read.format("delta").load(spark_path(path))
+    return [row.asDict() for row in df.collect()]
 
 
 def _league_id_for_code(code: str) -> str | None:

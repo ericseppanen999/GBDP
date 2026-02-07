@@ -72,6 +72,9 @@ npb_spaia:
     hitting_stats_career:
       path: "/hitting_stats_career"
       required_params: []
+    player_hitting_career:
+      path: "/hitting_stats_career"
+      required_params: []
     hitting_stats_by_year:
       path: "/hitting_stats_by_year"
       required_params: ["player_id"]
@@ -135,6 +138,38 @@ indy_local:
       required_params: []
     boxscore_pitching:
       path: "manual/indy/boxscore_pitching"
+      required_params: []
+
+kbo_local:
+  base_url: "local"
+  endpoints:
+    games:
+      path: "manual/kbo/games"
+      required_params: []
+    rosters:
+      path: "manual/kbo/rosters"
+      required_params: []
+    boxscore_batting:
+      path: "manual/kbo/boxscore_batting"
+      required_params: []
+    boxscore_pitching:
+      path: "manual/kbo/boxscore_pitching"
+      required_params: []
+
+lmb_local:
+  base_url: "local"
+  endpoints:
+    games:
+      path: "manual/lmb/games"
+      required_params: []
+    rosters:
+      path: "manual/lmb/rosters"
+      required_params: []
+    boxscore_batting:
+      path: "manual/lmb/boxscore_batting"
+      required_params: []
+    boxscore_pitching:
+      path: "manual/lmb/boxscore_pitching"
       required_params: []
 
 retrosheet_local:

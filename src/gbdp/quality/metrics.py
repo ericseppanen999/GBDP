@@ -29,7 +29,7 @@ def write_run_audit(run_id: str, dt: str, status: str, force: bool = False) -> P
         "total_rows": total_rows,
         "anomalies": None,
     }
-    out_dir = root / "gold" / "audit_pipeline_runs" / f"dt={dt}"
+    out_dir = root / "audit_pipeline_runs" / f"dt={dt}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
     if path_exists(out_path) and not force:

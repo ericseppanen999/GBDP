@@ -17,3 +17,15 @@ leagues:
     level: "independent"
     season_start_month: 4
     season_end_month: 9
+  KBO:
+    league_id: "018f1e98-0f71-7c10-bf86-8f0c1b6b2a04"
+    country: "KOR"
+    level: "major"
+    season_start_month: 3
+    season_end_month: 10
+  LMB:
+    league_id: "018f1e98-0f71-7c10-bf86-8f0c1b6b2a05"
+    country: "MEX"
+    level: "major"
+    season_start_month: 3
+    season_end_month: 9

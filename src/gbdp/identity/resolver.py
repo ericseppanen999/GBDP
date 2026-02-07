@@ -162,6 +162,40 @@ def _collect_player_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
                 "league_code": "MLB",
             }
         )
+    # KBO rosters silver
+    kbo_rosters = _read_silver(silver_root(), "kbo_local", "rosters", dt)
+    for r in kbo_rosters:
+        source_id = r.get("player_id")
+        if not source_id:
+            continue
+        rows.append(
+            {
+                "entity_type": "player",
+                "source": "kbo_local",
+                "source_id": str(source_id),
+                "name": r.get("player_name") or r.get("name"),
+                "dob": r.get("dob"),
+                "team_id": r.get("team_id"),
+                "league_code": "KBO",
+            }
+        )
+    # LMB rosters silver
+    lmb_rosters = _read_silver(silver_root(), "lmb_local", "rosters", dt)
+    for r in lmb_rosters:
+        source_id = r.get("player_id")
+        if not source_id:
+            continue
+        rows.append(
+            {
+                "entity_type": "player",
+                "source": "lmb_local",
+                "source_id": str(source_id),
+                "name": r.get("player_name") or r.get("name"),
+                "dob": r.get("dob"),
+                "team_id": r.get("team_id"),
+                "league_code": "LMB",
+            }
+        )
     return rows
 
 
@@ -229,6 +263,38 @@ def _collect_team_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
                         "source_id": str(team_id),
                         "name": team_name,
                         "league_code": "MLB",
+                    }
+                )
+    kbo_games = _read_silver(silver_root(), "kbo_local", "games", dt)
+    for r in kbo_games:
+        for team_id, team_name in [
+            (r.get("home_team_id"), r.get("home_team_name")),
+            (r.get("away_team_id"), r.get("away_team_name")),
+        ]:
+            if team_id:
+                rows.append(
+                    {
+                        "entity_type": "team",
+                        "source": "kbo_local",
+                        "source_id": str(team_id),
+                        "name": team_name,
+                        "league_code": "KBO",
+                    }
+                )
+    lmb_games = _read_silver(silver_root(), "lmb_local", "games", dt)
+    for r in lmb_games:
+        for team_id, team_name in [
+            (r.get("home_team_id"), r.get("home_team_name")),
+            (r.get("away_team_id"), r.get("away_team_name")),
+        ]:
+            if team_id:
+                rows.append(
+                    {
+                        "entity_type": "team",
+                        "source": "lmb_local",
+                        "source_id": str(team_id),
+                        "name": team_name,
+                        "league_code": "LMB",
                     }
                 )
     return rows

@@ -12,17 +12,21 @@ from gbdp.bronze.writer import BronzeWriter
 from gbdp.connectors.mlb_statcast import MlbStatcastConnector
 from gbdp.connectors.mlb_statsapi import MlbStatsApiConnector
 from gbdp.connectors.npb_spaia import NpbSpaiaConnector
+from gbdp.connectors.kbo import KboLocalConnector
+from gbdp.connectors.lmb import LmbLocalConnector
 from gbdp.connectors.indy import IndyLocalConnector
 from gbdp.connectors.retrosheet import RetrosheetLocalConnector
 from gbdp.silver.npb import normalize_npb
 from gbdp.silver.mlb import normalize_mlb
 from gbdp.silver.indy import normalize_indy
 from gbdp.silver.retrosheet import normalize_retrosheet
+from gbdp.silver.local_boxscore import normalize_local_boxscore
 from gbdp.identity.resolver import resolve_identity
 from gbdp.gold.publish import publish_gold
 from gbdp.quality.checks import run_quality_checks
 from gbdp.quality.metrics import write_run_audit
 from gbdp.pipeline.runner import run_pipeline
+from gbdp.catalog.uc import register_uc_tables, register_uc_tables_from_env
 from gbdp.utils.io import data_root, bronze_root, silver_root, gold_root
 from gbdp.utils.logging import get_logger
 
@@ -43,6 +47,10 @@ def build_connector(source: str, cfg: Dict, writer: BronzeWriter, cache: Respons
         return NpbSpaiaConnector(writer, cache, cfg["base_url"])
     if source == "indy_local":
         return IndyLocalConnector(writer, cache)
+    if source == "kbo_local":
+        return KboLocalConnector(writer, cache)
+    if source == "lmb_local":
+        return LmbLocalConnector(writer, cache)
     if source == "retrosheet_local":
         return RetrosheetLocalConnector(writer, cache)
     raise ValueError(f"Unknown source: {source}")
@@ -73,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_p.add_argument(
         "--source",
         required=True,
-        choices=["mlb_statsapi", "mlb_statcast", "npb_spaia", "indy_local", "retrosheet_local"],
+        choices=["mlb_statsapi", "mlb_statcast", "npb_spaia", "indy_local", "kbo_local", "lmb_local", "retrosheet_local"],
     )
     ingest_p.add_argument(
         "--entity",
@@ -92,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     silver_p.add_argument(
         "--source",
         required=True,
-        choices=["npb_spaia", "mlb_statsapi", "mlb_statcast", "indy_local", "retrosheet_local"],
+        choices=["npb_spaia", "mlb_statsapi", "mlb_statcast", "indy_local", "kbo_local", "lmb_local", "retrosheet_local"],
     )
     silver_p.add_argument(
         "--entity",
@@ -102,6 +110,14 @@ def build_parser() -> argparse.ArgumentParser:
             "rosters",
             "game_pbp",
             "standings",
+            "game_batter_stats",
+            "game_pitcher_stats",
+            "player_batting_saber",
+            "player_pitching_saber",
+            "player_stats_by_year",
+            "player_stats_by_month",
+            "player_stats_by_game",
+            "player_hitting_career",
             "transactions",
             "pitches",
             "boxscore_batting",
@@ -165,6 +181,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["nightly"],
         help="Override start/end with a built-in window (nightly = last 7 days ending yesterday)",
     )
+    run_p.add_argument(
+        "--leagues",
+        help="Comma-separated leagues to run (mlb,npb,indy,kbo,lmb,retrosheet)",
+    )
+    run_p.add_argument("--uc-catalog", help="UC catalog name (alternative to env var)")
+    run_p.add_argument("--uc-bronze-schema", help="UC bronze schema (alternative to env var)")
+    run_p.add_argument("--uc-silver-schema", help="UC silver schema (alternative to env var)")
+    run_p.add_argument("--uc-gold-schema", help="UC gold schema (alternative to env var)")
 
     backfill_p = sub.add_parser("backfill", help="Backfill pipeline stages (alias of run)")
     backfill_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
@@ -185,6 +209,28 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["nightly"],
         help="Override start/end with a built-in window (nightly = last 7 days ending yesterday)",
     )
+    backfill_p.add_argument(
+        "--leagues",
+        help="Comma-separated leagues to run (mlb,npb,indy,kbo,lmb,retrosheet)",
+    )
+    backfill_p.add_argument("--uc-catalog", help="UC catalog name (alternative to env var)")
+    backfill_p.add_argument("--uc-bronze-schema", help="UC bronze schema (alternative to env var)")
+    backfill_p.add_argument("--uc-silver-schema", help="UC silver schema (alternative to env var)")
+    backfill_p.add_argument("--uc-gold-schema", help="UC gold schema (alternative to env var)")
+
+    uc_p = sub.add_parser("register-uc", help="Register bronze/silver/gold tables in Unity Catalog")
+    uc_p.add_argument("--catalog", required=False, help="UC catalog name (e.g., gbdp)")
+    uc_p.add_argument("--bronze-schema", default="bronze_gbdp", help="UC schema for bronze tables")
+    uc_p.add_argument("--silver-schema", default="silver_gbdp", help="UC schema for silver tables")
+    uc_p.add_argument("--gold-schema", default="gold_gbdp", help="UC schema for gold tables")
+    uc_p.add_argument("--storage-format", choices=["parquet", "delta"], help="Override storage format")
+    uc_p.add_argument("--bronze-root", help="Override bronze root path")
+    uc_p.add_argument("--silver-root", help="Override silver root path")
+    uc_p.add_argument("--gold-root", help="Override gold root path")
+    uc_p.add_argument("--uc-catalog", help="UC catalog name (alternative to env var)")
+    uc_p.add_argument("--uc-bronze-schema", help="UC bronze schema (alternative to env var)")
+    uc_p.add_argument("--uc-silver-schema", help="UC silver schema (alternative to env var)")
+    uc_p.add_argument("--uc-gold-schema", help="UC gold schema (alternative to env var)")
     return parser
 
 
@@ -204,6 +250,8 @@ def main() -> None:
             normalize_mlb(args.entity, args.start, args.end, force=args.force)
         elif args.source == "indy_local":
             normalize_indy(args.entity, args.start, args.end, force=args.force)
+        elif args.source in {"kbo_local", "lmb_local"}:
+            normalize_local_boxscore(args.source, args.entity, args.start, args.end, force=args.force)
         elif args.source == "retrosheet_local":
             normalize_retrosheet(args.entity, args.start, args.end, force=args.force)
     if args.cmd == "identity":
@@ -225,15 +273,36 @@ def main() -> None:
     if args.cmd == "run":
         _set_storage_format(args)
         _set_roots(args)
+        _set_uc(args)
         stages = args.stages.split(",") if args.stages else None
+        leagues = args.leagues.split(",") if args.leagues else None
         start, end = _resolve_window(args.start, args.end, args.window)
-        run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay, args.chunk)
+        run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay, args.chunk, leagues)
     if args.cmd == "backfill":
         _set_storage_format(args)
         _set_roots(args)
+        _set_uc(args)
         stages = args.stages.split(",") if args.stages else None
+        leagues = args.leagues.split(",") if args.leagues else None
         start, end = _resolve_window(args.start, args.end, args.window)
-        run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay, args.chunk)
+        run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay, args.chunk, leagues)
+    if args.cmd == "register-uc":
+        _set_storage_format(args)
+        _set_roots(args)
+        _set_uc(args)
+        if args.catalog:
+            register_uc_tables(
+                catalog=args.catalog,
+                bronze_schema=args.bronze_schema,
+                silver_schema=args.silver_schema,
+                gold_schema=args.gold_schema,
+                bronze_path=bronze_root(),
+                silver_path=silver_root(),
+                gold_path=gold_root(),
+                fmt=os.getenv("GBDP_STORAGE_FORMAT", "parquet"),
+            )
+        else:
+            register_uc_tables_from_env()
 
 
 def _run_pipeline(args: argparse.Namespace) -> None:
@@ -272,6 +341,21 @@ def _set_roots(args: argparse.Namespace) -> None:
         os.environ["GBDP_GOLD_ROOT"] = gold
     if manual:
         os.environ["GBDP_MANUAL_ROOT"] = manual
+
+
+def _set_uc(args: argparse.Namespace) -> None:
+    uc_catalog = getattr(args, "uc_catalog", None)
+    uc_bronze = getattr(args, "uc_bronze_schema", None)
+    uc_silver = getattr(args, "uc_silver_schema", None)
+    uc_gold = getattr(args, "uc_gold_schema", None)
+    if uc_catalog:
+        os.environ["GBDP_UC_CATALOG"] = uc_catalog
+    if uc_bronze:
+        os.environ["GBDP_UC_BRONZE_SCHEMA"] = uc_bronze
+    if uc_silver:
+        os.environ["GBDP_UC_SILVER_SCHEMA"] = uc_silver
+    if uc_gold:
+        os.environ["GBDP_UC_GOLD_SCHEMA"] = uc_gold
 
 
 if __name__ == "__main__":

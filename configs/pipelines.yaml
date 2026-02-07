@@ -7,8 +7,10 @@ pipelines:
       - fetch_games
       - fetch_pbp
       - fetch_pitches
+      - fetch_npb_stats
       - silver_normalize
       - identity_resolve
       - gold_publish
       - quality_checks
       - audit_report
+      - register_uc

@@ -19,7 +19,19 @@ class NpbSpaiaConnector(BaseConnector):
     def list_partitions(self, start_date: str, end_date: str, entity: str) -> List[Partition]:
         start = parse_date(start_date)
         end = parse_date(end_date)
-        if entity in {"schedules", "standings", "player_batting_saber", "player_pitching_saber"}:
+        if entity in {
+            "schedules",
+            "standings",
+            "player_batting_saber",
+            "player_pitching_saber",
+            "player_stats_by_year",
+            "player_stats_by_month",
+            "player_stats_by_game",
+            "player_hitting_career",
+            "player_info",
+            "related_players",
+            "same_draft_year_players",
+        }:
             years = {d.year for d in daterange(start, end)}
             return [Partition(dt=f"{year}-01-01", entity=entity, keys={"year": year}) for year in sorted(years)]
         if entity == "monthly_schedule":
@@ -212,6 +224,14 @@ class NpbSpaiaConnector(BaseConnector):
                 f"{self.base_url}/hitting_stats_by_game",
                 "player_id",
                 {"year": year},
+            )
+
+        if partition.entity == "player_hitting_career":
+            return self._batch_player_payload(
+                partition,
+                "player_hitting_career",
+                f"{self.base_url}/hitting_stats_career",
+                "playerId",
             )
 
         if partition.entity == "player_info":

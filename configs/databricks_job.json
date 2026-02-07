@@ -7,6 +7,12 @@
       "task_key": "gbdp_run",
       "description": "GBDP nightly pipeline",
       "existing_cluster_id": "${DB_CLUSTER_ID}",
+      "environment_variables": {
+        "GBDP_UC_CATALOG": "gbdp",
+        "GBDP_UC_BRONZE_SCHEMA": "bronze_gbdp",
+        "GBDP_UC_SILVER_SCHEMA": "silver_gbdp",
+        "GBDP_UC_GOLD_SCHEMA": "gold_gbdp"
+      },
       "spark_python_task": {
         "python_file": "dbfs:/Workspace/Repos/eric.t.seppanen@gmail.com/GBDP/dbx_entry.py",
         "parameters": [
@@ -32,7 +38,15 @@
           "--retry-delay",
           "5",
           "--chunk",
-          "month"
+          "month",
+          "--uc-catalog",
+          "gbdp",
+          "--uc-bronze-schema",
+          "bronze_gbdp",
+          "--uc-silver-schema",
+          "silver_gbdp",
+          "--uc-gold-schema",
+          "gold_gbdp"
         ]
       }
     },

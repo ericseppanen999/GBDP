@@ -73,6 +73,8 @@ def game_by_id(game_id: str, as_of: str | None = None):
 
 @app.get("/players/{player_id}/stats")
 def player_stats(player_id: str, window: str | None = None, as_of: str | None = None):
+    if window == "rolling_30d":
+        return query("feature_player_rolling_30d", dt=as_of, where=f"player_id = '{player_id}'")
     return query("fact_pitch", dt=as_of, where=f"batter_id = '{player_id}'")
 
 
