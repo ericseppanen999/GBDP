@@ -8,7 +8,7 @@
       "description": "GBDP backfill pipeline (manual)",
       "existing_cluster_id": "${DB_CLUSTER_ID}",
       "spark_python_task": {
-        "python_file": "dbfs:/Workspace/Repos/eric.t.seppanen@gmail.com/GBDP/src/gbdp/cli.py",
+        "python_file": "dbfs:/Workspace/Repos/eric.t.seppanen@gmail.com/GBDP/dbx_entry.py",
         "parameters": [
           "backfill",
           "--start",

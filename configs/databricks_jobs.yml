@@ -1,0 +1,34 @@
+resources:
+  jobs:
+    New_Job_Feb_06_2026_04_35_PM:
+      name: New Job Feb 06, 2026, 04:35 PM
+      tasks:
+        - task_key: GBDP_backfill
+          spark_python_task:
+            python_file: /Repos/eric.t.seppanen@gmail.com/GBDP/dbx_entry.py
+            parameters:
+              - backfill
+              - --start
+              - 2004-05-18
+              - --end
+              - 2004-11-1
+              - --sources
+              - configs/sources.yaml
+              - --force
+              - --retries
+              - "2"
+              - --retry-delay
+              - "5"
+          email_notifications:
+            on_success:
+              - eric.t.seppanen@gmail.com
+            on_failure:
+              - eric.t.seppanen@gmail.com
+          environment_key: Default
+      queue:
+        enabled: true
+      environments:
+        - environment_key: Default
+          spec:
+            environment_version: "4"
+      performance_target: PERFORMANCE_OPTIMIZED
