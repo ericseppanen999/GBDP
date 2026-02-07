@@ -18,13 +18,13 @@ resources:
               - --storage-format
               - delta
               - --bronze-root
-              - dbfs:/Volumes/gbdp/bronze_gbdp/bronze_vol/gbdp/bronze
+              - dbfs:/Volumes/gbdp/bronze_gbdp/bronze_vol
               - --silver-root
-              - dbfs:/Volumes/gbdp/silver_gbdp/silver_vol/gbdp/silver
+              - dbfs:/Volumes/gbdp/silver_gbdp/silver_vol
               - --gold-root
-              - dbfs:/Volumes/gbdp/gold_gbdp/gold_vol/gbdp/gold
+              - dbfs:/Volumes/gbdp/gold_gbdp/gold_vol
               - --manual-root
-              - dbfs:/Volumes/gbdp/bronze_gbdp/bronze_vol/gbdp/manual
+              - dbfs:/Volumes/gbdp/bronze_gbdp/bronze_vol
               - --retries
               - "2"
               - --retry-delay

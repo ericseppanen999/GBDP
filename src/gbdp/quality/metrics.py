@@ -12,6 +12,7 @@ from gbdp.utils.io import data_root, ensure_dir
 def write_run_audit(run_id: str, dt: str, status: str, force: bool = False) -> Path:
     root = gold_root()
     metrics = _collect_row_counts(root, dt)
+    total_rows = sum(metrics.values()) if metrics else 0
     row = {
         "run_id": run_id,
         "dt": dt,
@@ -19,6 +20,7 @@ def write_run_audit(run_id: str, dt: str, status: str, force: bool = False) -> P
         "end_utc": datetime.now(timezone.utc).isoformat(),
         "status": status,
         "row_counts_by_table": metrics,
+        "total_rows": total_rows,
         "anomalies": None,
     }
     out_dir = root / "gold" / "audit_pipeline_runs" / f"dt={dt}"
