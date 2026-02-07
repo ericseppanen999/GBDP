@@ -7,7 +7,7 @@ from typing import Dict, List
 import duckdb
 import yaml
 
-from gbdp.utils.io import data_root, ensure_dir
+from gbdp.utils.io import data_root, ensure_dir, storage_format
 from gbdp.utils.time import daterange, parse_date
 
 
@@ -23,7 +23,8 @@ def run_quality_checks(
 
 
 def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
-    con = duckdb.connect()
+    fmt = storage_format()
+    con = duckdb.connect() if fmt == "parquet" else None
     results: List[Dict[str, object]] = []
 
     # Uniqueness checks
@@ -33,11 +34,14 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
         path = root / "gold" / table / f"dt={dt.isoformat()}"
         if not path.exists():
             continue
-        con.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet('{path}/*.parquet')")
         cols_sql = ", ".join(cols)
-        dupes = con.execute(
-            f"SELECT COUNT(*) FROM (SELECT {cols_sql}, COUNT(*) c FROM t GROUP BY {cols_sql} HAVING c>1)"
-        ).fetchone()[0]
+        if fmt == "parquet":
+            con.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet('{path}/*.parquet')")
+            dupes = con.execute(
+                f"SELECT COUNT(*) FROM (SELECT {cols_sql}, COUNT(*) c FROM t GROUP BY {cols_sql} HAVING c>1)"
+            ).fetchone()[0]
+        else:
+            dupes = _spark_uniqueness(path, cols)
         results.append(
             {"check": "uniqueness", "table": table, "columns": cols_sql, "dupes": dupes, "dt": dt.isoformat()}
         )
@@ -51,11 +55,14 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
         parent_path = root / "gold" / parent / f"dt={dt.isoformat()}"
         if not child_path.exists() or not parent_path.exists():
             continue
-        con.execute(f"CREATE OR REPLACE VIEW c AS SELECT * FROM read_parquet('{child_path}/*.parquet')")
-        con.execute(f"CREATE OR REPLACE VIEW p AS SELECT * FROM read_parquet('{parent_path}/*.parquet')")
-        missing = con.execute(
-            f"SELECT COUNT(*) FROM c LEFT JOIN p ON c.{key}=p.{key} WHERE c.{key} IS NOT NULL AND p.{key} IS NULL"
-        ).fetchone()[0]
+        if fmt == "parquet":
+            con.execute(f"CREATE OR REPLACE VIEW c AS SELECT * FROM read_parquet('{child_path}/*.parquet')")
+            con.execute(f"CREATE OR REPLACE VIEW p AS SELECT * FROM read_parquet('{parent_path}/*.parquet')")
+            missing = con.execute(
+                f"SELECT COUNT(*) FROM c LEFT JOIN p ON c.{key}=p.{key} WHERE c.{key} IS NOT NULL AND p.{key} IS NULL"
+            ).fetchone()[0]
+        else:
+            missing = _spark_ref_integrity(child_path, parent_path, key)
         results.append(
             {
                 "check": "referential_integrity",
@@ -74,8 +81,11 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
         path = root / "gold" / table / f"dt={dt.isoformat()}"
         if not path.exists():
             continue
-        con.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet('{path}/*.parquet')")
-        count = con.execute("SELECT COUNT(*) FROM t").fetchone()[0]
+        if fmt == "parquet":
+            con.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet('{path}/*.parquet')")
+            count = con.execute("SELECT COUNT(*) FROM t").fetchone()[0]
+        else:
+            count = _spark_count(path)
         results.append(
             {
                 "check": "row_count_min",
@@ -92,14 +102,22 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
     if thresholds:
         game_path = root / "gold" / "fact_game" / f"dt={dt.isoformat()}"
         if game_path.exists():
-            con.execute(f"CREATE OR REPLACE VIEW games AS SELECT DISTINCT game_id FROM read_parquet('{game_path}/*.parquet')")
-            total_games = con.execute("SELECT COUNT(*) FROM games").fetchone()[0]
+            if fmt == "parquet":
+                con.execute(
+                    f"CREATE OR REPLACE VIEW games AS SELECT DISTINCT game_id FROM read_parquet('{game_path}/*.parquet')"
+                )
+                total_games = con.execute("SELECT COUNT(*) FROM games").fetchone()[0]
+            else:
+                total_games = _spark_distinct_count(game_path, "game_id")
             pitch_path = root / "gold" / "fact_pitch" / f"dt={dt.isoformat()}"
             if pitch_path.exists() and total_games > 0:
-                con.execute(
-                    f"CREATE OR REPLACE VIEW pitches AS SELECT DISTINCT game_id FROM read_parquet('{pitch_path}/*.parquet')"
-                )
-                with_pitch = con.execute("SELECT COUNT(*) FROM pitches").fetchone()[0]
+                if fmt == "parquet":
+                    con.execute(
+                        f"CREATE OR REPLACE VIEW pitches AS SELECT DISTINCT game_id FROM read_parquet('{pitch_path}/*.parquet')"
+                    )
+                    with_pitch = con.execute("SELECT COUNT(*) FROM pitches").fetchone()[0]
+                else:
+                    with_pitch = _spark_distinct_count(pitch_path, "game_id")
                 pct = with_pitch / total_games
                 results.append(
                     {
@@ -186,3 +204,38 @@ def _schema_drift_checks(root: Path, dt: date) -> List[Dict[str, object]]:
                     }
                 )
     return results
+
+
+def _spark_count(path: Path) -> int:
+    from pyspark.sql import SparkSession
+
+    spark = SparkSession.builder.getOrCreate()
+    return spark.read.format("delta").load(str(path)).count()
+
+
+def _spark_distinct_count(path: Path, col: str) -> int:
+    from pyspark.sql import SparkSession
+
+    spark = SparkSession.builder.getOrCreate()
+    return spark.read.format("delta").load(str(path)).select(col).distinct().count()
+
+
+def _spark_uniqueness(path: Path, cols: List[str]) -> int:
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
+
+    spark = SparkSession.builder.getOrCreate()
+    df = spark.read.format("delta").load(str(path))
+    dupes = df.groupBy(cols).count().where(F.col("count") > 1).count()
+    return dupes
+
+
+def _spark_ref_integrity(child: Path, parent: Path, key: str) -> int:
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
+
+    spark = SparkSession.builder.getOrCreate()
+    c = spark.read.format("delta").load(str(child))
+    p = spark.read.format("delta").load(str(parent))
+    missing = c.join(p, c[key] == p[key], "left").where(c[key].isNotNull() & p[key].isNull()).count()
+    return missing
