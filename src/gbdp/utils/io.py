@@ -41,7 +41,16 @@ def ensure_dir(path: Path) -> None:
             raise RuntimeError("dbutils is required to create DBFS directories")
         dbutils.fs.mkdirs(_to_dbfs_uri(path))
         return
-    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        if _is_dbfs_path(path):
+            dbutils = _dbutils_fs()
+            if dbutils is None:
+                raise
+            dbutils.fs.mkdirs(_to_dbfs_uri(path))
+            return
+        raise
 
 
 def sha256_bytes(data: bytes) -> str:
