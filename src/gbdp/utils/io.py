@@ -93,6 +93,10 @@ def _to_dbfs_uri(path: Path) -> str:
     return path_str
 
 
+def is_dbfs_path(path: Path) -> bool:
+    return _is_dbfs_path(path)
+
+
 def _from_dbfs_uri(uri: str) -> Path:
     if uri.startswith("dbfs:/"):
         return Path("/dbfs/" + uri[len("dbfs:/") :])
@@ -170,6 +174,30 @@ def list_dir(path: Path, dirs_only: bool = False) -> List[Path]:
         return list(path.iterdir())
     except Exception:
         return []
+
+
+def file_size(path: Path) -> int | None:
+    if _is_dbfs_path(path) and not _dbfs_fuse_available():
+        dbutils = _dbutils_fs()
+        if dbutils is None:
+            return None
+        try:
+            entries = dbutils.fs.ls(_to_dbfs_uri(path))
+        except Exception:
+            return None
+        if not entries:
+            return 0
+        # For files, ls returns a single entry with size; for dirs, size is 0.
+        if len(entries) == 1:
+            try:
+                return int(entries[0].size)
+            except Exception:
+                return None
+        return 0
+    try:
+        return path.stat().st_size
+    except Exception:
+        return None
 
 
 def read_bytes(path: Path) -> bytes:

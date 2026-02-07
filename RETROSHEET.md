@@ -1,4 +1,7 @@
 Retrosheet CSVs should be extracted to `data/manual/retrosheet/*.csv` before running the pipeline.
+If `plays.csv` is too large for a Unity Catalog volume, split it into 1GB parts named
+`plays_part-00001.csv`, `plays_part-00002.csv`, etc. and place them in the same folder.
+The connector will automatically read all shards with Spark.
 The available data is comprised of seven master .csv files:
 
 allplayers.csv - contains basic information about all players divided by team-season

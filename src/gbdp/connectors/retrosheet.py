@@ -2,13 +2,22 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from io import BytesIO, TextIOWrapper
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from gbdp.bronze.writer import RawPayload
 from gbdp.connectors.base import BaseConnector, Partition
-from gbdp.utils.io import manual_root, path_exists, read_bytes, sha256_bytes
+from gbdp.utils.io import (
+    file_size,
+    is_dbfs_path,
+    manual_root,
+    path_exists,
+    read_bytes,
+    sha256_bytes,
+    spark_path,
+)
 from gbdp.utils.time import daterange, parse_date, utc_now
 
 
@@ -69,14 +78,81 @@ class RetrosheetLocalConnector(BaseConnector):
         return self._read_from_dir(manual_root() / "retrosheet", entity, dt)
 
     def _read_from_dir(self, base: Path, entity: str, dt: str) -> List[Dict[str, Any]]:
-        path = base / f"{entity}.csv"
-        if not path_exists(path):
+        paths = self._resolve_paths(base, entity)
+        if not paths:
             return []
-        data = read_bytes(path)
-        wrapper = TextIOWrapper(BytesIO(data), encoding="utf-8")
-        return self._filter_rows(csv.DictReader(wrapper), entity, dt)
+        if len(paths) == 1:
+            path = paths[0]
+            if self._should_use_spark(path):
+                return self._read_with_spark(path, entity, dt)
+            data = read_bytes(path)
+            wrapper = TextIOWrapper(BytesIO(data), encoding="utf-8")
+            return self._filter_rows(csv.DictReader(wrapper), entity, dt)
+        # Sharded CSVs: use Spark to read all parts efficiently
+        return self._read_sharded_with_spark(paths, entity, dt)
 
     # Zip reading removed; Retrosheet CSVs should be extracted to manual_root()/retrosheet
+
+    def _should_use_spark(self, path: Path) -> bool:
+        setting = os.getenv("GBDP_RETROSHEET_USE_SPARK", "auto").lower()
+        if setting in {"1", "true", "yes"}:
+            return True
+        if setting in {"0", "false", "no"}:
+            return False
+        size = file_size(path)
+        if size is not None and size >= 256 * 1024 * 1024:
+            return True
+        return is_dbfs_path(path)
+
+    def _read_with_spark(self, path: Path, entity: str, dt: str) -> List[Dict[str, Any]]:
+        try:
+            from pyspark.sql import SparkSession
+            from pyspark.sql import functions as F
+        except Exception as exc:
+            raise RuntimeError("pyspark is required for large Retrosheet CSVs") from exc
+        spark = SparkSession.builder.getOrCreate()
+        df = spark.read.option("header", True).csv(spark_path(path))
+        date_col = self._date_cols.get(entity)
+        year = dt.split("-")[0]
+        yyyymmdd = dt.replace("-", "")
+        if entity == "allplayers":
+            df = df.where(F.col("season") == year)
+        elif date_col:
+            c = F.col(date_col)
+            df = df.where((c == dt) | (c == yyyymmdd) | (c.startswith(yyyymmdd)))
+        return [row.asDict(recursive=True) for row in df.toLocalIterator()]
+
+    def _read_sharded_with_spark(self, paths: List[Path], entity: str, dt: str) -> List[Dict[str, Any]]:
+        try:
+            from pyspark.sql import SparkSession
+            from pyspark.sql import functions as F
+        except Exception as exc:
+            raise RuntimeError("pyspark is required for sharded Retrosheet CSVs") from exc
+        spark = SparkSession.builder.getOrCreate()
+        df = spark.read.option("header", True).csv([spark_path(p) for p in paths])
+        date_col = self._date_cols.get(entity)
+        year = dt.split("-")[0]
+        yyyymmdd = dt.replace("-", "")
+        if entity == "allplayers":
+            df = df.where(F.col("season") == year)
+        elif date_col:
+            c = F.col(date_col)
+            df = df.where((c == dt) | (c == yyyymmdd) | (c.startswith(yyyymmdd)))
+        return [row.asDict(recursive=True) for row in df.toLocalIterator()]
+
+    def _resolve_paths(self, base: Path, entity: str) -> List[Path]:
+        if entity == "plays":
+            pattern = "plays_part-*.csv"
+            try:
+                paths = sorted([p for p in base.glob(pattern)])
+            except Exception:
+                paths = []
+            if paths:
+                return paths
+        single = base / f"{entity}.csv"
+        if path_exists(single):
+            return [single]
+        return []
 
     def _filter_rows(self, reader: csv.DictReader, entity: str, dt: str) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
