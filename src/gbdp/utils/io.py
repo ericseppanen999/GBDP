@@ -90,6 +90,11 @@ def _dbfs_fuse_available() -> bool:
         return False
 
 
+def _allow_local_dbfs_io() -> bool:
+    # Serverless forbids local filesystem access; default to safe behavior.
+    return os.getenv("GBDP_ALLOW_DBFS_LOCAL_IO", "false").lower() in ("1", "true", "yes")
+
+
 def _is_dbfs_path(path: Path) -> bool:
     p = path.as_posix()
     return p.startswith("/dbfs/") or p.startswith("/Volumes/")
@@ -253,20 +258,23 @@ def file_size(path: Path) -> int | None:
 
 
 def read_bytes(path: Path) -> bytes:
-    if _is_dbfs_path(path) and not _dbfs_fuse_available():
-        dbutils = _dbutils_fs()
-        if dbutils is None:
-            raise RuntimeError("dbutils is required to read DBFS files")
-        tmp = tempfile.NamedTemporaryFile(delete=False)
-        tmp.close()
-        dbutils.fs.cp(_to_dbfs_uri(path), f"file:{tmp.name}")
-        with open(tmp.name, "rb") as f:
-            data = f.read()
-        try:
-            os.unlink(tmp.name)
-        except Exception:
-            pass
-        return data
+    if _is_dbfs_path(path):
+        if not _allow_local_dbfs_io():
+            raise RuntimeError("Local DBFS reads are disabled on serverless; use Spark for DBFS paths.")
+        if not _dbfs_fuse_available():
+            dbutils = _dbutils_fs()
+            if dbutils is None:
+                raise RuntimeError("dbutils is required to read DBFS files")
+            tmp = tempfile.NamedTemporaryFile(delete=False)
+            tmp.close()
+            dbutils.fs.cp(_to_dbfs_uri(path), f"file:{tmp.name}")
+            with open(tmp.name, "rb") as f:
+                data = f.read()
+            try:
+                os.unlink(tmp.name)
+            except Exception:
+                pass
+            return data
     with open(path, "rb") as f:
         return f.read()
 
@@ -274,12 +282,12 @@ def read_bytes(path: Path) -> bytes:
 def write_bytes(path: Path, data: bytes, force: bool = False) -> Path:
     if not force and path_exists(path):
         return path
-    if _is_dbfs_path(path) and not _dbfs_fuse_available():
+    if _is_dbfs_path(path):
         # Serverless blocks local fs access; only text writes are supported here.
         try:
             text = data.decode("utf-8")
         except Exception as exc:
-            raise RuntimeError("Binary DBFS write is not supported in serverless without /dbfs") from exc
+            raise RuntimeError("Binary DBFS write is not supported on serverless; use Spark writers.") from exc
         _dbfs_put(_to_dbfs_uri(path), text, overwrite=True)
         return path
     try:
@@ -289,20 +297,12 @@ def write_bytes(path: Path, data: bytes, force: bool = False) -> Path:
         return path
     except OSError:
         if _is_dbfs_path(path):
-            dbutils = _dbutils_fs()
-            if dbutils is None:
-                raise
-            tmp = tempfile.NamedTemporaryFile(delete=False)
+            # Never use local file copy on serverless.
             try:
-                with open(tmp.name, "wb") as f:
-                    f.write(data)
-                dbutils.fs.mkdirs(_to_dbfs_uri(path.parent))
-                _dbfs_cp(f"file:{tmp.name}", _to_dbfs_uri(path), True)
-            finally:
-                try:
-                    os.unlink(tmp.name)
-                except Exception:
-                    pass
+                text = data.decode("utf-8")
+            except Exception as exc:
+                raise RuntimeError("Binary DBFS write is not supported on serverless; use Spark writers.") from exc
+            _dbfs_put(_to_dbfs_uri(path), text, overwrite=True)
             return path
         raise
 

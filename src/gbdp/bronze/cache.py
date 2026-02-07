@@ -34,7 +34,7 @@ class ResponseCache:
         path = self._path(key)
         ensure_dir(path.parent)
         payload = json.dumps(value, ensure_ascii=True)
-        if is_dbfs_path(path) and not dbfs_fuse_available():
+        if is_dbfs_path(path):
             alt = path.with_suffix(".json")
             write_text(alt, payload, force=True)
             return

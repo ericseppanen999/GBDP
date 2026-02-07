@@ -74,7 +74,7 @@ class BronzeWriter:
             "body_text": payload.body_text,
         }
         payload_text = json.dumps(record, ensure_ascii=True)
-        if is_dbfs_path(path) and not dbfs_fuse_available():
+        if is_dbfs_path(path):
             filename = f"{payload.checksum}.json"
             full_path = path / filename
             if path_exists(full_path) and not force:
