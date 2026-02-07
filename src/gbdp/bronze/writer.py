@@ -12,10 +12,13 @@ import os
 
 from gbdp.utils.io import (
     bronze_root,
+    dbfs_fuse_available,
+    is_dbfs_path,
     path_exists,
     stable_json_dumps,
     write_bytes,
     write_parquet_table,
+    write_text,
 )
 from gbdp.utils.time import utc_now
 
@@ -58,8 +61,6 @@ class BronzeWriter:
 
     def write_raw(self, payload: RawPayload, force: bool = False) -> Path:
         path = self._raw_path(payload)
-        filename = f"{payload.checksum}.json.gz"
-        full_path = path / filename
         record = {
             "source": payload.source,
             "entity": payload.entity,
@@ -72,7 +73,16 @@ class BronzeWriter:
             "content_type": payload.content_type,
             "body_text": payload.body_text,
         }
-        payload_bytes = json.dumps(record, ensure_ascii=True).encode("utf-8")
+        payload_text = json.dumps(record, ensure_ascii=True)
+        if is_dbfs_path(path) and not dbfs_fuse_available():
+            filename = f"{payload.checksum}.json"
+            full_path = path / filename
+            if path_exists(full_path) and not force:
+                return full_path
+            return write_text(full_path, payload_text, force=force)
+        filename = f"{payload.checksum}.json.gz"
+        full_path = path / filename
+        payload_bytes = payload_text.encode("utf-8")
         compressed = gzip.compress(payload_bytes)
         if path_exists(full_path) and not force:
             return full_path

@@ -97,6 +97,10 @@ def is_dbfs_path(path: Path) -> bool:
     return _is_dbfs_path(path)
 
 
+def dbfs_fuse_available() -> bool:
+    return _dbfs_fuse_available()
+
+
 def dbfs_uri(path: Path) -> str:
     if _is_dbfs_path(path):
         return _to_dbfs_uri(path)
@@ -129,6 +133,13 @@ def _dbfs_cp(src: str, dst: str, overwrite: bool = False) -> None:
         except Exception:
             pass
     dbutils.fs.cp(src, dst)
+
+
+def _dbfs_put(dst: str, text: str, overwrite: bool = False) -> None:
+    dbutils = _dbutils_fs()
+    if dbutils is None:
+        raise RuntimeError("dbutils is required to write DBFS files")
+    dbutils.fs.put(dst, text, overwrite)
 
 
 def spark_path(path: Path) -> str:
@@ -241,20 +252,12 @@ def write_bytes(path: Path, data: bytes, force: bool = False) -> Path:
     if not force and path_exists(path):
         return path
     if _is_dbfs_path(path) and not _dbfs_fuse_available():
-        dbutils = _dbutils_fs()
-        if dbutils is None:
-            raise RuntimeError("dbutils is required to write DBFS files")
-        tmp = tempfile.NamedTemporaryFile(delete=False)
+        # Serverless blocks local fs access; only text writes are supported here.
         try:
-            with open(tmp.name, "wb") as f:
-                f.write(data)
-            dbutils.fs.mkdirs(_to_dbfs_uri(path.parent))
-            _dbfs_cp(f"file:{tmp.name}", _to_dbfs_uri(path), True)
-        finally:
-            try:
-                os.unlink(tmp.name)
-            except Exception:
-                pass
+            text = data.decode("utf-8")
+        except Exception as exc:
+            raise RuntimeError("Binary DBFS write is not supported in serverless without /dbfs") from exc
+        _dbfs_put(_to_dbfs_uri(path), text, overwrite=True)
         return path
     try:
         ensure_dir(path.parent)
@@ -287,6 +290,9 @@ def read_text(path: Path, encoding: str = "utf-8") -> str:
 
 
 def write_text(path: Path, text: str, encoding: str = "utf-8", force: bool = False) -> Path:
+    if _is_dbfs_path(path) and not _dbfs_fuse_available():
+        _dbfs_put(_to_dbfs_uri(path), text, overwrite=True)
+        return path
     return write_bytes(path, text.encode(encoding), force=force)
 
 
@@ -294,23 +300,15 @@ def write_parquet_table(table: Any, path: Path, force: bool = False) -> Path:
     if not force and path_exists(path):
         return path
     if _is_dbfs_path(path) and not _dbfs_fuse_available():
-        dbutils = _dbutils_fs()
-        if dbutils is None:
-            raise RuntimeError("dbutils is required to write DBFS parquet")
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".parquet")
+        # Serverless: write via Spark to the parent directory
         try:
-            import pyarrow.parquet as pq
+            from pyspark.sql import SparkSession
         except Exception as exc:
-            raise RuntimeError("pyarrow is required for parquet writes") from exc
-        try:
-            pq.write_table(table, tmp.name, use_dictionary=False)
-            dbutils.fs.mkdirs(_to_dbfs_uri(path.parent))
-            _dbfs_cp(f"file:{tmp.name}", _to_dbfs_uri(path), True)
-        finally:
-            try:
-                os.unlink(tmp.name)
-            except Exception:
-                pass
+            raise RuntimeError("pyspark is required for parquet writes on serverless") from exc
+        spark = SparkSession.builder.getOrCreate()
+        pdf = table.to_pandas()
+        df = spark.createDataFrame(pdf)
+        df.write.mode("overwrite").parquet(spark_path(path.parent))
         return path
     try:
         ensure_dir(path.parent)
