@@ -272,6 +272,18 @@ def file_size(path: Path) -> int | None:
         return None
 
 
+def has_files_with_suffix(path: Path, suffix: str) -> bool:
+    for entry in list_dir(path, dirs_only=False):
+        try:
+            if entry.is_dir():
+                continue
+        except Exception:
+            continue
+        if entry.name.lower().endswith(suffix.lower()):
+            return True
+    return False
+
+
 def read_bytes(path: Path) -> bytes:
     if _is_dbfs_path(path):
         if not _allow_local_dbfs_io():
@@ -401,7 +413,7 @@ def read_parquet_rows(path: Path) -> List[Dict[str, Any]]:
         import pyarrow.parquet as pq
     except Exception as exc:
         raise RuntimeError("pyarrow is required for parquet reads") from exc
-    if not _is_dbfs_path(path) or _dbfs_fuse_available():
+    if not _needs_dbutils(path):
         dataset = ds.dataset(path, format="parquet")
         return dataset.to_table().to_pylist()
     dbutils = _dbutils_fs()

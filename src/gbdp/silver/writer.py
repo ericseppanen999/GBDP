@@ -6,12 +6,12 @@ from typing import Iterable, List, Dict, Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from gbdp.utils.io import ensure_dir, storage_format, spark_path
+from gbdp.utils.io import ensure_dir, storage_format, spark_path, path_exists
 
 
 def write_parquet(rows: Iterable[Dict[str, Any]], path: Path, force: bool = False) -> Path:
     ensure_dir(path.parent)
-    if path.exists() and not force:
+    if path_exists(path) and not force:
         return path
     data: List[Dict[str, Any]] = list(rows)
     if not data:

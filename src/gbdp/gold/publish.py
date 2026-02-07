@@ -17,6 +17,7 @@ from gbdp.utils.io import (
     stable_json_dumps,
     storage_format,
     write_parquet_table,
+    has_files_with_suffix,
 )
 from gbdp.utils.time import utc_now
 from gbdp.utils.time import daterange, parse_date
@@ -1077,6 +1078,8 @@ def _read_silver(root: Path, source: str, entity: str, dt: date) -> List[Dict[st
             return [row.asDict() for row in df.collect()]
         except Exception:
             # Fallback to parquet when delta log is missing (legacy writes)
+            if not has_files_with_suffix(path, ".parquet"):
+                return []
             df = spark.read.format("parquet").load(spark_path(path))
             return [row.asDict() for row in df.collect()]
     raise ValueError(f"Unsupported storage format: {fmt}")
