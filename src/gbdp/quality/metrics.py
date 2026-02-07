@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
-import duckdb
+from gbdp.utils.io import storage_format
 
 from gbdp.utils.io import data_root, ensure_dir
 
@@ -31,7 +31,14 @@ def write_run_audit(run_id: str, dt: str, status: str, force: bool = False) -> P
 
 
 def _collect_row_counts(root: Path, dt: str) -> Dict[str, int]:
-    con = duckdb.connect()
+    fmt = storage_format()
+    con = None
+    if fmt == "parquet":
+        try:
+            import duckdb
+        except Exception as exc:
+            raise RuntimeError("duckdb is required for parquet metrics") from exc
+        con = duckdb.connect()
     counts: Dict[str, int] = {}
     gold_dir = root / "gold"
     if not gold_dir.exists():
@@ -42,9 +49,19 @@ def _collect_row_counts(root: Path, dt: str) -> Dict[str, int]:
         part = table_dir / f"dt={dt}"
         if not part.exists():
             continue
-        con.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet('{part}/*.parquet')")
-        counts[table_dir.name] = con.execute("SELECT COUNT(*) FROM t").fetchone()[0]
+        if fmt == "parquet":
+            con.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet('{part}/*.parquet')")
+            counts[table_dir.name] = con.execute("SELECT COUNT(*) FROM t").fetchone()[0]
+        else:
+            counts[table_dir.name] = _spark_count(part)
     return counts
+
+
+def _spark_count(path: Path) -> int:
+    from pyspark.sql import SparkSession
+
+    spark = SparkSession.builder.getOrCreate()
+    return spark.read.format("delta").load(str(path)).count()
 
 
 def _write_parquet(rows: List[Dict], path: Path) -> None:
