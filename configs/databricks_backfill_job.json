@@ -1,0 +1,39 @@
+{
+  "name": "gbdp-backfill",
+  "timeout_seconds": 0,
+  "max_concurrent_runs": 1,
+  "tasks": [
+    {
+      "task_key": "gbdp_backfill",
+      "description": "GBDP backfill pipeline (manual)",
+      "existing_cluster_id": "${DB_CLUSTER_ID}",
+      "spark_python_task": {
+        "python_file": "dbfs:/Workspace/Repos/eric.t.seppanen@gmail.com/GBDP/src/gbdp/cli.py",
+        "parameters": [
+          "backfill",
+          "--start",
+          "{{start_date}}",
+          "--end",
+          "{{end_date}}",
+          "--sources",
+          "configs/sources.yaml",
+          "--force",
+          "--retries",
+          "2",
+          "--retry-delay",
+          "5"
+        ]
+      }
+    }
+  ],
+  "parameters": [
+    {
+      "name": "start_date",
+      "default": "1960-04-12"
+    },
+    {
+      "name": "end_date",
+      "default": "1960-04-19"
+    }
+  ]
+}

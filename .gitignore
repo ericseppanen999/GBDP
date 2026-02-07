@@ -32,6 +32,7 @@ data/
 *.csv
 *.json
 *.json.gz
+!configs/*.json
 
 # Local cache/logs
 cache/
