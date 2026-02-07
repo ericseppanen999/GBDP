@@ -143,7 +143,7 @@ def _dbfs_put(dst: str, text: str, overwrite: bool = False) -> None:
 
 
 def spark_path(path: Path) -> str:
-    if _is_dbfs_path(path) and not _dbfs_fuse_available():
+    if _is_dbfs_path(path):
         return _to_dbfs_uri(path)
     return str(path)
 
