@@ -376,6 +376,12 @@ def _set_uc(args: argparse.Namespace) -> None:
         os.environ["GBDP_UC_MODE"] = uc_mode
     elif uc_catalog and not os.getenv("GBDP_UC_MODE"):
         os.environ["GBDP_UC_MODE"] = "managed"
+    # Serverless-safe defaults: disable cache and request logs unless explicitly enabled.
+    if os.environ.get("GBDP_UC_MODE") == "managed":
+        if "GBDP_DISABLE_CACHE" not in os.environ:
+            os.environ["GBDP_DISABLE_CACHE"] = "true"
+        if "GBDP_DISABLE_REQUEST_LOG" not in os.environ:
+            os.environ["GBDP_DISABLE_REQUEST_LOG"] = "true"
 
 
 if __name__ == "__main__":

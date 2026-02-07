@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -17,6 +18,8 @@ class ResponseCache:
         return self.root / f"{key}.json.gz"
 
     def get(self, key: str) -> Optional[Dict[str, Any]]:
+        if os.getenv("GBDP_DISABLE_CACHE", "false").lower() in ("1", "true", "yes"):
+            return None
         path = self._path(key)
         if is_dbfs_path(path) and not dbfs_fuse_available():
             # Serverless cannot read local files; skip cache reads.
@@ -31,6 +34,8 @@ class ResponseCache:
         return json.loads(gzip.decompress(data).decode("utf-8"))
 
     def set(self, key: str, value: Dict[str, Any]) -> None:
+        if os.getenv("GBDP_DISABLE_CACHE", "false").lower() in ("1", "true", "yes"):
+            return
         path = self._path(key)
         ensure_dir(path.parent)
         payload = json.dumps(value, ensure_ascii=True)

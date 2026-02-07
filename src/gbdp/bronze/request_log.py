@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
+import os
 
 import pyarrow as pa
 
@@ -10,6 +11,8 @@ from gbdp.utils.io import bronze_root, ensure_dir, sha256_bytes, stable_json_dum
 
 
 def write_request_log(record: Dict[str, Any], force: bool = False) -> Path:
+    if os.getenv("GBDP_DISABLE_REQUEST_LOG", "false").lower() in ("1", "true", "yes"):
+        return Path()
     dt = record.get("dt")
     if not dt:
         dt = datetime.now(timezone.utc).date().isoformat()

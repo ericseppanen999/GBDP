@@ -5,13 +5,10 @@ def run_all() -> None:
     from pathlib import Path
 
     # Ensure repo src/ is on path when run from Databricks notebook
-    try:
-        import gbdp  # noqa: F401
-    except Exception:
-        repo_root = Path("/Workspace/Repos/eric.t.seppanen@gmail.com/GBDP")
-        src_path = repo_root / "src"
-        if src_path.exists():
-            sys.path.insert(0, str(src_path))
+    repo_root = Path("/Workspace/Repos/eric.t.seppanen@gmail.com/GBDP")
+    src_path = repo_root / "src"
+    if src_path.exists():
+        sys.path.insert(0, str(src_path))
 
     print("python", sys.version)
     print("platform", platform.platform())

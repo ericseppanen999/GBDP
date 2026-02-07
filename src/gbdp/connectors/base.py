@@ -57,21 +57,24 @@ class BaseConnector:
     def http_get(self, url: str, params: Optional[Dict[str, Any]] = None) -> RawPayload:
         params = params or {}
         key = request_hash(url, params)
-        cached = self.cache.get(key)
+        cached = None
+        if os.getenv("GBDP_DISABLE_CACHE", "false").lower() not in ("1", "true", "yes"):
+            cached = self.cache.get(key)
         if cached is not None:
-            write_request_log(
-                {
-                    "source": self.source,
-                    "url": cached["url"],
-                    "params": cached["params"],
-                    "status_code": cached["status_code"],
-                    "cached": True,
-                    "latency_ms": 0,
-                    "retries": 0,
-                    "fetched_at_utc": cached["fetched_at_utc"],
-                    "dt": cached["fetched_at_utc"][:10],
-                }
-            )
+            if os.getenv("GBDP_DISABLE_REQUEST_LOG", "false").lower() not in ("1", "true", "yes"):
+                write_request_log(
+                    {
+                        "source": self.source,
+                        "url": cached["url"],
+                        "params": cached["params"],
+                        "status_code": cached["status_code"],
+                        "cached": True,
+                        "latency_ms": 0,
+                        "retries": 0,
+                        "fetched_at_utc": cached["fetched_at_utc"],
+                        "dt": cached["fetched_at_utc"][:10],
+                    }
+                )
             return RawPayload(
                 source=self.source,
                 entity="unknown",
@@ -105,20 +108,22 @@ class BaseConnector:
                     "content_type": resp.headers.get("Content-Type", ""),
                     "body_text": body_text,
                 }
-                self.cache.set(key, payload)
-                write_request_log(
-                    {
-                        "source": self.source,
-                        "url": url,
-                        "params": params,
-                        "status_code": resp.status_code,
-                        "cached": False,
-                        "latency_ms": latency_ms,
-                        "retries": attempt - 1,
-                        "fetched_at_utc": fetched_at,
-                        "dt": fetched_at[:10],
-                    }
-                )
+                if os.getenv("GBDP_DISABLE_CACHE", "false").lower() not in ("1", "true", "yes"):
+                    self.cache.set(key, payload)
+                if os.getenv("GBDP_DISABLE_REQUEST_LOG", "false").lower() not in ("1", "true", "yes"):
+                    write_request_log(
+                        {
+                            "source": self.source,
+                            "url": url,
+                            "params": params,
+                            "status_code": resp.status_code,
+                            "cached": False,
+                            "latency_ms": latency_ms,
+                            "retries": attempt - 1,
+                            "fetched_at_utc": fetched_at,
+                            "dt": fetched_at[:10],
+                        }
+                    )
                 return RawPayload(
                     source=self.source,
                     entity="unknown",
