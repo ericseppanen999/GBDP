@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -22,7 +22,7 @@ from gbdp.silver.mlb import normalize_mlb
 from gbdp.silver.npb import normalize_npb
 from gbdp.silver.retrosheet import normalize_retrosheet
 from gbdp.gold.publish import publish_gold
-from gbdp.utils.io import data_root, ensure_dir
+from gbdp.utils.io import gold_root, ensure_dir
 
 
 @dataclass
@@ -42,37 +42,40 @@ def run_pipeline(
     stages: Optional[List[str]] = None,
     retries: int = 0,
     retry_delay_s: float = 1.0,
+    chunk: str | None = None,
 ) -> List[StageResult]:
     cfg = _load_yaml(Path(sources_path))
-    root = data_root()
+    root = gold_root()
     writer = BronzeWriter(root)
     cache = ResponseCache(root / "cache")
 
     available = _pipeline_stages()
     ordered = stages or list(available.keys())
     results: List[StageResult] = []
+    windows = _build_windows(start, end, chunk)
     for stage in ordered:
         if stage not in available:
             raise ValueError(f"Unknown stage: {stage}")
-        started = _now()
-        status = "ok"
-        details = None
-        attempt = 0
-        while True:
-            try:
-                available[stage](start, end, cfg, writer, cache, force)
-                break
-            except Exception as exc:
-                attempt += 1
-                if attempt > retries:
-                    status = "error"
-                    details = str(exc)
+        for win_start, win_end in windows:
+            started = _now()
+            status = "ok"
+            details = None
+            attempt = 0
+            while True:
+                try:
+                    available[stage](win_start, win_end, cfg, writer, cache, force)
                     break
-                import time
+                except Exception as exc:
+                    attempt += 1
+                    if attempt > retries:
+                        status = "error"
+                        details = str(exc)
+                        break
+                    import time
 
-                time.sleep(retry_delay_s)
-        ended = _now()
-        results.append(StageResult(stage, status, started, ended, details))
+                    time.sleep(retry_delay_s)
+            ended = _now()
+            results.append(StageResult(stage, status, started, ended, details))
     _write_stage_audit(root, end, results, force)
     return results
 
@@ -205,7 +208,7 @@ def _write_stage_audit(root: Path, dt: str, results: List[StageResult], force: b
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    out_dir = root / "gold" / "audit_stage_runs" / f"dt={dt}"
+    out_dir = root / "audit_stage_runs" / f"dt={dt}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
     if out_path.exists() and not force:
@@ -222,3 +225,23 @@ def _load_yaml(path: Path) -> Dict:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _build_windows(start: str, end: str, chunk: str | None) -> List[tuple[str, str]]:
+    if not chunk:
+        return [(start, end)]
+    start_d = date.fromisoformat(start)
+    end_d = date.fromisoformat(end)
+    windows: List[tuple[str, str]] = []
+    if chunk == "month":
+        cur = date(start_d.year, start_d.month, 1)
+        while cur <= end_d:
+            next_month = (cur.replace(day=28) + timedelta(days=4)).replace(day=1)
+            win_start = cur if cur >= start_d else start_d
+            win_end = (next_month - timedelta(days=1))
+            if win_end > end_d:
+                win_end = end_d
+            windows.append((win_start.isoformat(), win_end.isoformat()))
+            cur = next_month
+        return windows
+    raise ValueError(f"Unsupported chunk: {chunk}")

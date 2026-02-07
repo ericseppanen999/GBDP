@@ -7,14 +7,14 @@ from typing import Any, Dict, List
 import pyarrow.dataset as ds
 
 from gbdp.silver.writer import write_parquet
-from gbdp.utils.io import data_root, ensure_dir, include_partition_cols_silver
+from gbdp.utils.io import bronze_root, silver_root, ensure_dir, include_partition_cols_silver
 from gbdp.utils.time import daterange, parse_date
 
 
 def normalize_indy(
     entity: str, start: str, end: str, root: Path | None = None, force: bool = False
 ) -> List[Path]:
-    root = root or data_root()
+    root = root or silver_root()
     outputs: List[Path] = []
     for d in daterange(parse_date(start), parse_date(end)):
         if entity in {"games", "rosters", "boxscore_batting", "boxscore_pitching"}:
@@ -25,7 +25,7 @@ def normalize_indy(
 
 
 def _normalize_generic(root: Path, entity: str, dt: date, force: bool) -> Path:
-    path = root / "bronze" / "parsed" / "indy_local" / entity / f"dt={dt.isoformat()}"
+    path = bronze_root() / "parsed" / "indy_local" / entity / f"dt={dt.isoformat()}"
     rows: List[Dict[str, Any]] = []
     if path.exists():
         rows = ds.dataset(path, format="parquet").to_table().to_pylist()
@@ -33,6 +33,6 @@ def _normalize_generic(root: Path, entity: str, dt: date, force: bool) -> Path:
         for r in rows:
             r.pop("dt", None)
             r.pop("source", None)
-    out_dir = root / "silver" / "indy_local" / entity / f"dt={dt.isoformat()}"
+    out_dir = root / "indy_local" / entity / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
     return write_parquet(rows, out_dir / "part-00001.parquet", force=force)

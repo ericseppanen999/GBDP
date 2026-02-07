@@ -11,6 +11,22 @@ def data_root() -> Path:
     return Path(os.getenv("GBDP_DATA_ROOT", "./data")).resolve()
 
 
+def bronze_root() -> Path:
+    return Path(os.getenv("GBDP_BRONZE_ROOT", str(data_root() / "bronze"))).resolve()
+
+
+def silver_root() -> Path:
+    return Path(os.getenv("GBDP_SILVER_ROOT", str(data_root() / "silver"))).resolve()
+
+
+def gold_root() -> Path:
+    return Path(os.getenv("GBDP_GOLD_ROOT", str(data_root() / "gold"))).resolve()
+
+
+def manual_root() -> Path:
+    return Path(os.getenv("GBDP_MANUAL_ROOT", str(data_root() / "manual"))).resolve()
+
+
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 

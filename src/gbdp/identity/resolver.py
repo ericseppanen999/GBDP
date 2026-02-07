@@ -10,12 +10,12 @@ import pyarrow.dataset as ds
 from gbdp.identity.manual_overrides import load_manual_overrides
 from gbdp.identity.rules import player_match_key, team_match_key
 from gbdp.utils.ids import ulid_from_key
-from gbdp.utils.io import data_root, ensure_dir
+from gbdp.utils.io import silver_root, gold_root, ensure_dir
 from gbdp.utils.time import daterange, parse_date
 
 
 def resolve_identity(start: str, end: str, root: Path | None = None, force: bool = False) -> List[Path]:
-    root = root or data_root()
+    root = root or gold_root()
     outputs: List[Path] = []
     overrides = load_manual_overrides(Path("manual_entity_links.csv"))
     override_map = {
@@ -75,7 +75,7 @@ def _resolve_for_date(root: Path, dt: date, overrides: Dict[tuple, str], force: 
             }
         )
 
-    out_dir = root / "gold" / "bridge_source_ids" / f"dt={dt.isoformat()}"
+    out_dir = root / "bridge_source_ids" / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
     if out_path.exists() and not force:
@@ -87,7 +87,7 @@ def _resolve_for_date(root: Path, dt: date, overrides: Dict[tuple, str], force: 
 def _collect_player_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     # NPB rosters silver
-    npb_rosters = _read_silver(root, "npb_spaia", "rosters", dt)
+    npb_rosters = _read_silver(silver_root(), "npb_spaia", "rosters", dt)
     for r in npb_rosters:
         source_id = r.get("player_id")
         if not source_id:
@@ -104,7 +104,7 @@ def _collect_player_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
             }
         )
     # MLB rosters silver
-    mlb_rosters = _read_silver(root, "mlb_statsapi", "rosters", dt)
+    mlb_rosters = _read_silver(silver_root(), "mlb_statsapi", "rosters", dt)
     for r in mlb_rosters:
         source_id = r.get("player_id")
         if not source_id:
@@ -121,7 +121,7 @@ def _collect_player_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
             }
         )
     # Indy rosters silver
-    indy_rosters = _read_silver(root, "indy_local", "rosters", dt)
+    indy_rosters = _read_silver(silver_root(), "indy_local", "rosters", dt)
     for r in indy_rosters:
         source_id = r.get("player_id")
         if not source_id:
@@ -138,7 +138,7 @@ def _collect_player_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
             }
         )
     # Retrosheet rosters silver
-    retro_rosters = _read_silver(root, "retrosheet_local", "rosters", dt)
+    retro_rosters = _read_silver(silver_root(), "retrosheet_local", "rosters", dt)
     for r in retro_rosters:
         source_id = r.get("player_id")
         if not source_id:
@@ -159,7 +159,7 @@ def _collect_player_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
 
 def _collect_team_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    npb_games = _read_silver(root, "npb_spaia", "games", dt)
+    npb_games = _read_silver(silver_root(), "npb_spaia", "games", dt)
     for r in npb_games:
         for team_id, team_name in [
             (r.get("home_team_id"), r.get("home_team_name")),
@@ -175,7 +175,7 @@ def _collect_team_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
                         "league_code": "NPB",
                     }
                 )
-    mlb_games = _read_silver(root, "mlb_statsapi", "games", dt)
+    mlb_games = _read_silver(silver_root(), "mlb_statsapi", "games", dt)
     for r in mlb_games:
         for team_id, team_name in [
             (r.get("home_team_id"), r.get("home_team_name")),
@@ -191,7 +191,7 @@ def _collect_team_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
                         "league_code": "MLB",
                     }
                 )
-    indy_games = _read_silver(root, "indy_local", "games", dt)
+    indy_games = _read_silver(silver_root(), "indy_local", "games", dt)
     for r in indy_games:
         for team_id, team_name in [
             (r.get("home_team_id"), r.get("home_team_name")),
@@ -207,7 +207,7 @@ def _collect_team_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
                         "league_code": "INDY",
                     }
                 )
-    retro_games = _read_silver(root, "retrosheet_local", "games", dt)
+    retro_games = _read_silver(silver_root(), "retrosheet_local", "games", dt)
     for r in retro_games:
         for team_id, team_name in [
             (r.get("home_team_id"), r.get("home_team_id")),
@@ -245,7 +245,7 @@ def _write_parquet(rows: List[Dict[str, Any]], path: Path) -> None:
 
 
 def _write_merge_events(root: Path, dt: date, overrides: List[Dict[str, str]], force: bool) -> None:
-    out_dir = root / "gold" / "merge_events" / f"dt={dt.isoformat()}"
+    out_dir = root / "merge_events" / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
     if out_path.exists() and not force:

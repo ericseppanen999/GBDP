@@ -13,7 +13,8 @@ from gbdp.utils.time import daterange, parse_date
 def run_quality_checks(
     start: str, end: str, root: Path | None = None, force: bool = False
 ) -> List[Path]:
-    root = root or data_root()
+    from gbdp.utils.io import gold_root
+    root = root or gold_root()
     outputs: List[Path] = []
     cfg = _load_quality_config()
     for d in daterange(parse_date(start), parse_date(end)):
@@ -169,7 +170,8 @@ def _schema_drift_checks(root: Path, dt: date) -> List[Dict[str, object]]:
     import pyarrow.parquet as pq
 
     results: List[Dict[str, object]] = []
-    bronze_root = root / "bronze" / "parsed"
+    from gbdp.utils.io import bronze_root as _bronze_root
+    bronze_root = _bronze_root() / "parsed"
     if not bronze_root.exists():
         return results
     for source_dir in bronze_root.iterdir():
@@ -186,7 +188,7 @@ def _schema_drift_checks(root: Path, dt: date) -> List[Dict[str, object]]:
                 continue
             schema = pq.read_schema(files[0])
             fields = {name: str(schema.field(name).type) for name in schema.names}
-            audit_dir = root / "gold" / "audit_schema" / source_dir.name / entity_dir.name
+            audit_dir = root / "audit_schema" / source_dir.name / entity_dir.name
             ensure_dir(audit_dir)
             current_path = audit_dir / f"dt={dt.isoformat()}.json"
             prev = None

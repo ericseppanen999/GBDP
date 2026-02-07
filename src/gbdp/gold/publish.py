@@ -8,12 +8,12 @@ from typing import Any, Dict, List
 import pyarrow.dataset as ds
 
 from gbdp.utils.ids import ulid_from_key
-from gbdp.utils.io import data_root, ensure_dir, stable_json_dumps, storage_format
+from gbdp.utils.io import gold_root, silver_root, ensure_dir, stable_json_dumps, storage_format
 from gbdp.utils.time import daterange, parse_date
 
 
 def publish_gold(start: str, end: str, root: Path | None = None, force: bool = False) -> List[Path]:
-    root = root or data_root()
+    root = root or gold_root()
     outputs: List[Path] = []
     for d in daterange(parse_date(start), parse_date(end)):
         outputs.extend(_publish_for_date(root, d, force))
@@ -43,7 +43,7 @@ def _publish_for_date(root: Path, dt: date, force: bool) -> List[Path]:
 
 
 def _read_gold_bridge(root: Path, dt: date) -> Dict[tuple, str]:
-    path = root / "gold" / "bridge_source_ids" / f"dt={dt.isoformat()}"
+    path = root / "bridge_source_ids" / f"dt={dt.isoformat()}"
     if not path.exists():
         return {}
     data = ds.dataset(path, format="parquet").to_table().to_pylist()
@@ -491,23 +491,38 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
 
 def _write_run_expectancy(root: Path, dt: date, force: bool) -> Path:
     # Compute RE by base_state_before + outs_before using available runs_scored_on_play
-    import duckdb
-    con = duckdb.connect()
-    path = root / "gold" / "fact_plate_appearance" / f"dt={dt.isoformat()}"
+    fmt = storage_format()
+    path = root / "fact_plate_appearance" / f"dt={dt.isoformat()}"
     if not path.exists():
         return _write_gold_table(root, "run_expectancy", dt, [], force)
-    con.execute(f"CREATE OR REPLACE VIEW pa AS SELECT * FROM read_parquet('{path}/*.parquet')")
-    rows = con.execute(
-        """
-        SELECT
-          base_state_before,
-          outs_before,
-          AVG(COALESCE(runs_scored_on_play, 0)) AS exp_runs
-        FROM pa
-        WHERE base_state_before IS NOT NULL AND outs_before IS NOT NULL
-        GROUP BY 1,2
-        """
-    ).fetchall()
+    if fmt == "parquet":
+        import duckdb
+        con = duckdb.connect()
+        con.execute(f"CREATE OR REPLACE VIEW pa AS SELECT * FROM read_parquet('{path}/*.parquet')")
+        rows = con.execute(
+            """
+            SELECT
+              base_state_before,
+              outs_before,
+              AVG(COALESCE(runs_scored_on_play, 0)) AS exp_runs
+            FROM pa
+            WHERE base_state_before IS NOT NULL AND outs_before IS NOT NULL
+            GROUP BY 1,2
+            """
+        ).fetchall()
+    else:
+        from pyspark.sql import SparkSession
+        from pyspark.sql import functions as F
+
+        spark = SparkSession.builder.getOrCreate()
+        df = spark.read.format("delta").load(str(path))
+        df = df.where("base_state_before IS NOT NULL AND outs_before IS NOT NULL")
+        rows = [
+            (r["base_state_before"], r["outs_before"], r["exp_runs"])
+            for r in df.groupBy("base_state_before", "outs_before")
+            .agg(F.avg(F.coalesce("runs_scored_on_play", F.lit(0))).alias("exp_runs"))
+            .collect()
+        ]
     out_rows = [
         {"base_state": r[0], "outs": r[1], "exp_runs": float(r[2]), "dt": dt.isoformat()}
         for r in rows
@@ -517,22 +532,39 @@ def _write_run_expectancy(root: Path, dt: date, force: bool) -> Path:
 
 def _write_breakout_candidates(root: Path, dt: date, force: bool) -> Path:
     # Simple heuristic: top 20 HR on dt from boxscore_batting
-    import duckdb
-    con = duckdb.connect()
-    path = root / "gold" / "fact_boxscore_batting" / f"dt={dt.isoformat()}"
+    fmt = storage_format()
+    path = root / "fact_boxscore_batting" / f"dt={dt.isoformat()}"
     if not path.exists():
         return _write_gold_table(root, "breakout_candidates", dt, [], force)
-    con.execute(f"CREATE OR REPLACE VIEW b AS SELECT * FROM read_parquet('{path}/*.parquet')")
-    rows = con.execute(
-        """
-        SELECT player_id, SUM(hr) as hr, SUM(h) as h, SUM(ab) as ab
-        FROM b
-        WHERE player_id IS NOT NULL
-        GROUP BY 1
-        ORDER BY hr DESC, h DESC
-        LIMIT 20
-        """
-    ).fetchall()
+    if fmt == "parquet":
+        import duckdb
+        con = duckdb.connect()
+        con.execute(f"CREATE OR REPLACE VIEW b AS SELECT * FROM read_parquet('{path}/*.parquet')")
+        rows = con.execute(
+            """
+            SELECT player_id, SUM(hr) as hr, SUM(h) as h, SUM(ab) as ab
+            FROM b
+            WHERE player_id IS NOT NULL
+            GROUP BY 1
+            ORDER BY hr DESC, h DESC
+            LIMIT 20
+            """
+        ).fetchall()
+    else:
+        from pyspark.sql import SparkSession
+        from pyspark.sql import functions as F
+
+        spark = SparkSession.builder.getOrCreate()
+        df = spark.read.format("delta").load(str(path))
+        rows = [
+            (r["player_id"], r["hr"], r["h"], r["ab"])
+            for r in df.where("player_id IS NOT NULL")
+            .groupBy("player_id")
+            .agg(F.sum("hr").alias("hr"), F.sum("h").alias("h"), F.sum("ab").alias("ab"))
+            .orderBy(F.col("hr").desc(), F.col("h").desc())
+            .limit(20)
+            .collect()
+        ]
     out_rows = [
         {"player_id": r[0], "hr": int(r[1] or 0), "h": int(r[2] or 0), "ab": int(r[3] or 0), "dt": dt.isoformat()}
         for r in rows
@@ -627,7 +659,7 @@ def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    out_dir = root / "gold" / table / f"dt={dt.isoformat()}"
+    out_dir = root / table / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
     if out_path.exists() and not force:
@@ -656,7 +688,7 @@ def _write_delta(rows: List[Dict[str, Any]], out_dir: Path) -> None:
 
 
 def _read_silver(root: Path, source: str, entity: str, dt: date) -> List[Dict[str, Any]]:
-    path = root / "silver" / source / entity / f"dt={dt.isoformat()}"
+    path = silver_root() / source / entity / f"dt={dt.isoformat()}"
     if not path.exists():
         return []
     fmt = storage_format()

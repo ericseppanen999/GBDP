@@ -29,3 +29,10 @@ Nightly window (dt-1 with 7-day correction window):
 
 Storage format (Databricks Delta):
 Set `GBDP_STORAGE_FORMAT=delta` (requires pyspark).
+
+Databricks volumes (recommended):
+Set explicit roots for each layer and manual data:
+`GBDP_BRONZE_ROOT=dbfs:/Volumes/gbdp/bronze_gbdp/bronze_vol/gbdp/bronze`
+`GBDP_SILVER_ROOT=dbfs:/Volumes/gbdp/silver_gbdp/silver_vol/gbdp/silver`
+`GBDP_GOLD_ROOT=dbfs:/Volumes/gbdp/gold_gbdp/gold_vol/gbdp/gold`
+`GBDP_MANUAL_ROOT=dbfs:/Volumes/gbdp/bronze_gbdp/bronze_vol/gbdp/manual`

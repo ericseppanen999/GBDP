@@ -5,12 +5,12 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from gbdp.utils.io import ensure_dir
+from gbdp.utils.io import ensure_dir, bronze_root
 
 
 class ResponseCache:
-    def __init__(self, root: Path) -> None:
-        self.root = root
+    def __init__(self, root: Path | None = None) -> None:
+        self.root = root or (bronze_root() / "cache")
         ensure_dir(self.root)
 
     def _path(self, key: str) -> Path:
@@ -28,4 +28,3 @@ class ResponseCache:
         ensure_dir(path.parent)
         with gzip.open(path, "wt", encoding="utf-8") as f:
             json.dump(value, f, ensure_ascii=True)
-

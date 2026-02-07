@@ -18,10 +18,22 @@
           "--sources",
           "configs/sources.yaml",
           "--force",
+          "--storage-format",
+          "delta",
+          "--bronze-root",
+          "dbfs:/Volumes/gbdp/bronze_gbdp/bronze_vol/gbdp/bronze",
+          "--silver-root",
+          "dbfs:/Volumes/gbdp/silver_gbdp/silver_vol/gbdp/silver",
+          "--gold-root",
+          "dbfs:/Volumes/gbdp/gold_gbdp/gold_vol/gbdp/gold",
+          "--manual-root",
+          "dbfs:/Volumes/gbdp/bronze_gbdp/bronze_vol/gbdp/manual",
           "--retries",
           "2",
           "--retry-delay",
-          "5"
+          "5",
+          "--chunk",
+          "month"
         ]
       }
     }

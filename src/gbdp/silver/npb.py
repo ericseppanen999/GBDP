@@ -8,14 +8,14 @@ from typing import Any, Dict, Iterable, List
 import pyarrow.dataset as ds
 
 from gbdp.silver.writer import write_parquet
-from gbdp.utils.io import data_root, ensure_dir, stable_json_dumps, include_partition_cols_silver
+from gbdp.utils.io import bronze_root, silver_root, ensure_dir, stable_json_dumps, include_partition_cols_silver
 from gbdp.utils.time import daterange, parse_date
 
 
 def normalize_npb(
     entity: str, start: str, end: str, root: Path | None = None, force: bool = False
 ) -> List[Path]:
-    root = root or data_root()
+    root = root or silver_root()
     outputs: List[Path] = []
     for d in daterange(parse_date(start), parse_date(end)):
         if entity == "games":
@@ -32,11 +32,11 @@ def normalize_npb(
 
 
 def _bronze_path(root: Path, entity: str, dt: date) -> Path:
-    return root / "bronze" / "parsed" / "npb_spaia" / entity / f"dt={dt.isoformat()}"
+    return bronze_root() / "parsed" / "npb_spaia" / entity / f"dt={dt.isoformat()}"
 
 
 def _silver_path(root: Path, entity: str, dt: date) -> Path:
-    return root / "silver" / "npb_spaia" / entity / f"dt={dt.isoformat()}"
+    return root / "npb_spaia" / entity / f"dt={dt.isoformat()}"
 
 
 def _read_bronze(entity: str, dt: date, root: Path) -> List[Dict[str, Any]]:

@@ -5,12 +5,12 @@ from typing import Any, Dict, List
 
 import duckdb
 
-from gbdp.utils.io import data_root, storage_format
+from gbdp.utils.io import gold_root, storage_format
 
 
 def query(table: str, dt: str | None = None, where: str | None = None, limit: int = 1000) -> List[Dict[str, Any]]:
-    root = data_root()
-    path = root / "gold" / table
+    root = gold_root()
+    path = root / table
     if dt:
         path = path / f"dt={dt}"
     if not path.exists():

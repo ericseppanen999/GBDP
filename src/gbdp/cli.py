@@ -23,7 +23,7 @@ from gbdp.gold.publish import publish_gold
 from gbdp.quality.checks import run_quality_checks
 from gbdp.quality.metrics import write_run_audit
 from gbdp.pipeline.runner import run_pipeline
-from gbdp.utils.io import data_root
+from gbdp.utils.io import data_root, bronze_root, silver_root, gold_root
 from gbdp.utils.logging import get_logger
 
 logger = get_logger("gbdp.cli")
@@ -50,9 +50,8 @@ def build_connector(source: str, cfg: Dict, writer: BronzeWriter, cache: Respons
 
 def ingest(args: argparse.Namespace) -> None:
     cfg = load_sources_config(Path(args.sources))
-    root = data_root()
-    writer = BronzeWriter(root)
-    cache = ResponseCache(root / "cache")
+    writer = BronzeWriter()
+    cache = ResponseCache()
 
     source_cfg = cfg[args.source]
     connector = build_connector(args.source, source_cfg, writer, cache)
@@ -86,6 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_p.add_argument("--sources", default="configs/sources.yaml", help="Path to sources.yaml")
     ingest_p.add_argument("--force", action="store_true", help="Overwrite existing bronze outputs")
     ingest_p.add_argument("--storage-format", choices=["parquet", "delta"], help="Override storage format")
+    ingest_p.add_argument("--bronze-root", help="Override bronze root path")
+    ingest_p.add_argument("--manual-root", help="Override manual data root path")
 
     silver_p = sub.add_parser("silver", help="Normalize bronze to silver")
     silver_p.add_argument(
@@ -118,24 +119,28 @@ def build_parser() -> argparse.ArgumentParser:
     silver_p.add_argument("--end", required=True, help="End date YYYY-MM-DD")
     silver_p.add_argument("--force", action="store_true", help="Overwrite existing silver outputs")
     silver_p.add_argument("--storage-format", choices=["parquet", "delta"], help="Override storage format")
+    silver_p.add_argument("--silver-root", help="Override silver root path")
 
     identity_p = sub.add_parser("identity", help="Resolve identity and build bridge table")
     identity_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
     identity_p.add_argument("--end", required=True, help="End date YYYY-MM-DD")
     identity_p.add_argument("--force", action="store_true", help="Overwrite existing bridge outputs")
     identity_p.add_argument("--storage-format", choices=["parquet", "delta"], help="Override storage format")
+    identity_p.add_argument("--gold-root", help="Override gold root path")
 
     gold_p = sub.add_parser("gold", help="Publish gold dims/facts")
     gold_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
     gold_p.add_argument("--end", required=True, help="End date YYYY-MM-DD")
     gold_p.add_argument("--force", action="store_true", help="Overwrite existing gold outputs")
     gold_p.add_argument("--storage-format", choices=["parquet", "delta"], help="Override storage format")
+    gold_p.add_argument("--gold-root", help="Override gold root path")
 
     quality_p = sub.add_parser("quality", help="Run quality checks")
     quality_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
     quality_p.add_argument("--end", required=True, help="End date YYYY-MM-DD")
     quality_p.add_argument("--force", action="store_true", help="Overwrite existing quality outputs")
     quality_p.add_argument("--storage-format", choices=["parquet", "delta"], help="Override storage format")
+    quality_p.add_argument("--gold-root", help="Override gold root path")
 
     serve_p = sub.add_parser("serve", help="Run FastAPI server (local)")
     serve_p.add_argument("--host", default="0.0.0.0")
@@ -150,6 +155,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--retries", type=int, default=0, help="Retry count per stage")
     run_p.add_argument("--retry-delay", type=float, default=1.0, help="Retry delay seconds")
     run_p.add_argument("--storage-format", choices=["parquet", "delta"], help="Override storage format")
+    run_p.add_argument("--chunk", choices=["month"], help="Chunk window for long ranges")
+    run_p.add_argument("--bronze-root", help="Override bronze root path")
+    run_p.add_argument("--silver-root", help="Override silver root path")
+    run_p.add_argument("--gold-root", help="Override gold root path")
+    run_p.add_argument("--manual-root", help="Override manual data root path")
     run_p.add_argument(
         "--window",
         choices=["nightly"],
@@ -165,6 +175,11 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_p.add_argument("--retries", type=int, default=0, help="Retry count per stage")
     backfill_p.add_argument("--retry-delay", type=float, default=1.0, help="Retry delay seconds")
     backfill_p.add_argument("--storage-format", choices=["parquet", "delta"], help="Override storage format")
+    backfill_p.add_argument("--chunk", choices=["month"], help="Chunk window for long ranges")
+    backfill_p.add_argument("--bronze-root", help="Override bronze root path")
+    backfill_p.add_argument("--silver-root", help="Override silver root path")
+    backfill_p.add_argument("--gold-root", help="Override gold root path")
+    backfill_p.add_argument("--manual-root", help="Override manual data root path")
     backfill_p.add_argument(
         "--window",
         choices=["nightly"],
@@ -178,9 +193,11 @@ def main() -> None:
     args = parser.parse_args()
     if args.cmd == "ingest":
         _set_storage_format(args)
+        _set_roots(args)
         ingest(args)
     if args.cmd == "silver":
         _set_storage_format(args)
+        _set_roots(args)
         if args.source == "npb_spaia":
             normalize_npb(args.entity, args.start, args.end, force=args.force)
         elif args.source in {"mlb_statsapi", "mlb_statcast"}:
@@ -191,12 +208,15 @@ def main() -> None:
             normalize_retrosheet(args.entity, args.start, args.end, force=args.force)
     if args.cmd == "identity":
         _set_storage_format(args)
+        _set_roots(args)
         resolve_identity(args.start, args.end, force=args.force)
     if args.cmd == "gold":
         _set_storage_format(args)
+        _set_roots(args)
         publish_gold(args.start, args.end, force=args.force)
     if args.cmd == "quality":
         _set_storage_format(args)
+        _set_roots(args)
         run_quality_checks(args.start, args.end, force=args.force)
     if args.cmd == "serve":
         import uvicorn
@@ -204,14 +224,16 @@ def main() -> None:
         uvicorn.run("gbdp.serve.api:app", host=args.host, port=args.port, reload=False)
     if args.cmd == "run":
         _set_storage_format(args)
+        _set_roots(args)
         stages = args.stages.split(",") if args.stages else None
         start, end = _resolve_window(args.start, args.end, args.window)
-        run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay)
+        run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay, args.chunk)
     if args.cmd == "backfill":
         _set_storage_format(args)
+        _set_roots(args)
         stages = args.stages.split(",") if args.stages else None
         start, end = _resolve_window(args.start, args.end, args.window)
-        run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay)
+        run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay, args.chunk)
 
 
 def _run_pipeline(args: argparse.Namespace) -> None:
@@ -235,6 +257,21 @@ def _set_storage_format(args: argparse.Namespace) -> None:
     fmt = getattr(args, "storage_format", None)
     if fmt:
         os.environ["GBDP_STORAGE_FORMAT"] = fmt
+
+
+def _set_roots(args: argparse.Namespace) -> None:
+    bronze = getattr(args, "bronze_root", None)
+    silver = getattr(args, "silver_root", None)
+    gold = getattr(args, "gold_root", None)
+    manual = getattr(args, "manual_root", None)
+    if bronze:
+        os.environ["GBDP_BRONZE_ROOT"] = bronze
+    if silver:
+        os.environ["GBDP_SILVER_ROOT"] = silver
+    if gold:
+        os.environ["GBDP_GOLD_ROOT"] = gold
+    if manual:
+        os.environ["GBDP_MANUAL_ROOT"] = manual
 
 
 if __name__ == "__main__":

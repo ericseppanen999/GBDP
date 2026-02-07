@@ -4,13 +4,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
-from gbdp.utils.io import storage_format
+from gbdp.utils.io import storage_format, gold_root
 
 from gbdp.utils.io import data_root, ensure_dir
 
 
 def write_run_audit(run_id: str, dt: str, status: str, force: bool = False) -> Path:
-    root = data_root()
+    root = gold_root()
     metrics = _collect_row_counts(root, dt)
     row = {
         "run_id": run_id,
@@ -40,7 +40,7 @@ def _collect_row_counts(root: Path, dt: str) -> Dict[str, int]:
             raise RuntimeError("duckdb is required for parquet metrics") from exc
         con = duckdb.connect()
     counts: Dict[str, int] = {}
-    gold_dir = root / "gold"
+    gold_dir = root
     if not gold_dir.exists():
         return counts
     for table_dir in gold_dir.iterdir():

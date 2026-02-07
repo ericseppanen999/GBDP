@@ -340,6 +340,14 @@ python -m gbdp.cli serve --host 0.0.0.0 --port 8000
 
 Set `GBDP_STORAGE_FORMAT=delta` and ensure PySpark is available.
 
+**Recommended volume mapping**
+```
+GBDP_BRONZE_ROOT=dbfs:/Volumes/gbdp/bronze_gbdp/bronze_vol/gbdp/bronze
+GBDP_SILVER_ROOT=dbfs:/Volumes/gbdp/silver_gbdp/silver_vol/gbdp/silver
+GBDP_GOLD_ROOT=dbfs:/Volumes/gbdp/gold_gbdp/gold_vol/gbdp/gold
+GBDP_MANUAL_ROOT=dbfs:/Volumes/gbdp/bronze_gbdp/bronze_vol/gbdp/manual
+```
+
 ---
 
 **15. Environment Variables**

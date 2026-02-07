@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from gbdp.bronze.writer import RawPayload
 from gbdp.connectors.base import BaseConnector, Partition
-from gbdp.utils.io import data_root, sha256_bytes
+from gbdp.utils.io import manual_root, sha256_bytes
 from gbdp.utils.time import daterange, parse_date, utc_now
 
 
@@ -65,16 +65,16 @@ class RetrosheetLocalConnector(BaseConnector):
         return []
 
     def _source_location(self) -> str:
-        zip_path = data_root() / "manual" / "csvdownloads.zip"
+        zip_path = manual_root() / "csvdownloads.zip"
         if zip_path.exists():
             return str(zip_path)
-        return str(data_root() / "manual" / "retrosheet")
+        return str(manual_root() / "retrosheet")
 
     def _read_rows(self, entity: str, dt: str) -> List[Dict[str, Any]]:
-        zip_path = data_root() / "manual" / "csvdownloads.zip"
+        zip_path = manual_root() / "csvdownloads.zip"
         if zip_path.exists():
             return self._read_from_zip(zip_path, entity, dt)
-        return self._read_from_dir(data_root() / "manual" / "retrosheet", entity, dt)
+        return self._read_from_dir(manual_root() / "retrosheet", entity, dt)
 
     def _read_from_dir(self, base: Path, entity: str, dt: str) -> List[Dict[str, Any]]:
         path = base / f"{entity}.csv"

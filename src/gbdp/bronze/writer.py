@@ -11,7 +11,7 @@ import pyarrow.parquet as pq
 
 import os
 
-from gbdp.utils.io import ensure_dir, stable_json_dumps
+from gbdp.utils.io import ensure_dir, stable_json_dumps, bronze_root
 from gbdp.utils.time import utc_now
 
 
@@ -30,13 +30,12 @@ class RawPayload:
 
 
 class BronzeWriter:
-    def __init__(self, root: Path) -> None:
-        self.root = root
+    def __init__(self, root: Path | None = None) -> None:
+        self.root = root or bronze_root()
 
     def _raw_path(self, payload: RawPayload) -> Path:
         return (
             self.root
-            / "bronze"
             / "raw"
             / payload.source
             / payload.entity
@@ -46,7 +45,6 @@ class BronzeWriter:
     def _parsed_path(self, payload: RawPayload) -> Path:
         return (
             self.root
-            / "bronze"
             / "parsed"
             / payload.source
             / payload.entity

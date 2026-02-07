@@ -7,14 +7,14 @@ from typing import Any, Dict, List
 import pyarrow.dataset as ds
 
 from gbdp.silver.writer import write_parquet
-from gbdp.utils.io import data_root, ensure_dir, include_partition_cols_silver
+from gbdp.utils.io import bronze_root, silver_root, ensure_dir, include_partition_cols_silver
 from gbdp.utils.time import daterange, parse_date
 
 
 def normalize_retrosheet(
     entity: str, start: str, end: str, root: Path | None = None, force: bool = False
 ) -> List[Path]:
-    root = root or data_root()
+    root = root or silver_root()
     outputs: List[Path] = []
     for d in daterange(parse_date(start), parse_date(end)):
         outputs.append(_normalize_entity(root, entity, d, force))
@@ -22,7 +22,7 @@ def normalize_retrosheet(
 
 
 def _normalize_entity(root: Path, entity: str, dt: date, force: bool) -> Path:
-    path = root / "bronze" / "parsed" / "retrosheet_local" / entity / f"dt={dt.isoformat()}"
+    path = bronze_root() / "parsed" / "retrosheet_local" / entity / f"dt={dt.isoformat()}"
     rows: List[Dict[str, Any]] = []
     if path.exists():
         files = list(path.glob("*.parquet"))
@@ -171,7 +171,7 @@ def _normalize_entity(root: Path, entity: str, dt: date, force: bool) -> Path:
 
 
 def _write(root: Path, entity: str, dt: date, rows: List[Dict[str, Any]], force: bool) -> Path:
-    out_dir = root / "silver" / "retrosheet_local" / entity / f"dt={dt.isoformat()}"
+    out_dir = root / "retrosheet_local" / entity / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
     return write_parquet(rows, out_dir / "part-00001.parquet", force=force)
 
