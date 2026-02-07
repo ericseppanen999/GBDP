@@ -12,9 +12,10 @@ def _league_id(code: str | None) -> str | None:
         return None
     import yaml
     from pathlib import Path
+    from gbdp.utils.io import path_exists
 
     path = Path("configs/leagues.yaml")
-    if not path.exists():
+    if not path_exists(path):
         return None
     with path.open("r", encoding="utf-8") as f:
         leagues = yaml.safe_load(f).get("leagues", {})

@@ -210,7 +210,7 @@ def _register_expected_tables(
 
 
 def _load_sources(path: Path) -> Dict:
-    if not path.exists():
+    if not path_exists(path):
         return {}
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}

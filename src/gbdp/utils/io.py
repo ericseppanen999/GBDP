@@ -100,8 +100,8 @@ def _force_dbutils() -> bool:
 
 
 def _is_dbfs_path(path: Path) -> bool:
-    p = path.as_posix()
-    return p.startswith("/dbfs/") or p.startswith("/Volumes/")
+    p = path.as_posix().lower()
+    return p.startswith("/dbfs/") or p.startswith("/volumes/") or p.startswith("dbfs:/")
 
 
 def _needs_dbutils(path: Path) -> bool:
@@ -109,14 +109,16 @@ def _needs_dbutils(path: Path) -> bool:
         return False
     if _force_dbutils():
         return True
-    p = path.as_posix()
-    if p.startswith("/dbfs/Volumes") or p.startswith("/Volumes/"):
+    p = path.as_posix().lower()
+    if p.startswith("/dbfs/volumes") or p.startswith("/volumes/") or p.startswith("dbfs:/volumes/"):
         return True
     return not _dbfs_fuse_available()
 
 
 def _to_dbfs_uri(path: Path) -> str:
     path_str = path.as_posix()
+    if path_str.startswith("dbfs:/"):
+        return path_str
     if path_str.startswith("/dbfs/"):
         return "dbfs:/" + path_str[len("/dbfs/") :]
     if path_str.startswith("/Volumes/"):
@@ -273,6 +275,29 @@ def file_size(path: Path) -> int | None:
 
 
 def has_files_with_suffix(path: Path, suffix: str) -> bool:
+    if _needs_dbutils(path):
+        dbutils = _dbutils_fs()
+        if dbutils is None:
+            return False
+        try:
+            entries = dbutils.fs.ls(_to_dbfs_uri(path))
+        except BaseException:
+            return False
+        for e in entries:
+            is_dir = False
+            if hasattr(e, "isDir"):
+                try:
+                    is_dir = e.isDir()
+                except Exception:
+                    try:
+                        is_dir = bool(e.isDir)
+                    except Exception:
+                        is_dir = False
+            if is_dir:
+                continue
+            if e.path.lower().endswith(suffix.lower()):
+                return True
+        return False
     for entry in list_dir(path, dirs_only=False):
         try:
             if entry.is_dir():
@@ -416,18 +441,13 @@ def read_parquet_rows(path: Path) -> List[Dict[str, Any]]:
     if not _needs_dbutils(path):
         dataset = ds.dataset(path, format="parquet")
         return dataset.to_table().to_pylist()
-    dbutils = _dbutils_fs()
-    if dbutils is None:
+    # Serverless-safe path: use Spark to read DBFS/Volumes parquet
+    if not has_files_with_suffix(path, ".parquet"):
         return []
-    rows: List[Dict[str, Any]] = []
     try:
-        entries = dbutils.fs.ls(_to_dbfs_uri(path))
+        from pyspark.sql import SparkSession
     except Exception:
-        return rows
-    for entry in entries:
-        if not entry.path.lower().endswith(".parquet"):
-            continue
-        data = read_bytes(_from_dbfs_uri(entry.path))
-        table = pq.read_table(pa.BufferReader(data))
-        rows.extend(table.to_pylist())
-    return rows
+        return []
+    spark = SparkSession.builder.getOrCreate()
+    df = spark.read.format("parquet").load(spark_path(path))
+    return [row.asDict() for row in df.collect()]

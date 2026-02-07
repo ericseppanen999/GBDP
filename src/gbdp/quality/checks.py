@@ -217,7 +217,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
 
 def _load_quality_config() -> Dict:
     path = Path("configs/quality.yaml")
-    if not path.exists():
+    if not path_exists(path):
         return {}
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f).get("quality", {})
@@ -244,6 +244,10 @@ def _schema_drift_checks(root: Path, dt: date) -> List[Dict[str, object]]:
         for entity_dir in list_dir(source_dir, dirs_only=True):
             part_dir = entity_dir / f"dt={dt.isoformat()}"
             if not path_exists(part_dir):
+                continue
+            # Skip schema drift checks on DBFS/Volumes where local FS access is blocked
+            from gbdp.utils.io import is_dbfs_path
+            if is_dbfs_path(part_dir):
                 continue
             try:
                 files = list(part_dir.glob("*.parquet"))

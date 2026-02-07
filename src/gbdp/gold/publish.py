@@ -85,7 +85,7 @@ def _read_gold_bridge(root: Path, dt: date) -> Dict[tuple, str]:
 
 def _write_dim_league(root: Path, dt: date, force: bool) -> Path:
     leagues_path = Path("configs/leagues.yaml")
-    if leagues_path.exists():
+    if path_exists(leagues_path):
         import yaml
 
         with leagues_path.open("r", encoding="utf-8") as f:
@@ -981,7 +981,16 @@ def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any
     if path_exists(out_path) and not force:
         return out_path
     if not rows:
-        rows = [{"empty": True}]
+        # For delta, ensure key columns exist to prevent merge failures later.
+        fmt = storage_format()
+        key_cols = _gold_primary_keys().get(table) if fmt == "delta" else None
+        if key_cols:
+            empty_row = {k: None for k in key_cols}
+            empty_row["dt"] = dt.isoformat()
+            empty_row["ingested_at_utc"] = utc_now().isoformat()
+            rows = [empty_row]
+        else:
+            rows = [{"empty": True}]
     now = utc_now().isoformat()
     for r in rows:
         if "dt" not in r:
@@ -1011,6 +1020,10 @@ def _write_delta(rows: List[Dict[str, Any]], out_dir: Path, table: str) -> None:
     if not key_cols:
         df.write.format("delta").mode("overwrite").save(spark_path(out_dir))
         return
+    # If df doesn't contain key columns, avoid merge and overwrite.
+    if any(c not in df.columns for c in key_cols):
+        df.write.format("delta").mode("overwrite").save(spark_path(out_dir))
+        return
     try:
         from delta.tables import DeltaTable
     except Exception:
@@ -1021,6 +1034,13 @@ def _write_delta(rows: List[Dict[str, Any]], out_dir: Path, table: str) -> None:
         df.write.format("delta").mode("overwrite").save(path)
         return
     delta_table = DeltaTable.forPath(spark, path)
+    try:
+        target_cols = set(delta_table.toDF().columns)
+    except Exception:
+        target_cols = set()
+    if any(c not in target_cols for c in key_cols):
+        df.write.format("delta").mode("overwrite").save(path)
+        return
     cond = " AND ".join([f"t.{c} = s.{c}" for c in key_cols])
     (
         delta_table.alias("t")
@@ -1195,7 +1215,7 @@ def _read_gold_snapshot(root: Path, table: str, dt: date) -> List[Dict[str, Any]
 
 def _league_id_for_code(code: str) -> str | None:
     leagues_path = Path("configs/leagues.yaml")
-    if not leagues_path.exists():
+    if not path_exists(leagues_path):
         return None
     import yaml
 
