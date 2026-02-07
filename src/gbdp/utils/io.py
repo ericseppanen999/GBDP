@@ -299,12 +299,12 @@ def write_text(path: Path, text: str, encoding: str = "utf-8", force: bool = Fal
 def write_parquet_table(table: Any, path: Path, force: bool = False) -> Path:
     if not force and path_exists(path):
         return path
-    if _is_dbfs_path(path) and not _dbfs_fuse_available():
-        # Serverless: write via Spark to the parent directory
+    if _is_dbfs_path(path):
+        # Always use Spark for DBFS parquet writes (serverless blocks local fs access)
         try:
             from pyspark.sql import SparkSession
         except Exception as exc:
-            raise RuntimeError("pyspark is required for parquet writes on serverless") from exc
+            raise RuntimeError("pyspark is required for parquet writes on DBFS") from exc
         spark = SparkSession.builder.getOrCreate()
         pdf = table.to_pandas()
         df = spark.createDataFrame(pdf)
