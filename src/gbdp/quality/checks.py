@@ -4,7 +4,6 @@ from datetime import date
 from pathlib import Path
 from typing import Dict, List
 
-import duckdb
 import yaml
 
 from gbdp.utils.io import data_root, ensure_dir, storage_format
@@ -24,7 +23,13 @@ def run_quality_checks(
 
 def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
     fmt = storage_format()
-    con = duckdb.connect() if fmt == "parquet" else None
+    con = None
+    if fmt == "parquet":
+        try:
+            import duckdb
+        except Exception as exc:
+            raise RuntimeError("duckdb is required for parquet quality checks") from exc
+        con = duckdb.connect()
     results: List[Dict[str, object]] = []
 
     # Uniqueness checks
