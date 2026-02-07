@@ -81,6 +81,10 @@ def run_pipeline(
             ended = _now()
             results.append(StageResult(stage, status, started, ended, details))
     _write_stage_audit(root, end, results, force)
+    failures = [r for r in results if r.status != "ok"]
+    if failures:
+        details = "; ".join(f"{r.stage}:{r.details}" for r in failures if r.details)
+        raise RuntimeError(f"Pipeline failed stages: {[r.stage for r in failures]} {details}")
     return results
 
 
