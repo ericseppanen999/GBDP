@@ -35,7 +35,7 @@ def manual_root() -> Path:
 
 
 def ensure_dir(path: Path) -> None:
-    if _is_dbfs_path(path) and not _dbfs_fuse_available():
+    if _is_dbfs_path(path) and (_force_dbutils() or not _dbfs_fuse_available()):
         dbutils = _dbutils_fs()
         if dbutils is None:
             raise RuntimeError("dbutils is required to create DBFS directories")
@@ -93,6 +93,10 @@ def _dbfs_fuse_available() -> bool:
 def _allow_local_dbfs_io() -> bool:
     # Serverless forbids local filesystem access; default to safe behavior.
     return os.getenv("GBDP_ALLOW_DBFS_LOCAL_IO", "false").lower() in ("1", "true", "yes")
+
+
+def _force_dbutils() -> bool:
+    return os.getenv("GBDP_DBFS_FORCE_DBUTILS", "false").lower() in ("1", "true", "yes")
 
 
 def _is_dbfs_path(path: Path) -> bool:
@@ -177,14 +181,14 @@ def spark_path(path: Path) -> str:
 
 
 def path_exists(path: Path) -> bool:
-    if _is_dbfs_path(path) and not _dbfs_fuse_available():
+    if _is_dbfs_path(path) and (_force_dbutils() or not _dbfs_fuse_available()):
         dbutils = _dbutils_fs()
         if dbutils is None:
             return False
         try:
             dbutils.fs.ls(_to_dbfs_uri(path))
             return True
-        except Exception:
+        except BaseException:
             return False
     try:
         return path.exists()
@@ -196,19 +200,19 @@ def path_exists(path: Path) -> bool:
             try:
                 dbutils.fs.ls(_to_dbfs_uri(path))
                 return True
-            except Exception:
+            except BaseException:
                 return False
         return False
 
 
 def list_dir(path: Path, dirs_only: bool = False) -> List[Path]:
-    if _is_dbfs_path(path) and not _dbfs_fuse_available():
+    if _is_dbfs_path(path) and (_force_dbutils() or not _dbfs_fuse_available()):
         dbutils = _dbutils_fs()
         if dbutils is None:
             return []
         try:
             entries = dbutils.fs.ls(_to_dbfs_uri(path))
-        except Exception:
+        except BaseException:
             return []
         results: List[Path] = []
         for e in entries:
@@ -234,13 +238,13 @@ def list_dir(path: Path, dirs_only: bool = False) -> List[Path]:
 
 
 def file_size(path: Path) -> int | None:
-    if _is_dbfs_path(path) and not _dbfs_fuse_available():
+    if _is_dbfs_path(path) and (_force_dbutils() or not _dbfs_fuse_available()):
         dbutils = _dbutils_fs()
         if dbutils is None:
             return None
         try:
             entries = dbutils.fs.ls(_to_dbfs_uri(path))
-        except Exception:
+        except BaseException:
             return None
         if not entries:
             return 0
@@ -322,6 +326,13 @@ def write_text(path: Path, text: str, encoding: str = "utf-8", force: bool = Fal
 def write_parquet_table(table: Any, path: Path, force: bool = False) -> Path:
     if not force and path_exists(path):
         return path
+    # Guard against empty schema
+    try:
+        if getattr(table, "num_columns", 1) == 0:
+            import pyarrow as pa
+            table = pa.Table.from_pylist([{"empty": True}])
+    except Exception:
+        pass
     if _is_dbfs_path(path):
         # Always use Spark for DBFS parquet writes (serverless blocks local fs access)
         try:
@@ -333,6 +344,8 @@ def write_parquet_table(table: Any, path: Path, force: bool = False) -> Path:
         spark = SparkSession.builder.getOrCreate()
         pdf = table.to_pandas()
         df = spark.createDataFrame(pdf)
+        if len(df.columns) == 0:
+            df = spark.createDataFrame([{"empty": True}])
         # Parquet does not support NullType; cast null-only columns to string
         for field in df.schema.fields:
             if isinstance(field.dataType, NullType):

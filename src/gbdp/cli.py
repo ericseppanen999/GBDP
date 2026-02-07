@@ -95,6 +95,10 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_p.add_argument("--storage-format", choices=["parquet", "delta"], help="Override storage format")
     ingest_p.add_argument("--bronze-root", help="Override bronze root path")
     ingest_p.add_argument("--manual-root", help="Override manual data root path")
+    ingest_p.add_argument("--http-timeout", type=int, help="HTTP timeout seconds")
+    ingest_p.add_argument("--http-retries", type=int, help="HTTP retry count")
+    ingest_p.add_argument("--http-backoff", type=float, help="HTTP backoff base")
+    ingest_p.add_argument("--http-min-interval", type=float, help="HTTP min interval seconds")
 
     silver_p = sub.add_parser("silver", help="Normalize bronze to silver")
     silver_p.add_argument(
@@ -194,6 +198,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["managed", "external"],
         help="UC mode: managed writes tables (serverless) or external LOCATION tables",
     )
+    run_p.add_argument("--http-timeout", type=int, help="HTTP timeout seconds")
+    run_p.add_argument("--http-retries", type=int, help="HTTP retry count")
+    run_p.add_argument("--http-backoff", type=float, help="HTTP backoff base")
+    run_p.add_argument("--http-min-interval", type=float, help="HTTP min interval seconds")
 
     backfill_p = sub.add_parser("backfill", help="Backfill pipeline stages (alias of run)")
     backfill_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
@@ -227,6 +235,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["managed", "external"],
         help="UC mode: managed writes tables (serverless) or external LOCATION tables",
     )
+    backfill_p.add_argument("--http-timeout", type=int, help="HTTP timeout seconds")
+    backfill_p.add_argument("--http-retries", type=int, help="HTTP retry count")
+    backfill_p.add_argument("--http-backoff", type=float, help="HTTP backoff base")
+    backfill_p.add_argument("--http-min-interval", type=float, help="HTTP min interval seconds")
 
     uc_p = sub.add_parser("register-uc", help="Register bronze/silver/gold tables in Unity Catalog")
     uc_p.add_argument("--catalog", required=False, help="UC catalog name (e.g., gbdp)")
@@ -255,6 +267,7 @@ def main() -> None:
     if args.cmd == "ingest":
         _set_storage_format(args)
         _set_roots(args)
+        _set_http(args)
         ingest(args)
     if args.cmd == "silver":
         _set_storage_format(args)
@@ -289,6 +302,7 @@ def main() -> None:
         _set_storage_format(args)
         _set_roots(args)
         _set_uc(args)
+        _set_http(args)
         stages = args.stages.split(",") if args.stages else None
         leagues = args.leagues.split(",") if args.leagues else None
         start, end = _resolve_window(args.start, args.end, args.window)
@@ -297,6 +311,7 @@ def main() -> None:
         _set_storage_format(args)
         _set_roots(args)
         _set_uc(args)
+        _set_http(args)
         stages = args.stages.split(",") if args.stages else None
         leagues = args.leagues.split(",") if args.leagues else None
         start, end = _resolve_window(args.start, args.end, args.window)
@@ -382,6 +397,23 @@ def _set_uc(args: argparse.Namespace) -> None:
             os.environ["GBDP_DISABLE_CACHE"] = "true"
         if "GBDP_DISABLE_REQUEST_LOG" not in os.environ:
             os.environ["GBDP_DISABLE_REQUEST_LOG"] = "true"
+        if "GBDP_DBFS_FORCE_DBUTILS" not in os.environ:
+            os.environ["GBDP_DBFS_FORCE_DBUTILS"] = "true"
+
+
+def _set_http(args: argparse.Namespace) -> None:
+    timeout = getattr(args, "http_timeout", None)
+    retries = getattr(args, "http_retries", None)
+    backoff = getattr(args, "http_backoff", None)
+    min_interval = getattr(args, "http_min_interval", None)
+    if timeout is not None:
+        os.environ["GBDP_HTTP_TIMEOUT"] = str(timeout)
+    if retries is not None:
+        os.environ["GBDP_HTTP_RETRIES"] = str(retries)
+    if backoff is not None:
+        os.environ["GBDP_HTTP_BACKOFF"] = str(backoff)
+    if min_interval is not None:
+        os.environ["GBDP_HTTP_MIN_INTERVAL"] = str(min_interval)
 
 
 if __name__ == "__main__":

@@ -19,13 +19,14 @@ def write_run_audit(run_id: str, dt: str, status: str, force: bool = False) -> P
     root = gold_root()
     metrics = _collect_row_counts(root, dt)
     total_rows = sum(metrics.values()) if metrics else 0
+    metrics_out = metrics if metrics else None
     row = {
         "run_id": run_id,
         "dt": dt,
         "start_utc": datetime.now(timezone.utc).isoformat(),
         "end_utc": datetime.now(timezone.utc).isoformat(),
         "status": status,
-        "row_counts_by_table": metrics,
+        "row_counts_by_table": metrics_out,
         "total_rows": total_rows,
         "anomalies": None,
     }

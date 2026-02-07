@@ -70,7 +70,16 @@ def _read_gold_bridge(root: Path, dt: date) -> Dict[tuple, str]:
         data = [row.asDict() for row in spark.read.format("delta").load(spark_path(path)).collect()]
     else:
         data = []
-    return {(r["entity_type"], r["source"], r["source_id"]): r["canonical_id"] for r in data}
+    out: Dict[tuple, str] = {}
+    for r in data:
+        entity_type = r.get("entity_type")
+        source = r.get("source")
+        source_id = r.get("source_id")
+        canonical_id = r.get("canonical_id")
+        if not (entity_type and source and source_id and canonical_id):
+            continue
+        out[(entity_type, source, source_id)] = canonical_id
+    return out
 
 
 def _write_dim_league(root: Path, dt: date, force: bool) -> Path:

@@ -48,7 +48,11 @@
           "--uc-gold-schema",
           "gold_gbdp",
           "--uc-mode",
-          "managed"
+          "managed",
+          "--http-timeout",
+          "120",
+          "--http-retries",
+          "5"
         ]
       }
     },

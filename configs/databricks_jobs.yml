@@ -41,6 +41,10 @@ resources:
               - gold_gbdp
               - --uc-mode
               - managed
+              - --http-timeout
+              - "120"
+              - --http-retries
+              - "5"
           environment_variables: {}
           email_notifications:
             on_success:
