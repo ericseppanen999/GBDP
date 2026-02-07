@@ -36,3 +36,7 @@ Set explicit roots for each layer and manual data:
 `GBDP_SILVER_ROOT=dbfs:/Volumes/gbdp/silver_gbdp/silver_vol/gbdp/silver`
 `GBDP_GOLD_ROOT=dbfs:/Volumes/gbdp/gold_gbdp/gold_vol/gbdp/gold`
 `GBDP_MANUAL_ROOT=dbfs:/Volumes/gbdp/bronze_gbdp/bronze_vol/gbdp/manual`
+
+Serverless Unity Catalog:
+Use managed UC mode (no LOCATION tables). Pass these params to the job/task:
+`--uc-catalog gbdp --uc-bronze-schema bronze_gbdp --uc-silver-schema silver_gbdp --uc-gold-schema gold_gbdp --uc-mode managed`

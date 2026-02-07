@@ -1,6 +1,6 @@
 # GBDP End-to-End Documentation
 
-This document describes the full end-to-end product: ingestion, lakehouse layers, identity resolution, quality checks, orchestration, and serving. It is written to support both local development and Databricks deployment.
+This document describes the full end-to-end product: ingestion, lakehouse layers, identity resolution, quality checks, orchestration, UC publishing, and serving. It is written to support both local development and Databricks deployment (including **serverless**).
 
 **Status:** The pipeline runs end-to-end with MLB, NPB, Retrosheet, and optional Indy data. It supports nightly windows, backfills, deterministic IDs, and Delta output on Databricks.
 
@@ -19,6 +19,7 @@ GBDP is a nightly batch lakehouse with a bronze/silver/gold contract, identity r
 6. **Quality**: Uniqueness, referential integrity, row counts, coverage, schema drift.
 7. **Serving**: FastAPI read-only API over gold tables.
 8. **Orchestration**: CLI stage runner with retries, backfill, and nightly window.
+9. **Unity Catalog**: Serverless-safe managed table publishing.
 
 **Architecture Diagram (Mermaid)**
 ```mermaid
@@ -76,7 +77,8 @@ flowchart TB
 All data is partitioned by `dt=YYYY-MM-DD`.
 
 **Bronze**
-- `data/bronze/raw/<source>/<entity>/dt=YYYY-MM-DD/*.json.gz`
+- `data/bronze/raw/<source>/<entity>/dt=YYYY-MM-DD/*.json.gz` (local/classic)
+- `data/bronze/raw/<source>/<entity>/dt=YYYY-MM-DD/*.json` (serverless)
 - `data/bronze/parsed/<source>/<entity>/dt=YYYY-MM-DD/*.parquet`
 
 **Silver**
@@ -86,6 +88,9 @@ All data is partitioned by `dt=YYYY-MM-DD`.
 - `data/gold/<table>/dt=YYYY-MM-DD/part-*.parquet`
 
 Set `GBDP_STORAGE_FORMAT=delta` on Databricks to write Delta instead of Parquet.
+
+**Serverless note**
+Serverless does not allow external LOCATION tables. Use **managed UC mode** so the pipeline writes managed tables into UC.
 
 ---
 
@@ -271,11 +276,13 @@ Outputs are written to `gold/audit_quality`.
 4. `fetch_games`
 5. `fetch_pbp`
 6. `fetch_pitches`
-7. `silver_normalize`
-8. `identity_resolve`
-9. `gold_publish`
-10. `quality_checks`
-11. `audit_report`
+7. `fetch_npb_stats`
+8. `silver_normalize`
+9. `identity_resolve`
+10. `gold_publish`
+11. `quality_checks`
+12. `audit_report`
+13. `register_uc` (managed publish on serverless)
 
 **Runner**
 1. `gbdp run` runs all stages.
@@ -348,6 +355,18 @@ GBDP_GOLD_ROOT=dbfs:/Volumes/gbdp/gold_gbdp/gold_vol/gbdp/gold
 GBDP_MANUAL_ROOT=dbfs:/Volumes/gbdp/bronze_gbdp/bronze_vol/gbdp/manual
 ```
 
+**Serverless UC mode (required)**
+Pass these CLI params to the job task:
+```
+--uc-catalog gbdp
+--uc-bronze-schema bronze_gbdp
+--uc-silver-schema silver_gbdp
+--uc-gold-schema gold_gbdp
+--uc-mode managed
+```
+
+This makes the pipeline **write managed UC tables** (no LOCATION), which is supported on serverless.
+
 ---
 
 **15. Environment Variables**
@@ -365,6 +384,7 @@ GBDP_MANUAL_ROOT=dbfs:/Volumes/gbdp/bronze_gbdp/bronze_vol/gbdp/manual
 6. `GBDP_INCLUDE_PARTITION_COLS`
 7. `GBDP_INCLUDE_PARTITION_COLS_SILVER`
 8. `GBDP_ID_SALT`
+9. `GBDP_UC_MODE` (`managed` or `external`)
 
 ---
 

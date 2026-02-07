@@ -99,11 +99,11 @@ def _register_bronze_parsed(
             for entity_dir in list_dir(source_dir, dirs_only=True):
                 entity = entity_dir.name
                 table = f"{source}_{entity}"
-            location = uc_location(entity_dir)
-            spark.sql(
-                f"CREATE TABLE IF NOT EXISTS {catalog}.{schema}.{table} "
-                f"USING PARQUET LOCATION '{location}'"
-            )
+                location = uc_location(entity_dir)
+                spark.sql(
+                    f"CREATE TABLE IF NOT EXISTS {catalog}.{schema}.{table} "
+                    f"USING PARQUET LOCATION '{location}'"
+                )
                 created.append((schema, table, location))
     requests_dir = bronze_path / "requests"
     if path_exists(requests_dir):
