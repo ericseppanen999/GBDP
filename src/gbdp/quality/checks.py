@@ -146,7 +146,7 @@ def _load_quality_config() -> Dict:
     if not path.exists():
         return {}
     with path.open("r", encoding="utf-8") as f:
-    return yaml.safe_load(f).get("quality", {})
+        return yaml.safe_load(f).get("quality", {})
 
 
 def _write_parquet(rows: List[Dict[str, object]], path: Path) -> None:
