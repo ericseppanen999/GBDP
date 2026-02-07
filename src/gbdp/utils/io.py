@@ -119,6 +119,18 @@ def _dbutils_fs():
     return DBUtils(spark)
 
 
+def _dbfs_cp(src: str, dst: str, overwrite: bool = False) -> None:
+    dbutils = _dbutils_fs()
+    if dbutils is None:
+        raise RuntimeError("dbutils is required to copy files to DBFS")
+    if overwrite:
+        try:
+            dbutils.fs.rm(dst, True)
+        except Exception:
+            pass
+    dbutils.fs.cp(src, dst)
+
+
 def spark_path(path: Path) -> str:
     if _is_dbfs_path(path) and not _dbfs_fuse_available():
         return _to_dbfs_uri(path)
@@ -237,7 +249,7 @@ def write_bytes(path: Path, data: bytes, force: bool = False) -> Path:
             with open(tmp.name, "wb") as f:
                 f.write(data)
             dbutils.fs.mkdirs(_to_dbfs_uri(path.parent))
-            dbutils.fs.cp(f"file:{tmp.name}", _to_dbfs_uri(path), True)
+        _dbfs_cp(f"file:{tmp.name}", _to_dbfs_uri(path), True)
         finally:
             try:
                 os.unlink(tmp.name)
@@ -259,7 +271,7 @@ def write_bytes(path: Path, data: bytes, force: bool = False) -> Path:
                 with open(tmp.name, "wb") as f:
                     f.write(data)
                 dbutils.fs.mkdirs(_to_dbfs_uri(path.parent))
-                dbutils.fs.cp(f"file:{tmp.name}", _to_dbfs_uri(path), True)
+                _dbfs_cp(f"file:{tmp.name}", _to_dbfs_uri(path), True)
             finally:
                 try:
                     os.unlink(tmp.name)
@@ -293,7 +305,7 @@ def write_parquet_table(table: Any, path: Path, force: bool = False) -> Path:
         try:
             pq.write_table(table, tmp.name, use_dictionary=False)
             dbutils.fs.mkdirs(_to_dbfs_uri(path.parent))
-            dbutils.fs.cp(f"file:{tmp.name}", _to_dbfs_uri(path), True)
+            _dbfs_cp(f"file:{tmp.name}", _to_dbfs_uri(path), True)
         finally:
             try:
                 os.unlink(tmp.name)
