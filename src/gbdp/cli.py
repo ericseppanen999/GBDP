@@ -189,6 +189,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--uc-bronze-schema", help="UC bronze schema (alternative to env var)")
     run_p.add_argument("--uc-silver-schema", help="UC silver schema (alternative to env var)")
     run_p.add_argument("--uc-gold-schema", help="UC gold schema (alternative to env var)")
+    run_p.add_argument(
+        "--uc-mode",
+        choices=["managed", "external"],
+        help="UC mode: managed writes tables (serverless) or external LOCATION tables",
+    )
 
     backfill_p = sub.add_parser("backfill", help="Backfill pipeline stages (alias of run)")
     backfill_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
@@ -217,6 +222,11 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_p.add_argument("--uc-bronze-schema", help="UC bronze schema (alternative to env var)")
     backfill_p.add_argument("--uc-silver-schema", help="UC silver schema (alternative to env var)")
     backfill_p.add_argument("--uc-gold-schema", help="UC gold schema (alternative to env var)")
+    backfill_p.add_argument(
+        "--uc-mode",
+        choices=["managed", "external"],
+        help="UC mode: managed writes tables (serverless) or external LOCATION tables",
+    )
 
     uc_p = sub.add_parser("register-uc", help="Register bronze/silver/gold tables in Unity Catalog")
     uc_p.add_argument("--catalog", required=False, help="UC catalog name (e.g., gbdp)")
@@ -231,6 +241,11 @@ def build_parser() -> argparse.ArgumentParser:
     uc_p.add_argument("--uc-bronze-schema", help="UC bronze schema (alternative to env var)")
     uc_p.add_argument("--uc-silver-schema", help="UC silver schema (alternative to env var)")
     uc_p.add_argument("--uc-gold-schema", help="UC gold schema (alternative to env var)")
+    uc_p.add_argument(
+        "--uc-mode",
+        choices=["managed", "external"],
+        help="UC mode: managed writes tables (serverless) or external LOCATION tables",
+    )
     return parser
 
 
@@ -348,6 +363,7 @@ def _set_uc(args: argparse.Namespace) -> None:
     uc_bronze = getattr(args, "uc_bronze_schema", None)
     uc_silver = getattr(args, "uc_silver_schema", None)
     uc_gold = getattr(args, "uc_gold_schema", None)
+    uc_mode = getattr(args, "uc_mode", None)
     if uc_catalog:
         os.environ["GBDP_UC_CATALOG"] = uc_catalog
     if uc_bronze:
@@ -356,6 +372,10 @@ def _set_uc(args: argparse.Namespace) -> None:
         os.environ["GBDP_UC_SILVER_SCHEMA"] = uc_silver
     if uc_gold:
         os.environ["GBDP_UC_GOLD_SCHEMA"] = uc_gold
+    if uc_mode:
+        os.environ["GBDP_UC_MODE"] = uc_mode
+    elif uc_catalog and not os.getenv("GBDP_UC_MODE"):
+        os.environ["GBDP_UC_MODE"] = "managed"
 
 
 if __name__ == "__main__":

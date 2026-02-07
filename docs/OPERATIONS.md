@@ -9,15 +9,25 @@ Use the job specs in:
 - `configs/databricks_backfill_job.json` (manual backfill)
 - `configs/databricks_jobs.yml` (bundle)
 
-Ensure the task has these environment variables:
+If you are using **serverless** compute, you cannot set task env vars. Instead, pass UC settings as CLI params and use managed UC mode:
+```
+--uc-catalog gbdp
+--uc-bronze-schema bronze_gbdp
+--uc-silver-schema silver_gbdp
+--uc-gold-schema gold_gbdp
+--uc-mode managed
+```
+
+For non-serverless clusters, you can set these env vars instead:
 ```
 GBDP_UC_CATALOG=gbdp
 GBDP_UC_BRONZE_SCHEMA=bronze_gbdp
 GBDP_UC_SILVER_SCHEMA=silver_gbdp
 GBDP_UC_GOLD_SCHEMA=gold_gbdp
+GBDP_UC_MODE=external
 ```
 
-The pipeline will automatically run the `register_uc` stage and create UC tables after each run.
+The pipeline runs the `register_uc` stage automatically. In **managed** mode it writes UC-managed tables; in **external** mode it registers LOCATION-based tables.
 
 ## 2) Required Volume Layout
 
@@ -98,7 +108,8 @@ Recommended parameters:
  "--uc-catalog","gbdp",
  "--uc-bronze-schema","bronze_gbdp",
  "--uc-silver-schema","silver_gbdp",
- "--uc-gold-schema","gold_gbdp"]
+ "--uc-gold-schema","gold_gbdp",
+ "--uc-mode","managed"]
 ```
 
 Optional league filter:
@@ -108,7 +119,7 @@ Optional league filter:
 
 ## 6) Registering UC Tables Manually
 
-If you need to register tables outside the pipeline:
+If you need to register LOCATION-based tables outside the pipeline (non-serverless):
 ```
 python src/gbdp/cli.py register-uc \
   --catalog gbdp \
@@ -123,7 +134,7 @@ python src/gbdp/cli.py register-uc \
 
 ## 7) Where Data Appears in UC
 
-After a successful run and UC registration:
+After a successful run:
 - `gbdp.bronze_gbdp.<source>_<entity>` (bronze parsed)
 - `gbdp.silver_gbdp.<source>_<entity>`
 - `gbdp.gold_gbdp.<table>`
@@ -133,8 +144,10 @@ After a successful run and UC registration:
 If volumes look empty:
 - Confirm job parameters use the **full subpaths** (`.../gbdp/bronze`, `.../gbdp/silver`, `.../gbdp/gold`).
 - Confirm the run completed without errors.
-- Confirm UC tables are registered (run `register-uc`).
+- For serverless, ensure `--uc-mode managed` so tables are **written**, not just registered.
 
 If you see DBFS I/O errors:
 - Use the serverless-compatible code path (already implemented).
 - Make sure paths use `dbfs:/Volumes/...` for Spark reads and write configuration.
+If you see UC `LOCATION` errors on serverless:
+- Use managed mode. Serverless does not allow LOCATION-based UC tables.

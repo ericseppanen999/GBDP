@@ -47,7 +47,9 @@
           "--uc-silver-schema",
           "silver_gbdp",
           "--uc-gold-schema",
-          "gold_gbdp"
+          "gold_gbdp",
+          "--uc-mode",
+          "managed"
         ]
       }
     }

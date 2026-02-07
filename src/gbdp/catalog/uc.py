@@ -157,9 +157,16 @@ def _register_gold(
 
 def _create_table(spark, catalog: str, schema: str, table: str, location: str, fmt: str) -> None:
     fmt_upper = "DELTA" if fmt == "delta" else "PARQUET"
+    # Ensure UC-compatible location (no dbfs: scheme)
+    loc = location
+    if isinstance(location, str):
+        if location.startswith("dbfs:/"):
+            loc = "/" + location[len("dbfs:/") :]
+        if location.startswith("/dbfs/"):
+            loc = "/" + location[len("/dbfs/") :]
     spark.sql(
         f"CREATE TABLE IF NOT EXISTS {catalog}.{schema}.{table} "
-        f"USING {fmt_upper} LOCATION '{location}'"
+        f"USING {fmt_upper} LOCATION '{loc}'"
     )
 
 
@@ -248,7 +255,9 @@ def _ensure_dbfs_dir(location: str) -> None:
         # dbutils expects dbfs:/ scheme
         if location.startswith("/Volumes/"):
             dbutils.fs.mkdirs(f"dbfs:{location}")
-        else:
+        elif location.startswith("dbfs:/"):
             dbutils.fs.mkdirs(location)
+        else:
+            return
     except Exception:
         pass

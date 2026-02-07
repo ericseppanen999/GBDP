@@ -39,6 +39,8 @@ resources:
               - silver_gbdp
               - --uc-gold-schema
               - gold_gbdp
+              - --uc-mode
+              - managed
           environment_variables: {}
           email_notifications:
             on_success:

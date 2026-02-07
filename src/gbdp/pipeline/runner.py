@@ -5,6 +5,7 @@ from datetime import datetime, timezone, date, timedelta
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+import os
 import yaml
 
 from gbdp.bronze.cache import ResponseCache
@@ -297,6 +298,12 @@ def _stage_audit(start, end, cfg, writer, cache, force, leagues=None):
 
 
 def _stage_register_uc(start, end, cfg, writer, cache, force, leagues=None):
+    mode = os.getenv("GBDP_UC_MODE", "managed").lower()
+    if mode in {"managed", "serverless"}:
+        from gbdp.catalog.managed_publish import publish_uc_managed_from_env
+
+        publish_uc_managed_from_env(start, end)
+        return
     from gbdp.catalog.uc import register_uc_tables_from_env
 
     register_uc_tables_from_env()
