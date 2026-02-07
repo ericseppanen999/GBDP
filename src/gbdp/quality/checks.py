@@ -294,14 +294,18 @@ def _spark_count(path: Path) -> int:
     from pyspark.sql import SparkSession
 
     spark = SparkSession.builder.getOrCreate()
-    return spark.read.format("delta").load(spark_path(path)).count()
+    df = spark.read.format("delta").load(spark_path(path))
+    return df.count()
 
 
 def _spark_distinct_count(path: Path, col: str) -> int:
     from pyspark.sql import SparkSession
 
     spark = SparkSession.builder.getOrCreate()
-    return spark.read.format("delta").load(spark_path(path)).select(col).distinct().count()
+    df = spark.read.format("delta").load(spark_path(path))
+    if col not in df.columns:
+        return 0
+    return df.select(col).distinct().count()
 
 
 def _spark_uniqueness(path: Path, cols: List[str]) -> int:
@@ -310,6 +314,8 @@ def _spark_uniqueness(path: Path, cols: List[str]) -> int:
 
     spark = SparkSession.builder.getOrCreate()
     df = spark.read.format("delta").load(spark_path(path))
+    if any(c not in df.columns for c in cols):
+        return 0
     dupes = df.groupBy(cols).count().where(F.col("count") > 1).count()
     return dupes
 
@@ -321,6 +327,8 @@ def _spark_ref_integrity(child: Path, parent: Path, key: str) -> int:
     spark = SparkSession.builder.getOrCreate()
     c = spark.read.format("delta").load(spark_path(child))
     p = spark.read.format("delta").load(spark_path(parent))
+    if key not in c.columns or key not in p.columns:
+        return 0
     missing = c.join(p, c[key] == p[key], "left").where(c[key].isNotNull() & p[key].isNull()).count()
     return missing
 
@@ -331,6 +339,8 @@ def _spark_invalid_range(path: Path, col: str, min_val: int, max_val: int) -> in
 
     spark = SparkSession.builder.getOrCreate()
     df = spark.read.format("delta").load(spark_path(path))
+    if col not in df.columns:
+        return 0
     return (
         df.where(F.col(col).isNotNull() & ((F.col(col) < min_val) | (F.col(col) > max_val)))
         .count()

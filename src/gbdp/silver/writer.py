@@ -32,6 +32,8 @@ def _write_delta(rows: List[Dict[str, Any]], out_dir: Path) -> None:
         from pyspark.sql import SparkSession
     except Exception as exc:
         raise RuntimeError("pyspark is required for delta writes") from exc
+    if not rows or all(all(v is None for v in r.values()) for r in rows):
+        rows = [{"empty": True}]
     spark = SparkSession.builder.getOrCreate()
     df = spark.createDataFrame(rows)
     df.write.format("delta").mode("overwrite").save(spark_path(out_dir))

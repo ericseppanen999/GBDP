@@ -985,9 +985,10 @@ def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any
         fmt = storage_format()
         key_cols = _gold_primary_keys().get(table) if fmt == "delta" else None
         if key_cols:
-            empty_row = {k: None for k in key_cols}
+            empty_row = {k: "" for k in key_cols}
             empty_row["dt"] = dt.isoformat()
             empty_row["ingested_at_utc"] = utc_now().isoformat()
+            empty_row["empty"] = True
             rows = [empty_row]
         else:
             rows = [{"empty": True}]
@@ -1015,6 +1016,8 @@ def _write_delta(rows: List[Dict[str, Any]], out_dir: Path, table: str) -> None:
     except Exception as exc:
         raise RuntimeError("pyspark is required for delta writes") from exc
     spark = SparkSession.builder.getOrCreate()
+    if not rows or all(all(v is None for v in r.values()) for r in rows):
+        rows = [{"empty": True}]
     df = spark.createDataFrame(rows)
     key_cols = _gold_primary_keys().get(table)
     if not key_cols:
