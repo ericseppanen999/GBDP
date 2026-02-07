@@ -2,6 +2,11 @@ quality:
   thresholds:
     mlb_pitch_coverage_pct: 0.9
     npb_pbp_coverage_pct: 0.7
+  row_count_min:
+    - table: "gbdp_gold.fact_game"
+      min_count: 1
+    - table: "gbdp_gold.fact_plate_appearance"
+      min_count: 1
   uniqueness:
     - table: "gbdp_gold.fact_game"
       columns: ["game_id"]

@@ -143,6 +143,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--stages", help="Comma-separated list of stages to run (optional)")
     run_p.add_argument("--retries", type=int, default=0, help="Retry count per stage")
     run_p.add_argument("--retry-delay", type=float, default=1.0, help="Retry delay seconds")
+    run_p.add_argument(
+        "--window",
+        choices=["nightly"],
+        help="Override start/end with a built-in window (nightly = last 7 days ending yesterday)",
+    )
 
     backfill_p = sub.add_parser("backfill", help="Backfill pipeline stages (alias of run)")
     backfill_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
@@ -152,6 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_p.add_argument("--stages", help="Comma-separated list of stages to run (optional)")
     backfill_p.add_argument("--retries", type=int, default=0, help="Retry count per stage")
     backfill_p.add_argument("--retry-delay", type=float, default=1.0, help="Retry delay seconds")
+    backfill_p.add_argument(
+        "--window",
+        choices=["nightly"],
+        help="Override start/end with a built-in window (nightly = last 7 days ending yesterday)",
+    )
     return parser
 
 
@@ -181,14 +191,29 @@ def main() -> None:
         uvicorn.run("gbdp.serve.api:app", host=args.host, port=args.port, reload=False)
     if args.cmd == "run":
         stages = args.stages.split(",") if args.stages else None
-        run_pipeline(args.start, args.end, args.sources, args.force, stages, args.retries, args.retry_delay)
+        start, end = _resolve_window(args.start, args.end, args.window)
+        run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay)
     if args.cmd == "backfill":
         stages = args.stages.split(",") if args.stages else None
-        run_pipeline(args.start, args.end, args.sources, args.force, stages, args.retries, args.retry_delay)
+        start, end = _resolve_window(args.start, args.end, args.window)
+        run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay)
 
 
 def _run_pipeline(args: argparse.Namespace) -> None:
     raise RuntimeError("Legacy runner removed. Use `gbdp run` with --stages if needed.")
+
+
+def _resolve_window(start: str, end: str, window: str | None) -> tuple[str, str]:
+    if not window:
+        return start, end
+    from datetime import timedelta
+    from gbdp.utils.time import utc_now
+
+    if window == "nightly":
+        yesterday = (utc_now().date() - timedelta(days=1))
+        start_dt = (yesterday - timedelta(days=6))
+        return start_dt.isoformat(), yesterday.isoformat()
+    return start, end
 
 
 if __name__ == "__main__":

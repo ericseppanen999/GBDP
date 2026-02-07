@@ -78,9 +78,9 @@ def player_stats(player_id: str, window: str | None = None, as_of: str | None = 
 
 @app.get("/run-expectancy")
 def run_expectancy(league: str | None = None, season: int | None = None, as_of: str | None = None):
-    return {"message": "run expectancy not yet computed in gold"}
+    return query("run_expectancy", dt=as_of)
 
 
 @app.get("/breakout-candidates")
 def breakout_candidates(league: str | None = None, season: int | None = None, as_of: str | None = None):
-    return {"message": "breakout candidates not yet computed in gold"}
+    return query("breakout_candidates", dt=as_of)

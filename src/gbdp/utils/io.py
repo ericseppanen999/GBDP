@@ -34,3 +34,7 @@ def include_partition_cols_silver() -> bool:
         "true",
         "yes",
     )
+
+
+def storage_format() -> str:
+    return os.getenv("GBDP_STORAGE_FORMAT", "parquet").lower()

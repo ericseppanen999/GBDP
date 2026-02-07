@@ -67,6 +67,53 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
             }
         )
 
+    # Row count sanity
+    for rule in cfg.get("row_count_min", []):
+        table = rule["table"].split(".")[-1]
+        min_count = int(rule.get("min_count", 0))
+        path = root / "gold" / table / f"dt={dt.isoformat()}"
+        if not path.exists():
+            continue
+        con.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet('{path}/*.parquet')")
+        count = con.execute("SELECT COUNT(*) FROM t").fetchone()[0]
+        results.append(
+            {
+                "check": "row_count_min",
+                "table": table,
+                "count": count,
+                "min_count": min_count,
+                "ok": count >= min_count,
+                "dt": dt.isoformat(),
+            }
+        )
+
+    # Completeness thresholds (coverage of games)
+    thresholds = cfg.get("thresholds", {})
+    if thresholds:
+        game_path = root / "gold" / "fact_game" / f"dt={dt.isoformat()}"
+        if game_path.exists():
+            con.execute(f"CREATE OR REPLACE VIEW games AS SELECT DISTINCT game_id FROM read_parquet('{game_path}/*.parquet')")
+            total_games = con.execute("SELECT COUNT(*) FROM games").fetchone()[0]
+            pitch_path = root / "gold" / "fact_pitch" / f"dt={dt.isoformat()}"
+            if pitch_path.exists() and total_games > 0:
+                con.execute(
+                    f"CREATE OR REPLACE VIEW pitches AS SELECT DISTINCT game_id FROM read_parquet('{pitch_path}/*.parquet')"
+                )
+                with_pitch = con.execute("SELECT COUNT(*) FROM pitches").fetchone()[0]
+                pct = with_pitch / total_games
+                results.append(
+                    {
+                        "check": "pitch_coverage",
+                        "pct": pct,
+                        "threshold": float(thresholds.get("mlb_pitch_coverage_pct", 0)),
+                        "ok": pct >= float(thresholds.get("mlb_pitch_coverage_pct", 0)),
+                        "dt": dt.isoformat(),
+                    }
+                )
+
+    # Schema drift detection for bronze parsed
+    results.extend(_schema_drift_checks(root, dt))
+
     out_dir = root / "gold" / "audit_quality" / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
@@ -81,7 +128,7 @@ def _load_quality_config() -> Dict:
     if not path.exists():
         return {}
     with path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f).get("quality", {})
+    return yaml.safe_load(f).get("quality", {})
 
 
 def _write_parquet(rows: List[Dict[str, object]], path: Path) -> None:
@@ -92,3 +139,50 @@ def _write_parquet(rows: List[Dict[str, object]], path: Path) -> None:
         rows = [{"empty": True}]
     table = pa.Table.from_pylist(rows)
     pq.write_table(table, path, use_dictionary=False)
+
+
+def _schema_drift_checks(root: Path, dt: date) -> List[Dict[str, object]]:
+    import json
+    import pyarrow.parquet as pq
+
+    results: List[Dict[str, object]] = []
+    bronze_root = root / "bronze" / "parsed"
+    if not bronze_root.exists():
+        return results
+    for source_dir in bronze_root.iterdir():
+        if not source_dir.is_dir():
+            continue
+        for entity_dir in source_dir.iterdir():
+            if not entity_dir.is_dir():
+                continue
+            part_dir = entity_dir / f"dt={dt.isoformat()}"
+            if not part_dir.exists():
+                continue
+            files = list(part_dir.glob("*.parquet"))
+            if not files:
+                continue
+            schema = pq.read_schema(files[0])
+            fields = {name: str(schema.field(name).type) for name in schema.names}
+            audit_dir = root / "gold" / "audit_schema" / source_dir.name / entity_dir.name
+            ensure_dir(audit_dir)
+            current_path = audit_dir / f"dt={dt.isoformat()}.json"
+            prev = None
+            prev_files = sorted(audit_dir.glob("dt=*.json"))
+            if prev_files:
+                prev_path = prev_files[-1]
+                try:
+                    prev = json.loads(prev_path.read_text(encoding="utf-8"))
+                except Exception:
+                    prev = None
+            current_path.write_text(json.dumps(fields, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+            if prev and prev != fields:
+                results.append(
+                    {
+                        "check": "schema_drift",
+                        "source": source_dir.name,
+                        "entity": entity_dir.name,
+                        "dt": dt.isoformat(),
+                        "changed": True,
+                    }
+                )
+    return results

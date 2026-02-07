@@ -23,6 +23,7 @@ def resolve_identity(start: str, end: str, root: Path | None = None, force: bool
     }
     for d in daterange(parse_date(start), parse_date(end)):
         outputs.append(_resolve_for_date(root, d, override_map, force))
+        _write_merge_events(root, d, overrides, force)
     return outputs
 
 
@@ -241,3 +242,25 @@ def _write_parquet(rows: List[Dict[str, Any]], path: Path) -> None:
         rows = [{"empty": True}]
     table = pa.Table.from_pylist(rows)
     pq.write_table(table, path, use_dictionary=False)
+
+
+def _write_merge_events(root: Path, dt: date, overrides: List[Dict[str, str]], force: bool) -> None:
+    out_dir = root / "gold" / "merge_events" / f"dt={dt.isoformat()}"
+    ensure_dir(out_dir)
+    out_path = out_dir / "part-00001.parquet"
+    if out_path.exists() and not force:
+        return
+    rows: List[Dict[str, Any]] = []
+    for o in overrides:
+        rows.append(
+            {
+                "entity_type": o.get("entity_type"),
+                "source": o.get("source"),
+                "source_id": o.get("source_id"),
+                "canonical_id": o.get("canonical_id"),
+                "match_method": "manual_override",
+                "notes": o.get("notes"),
+                "dt": dt.isoformat(),
+            }
+        )
+    _write_parquet(rows, out_path)

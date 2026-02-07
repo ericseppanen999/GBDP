@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 import pyarrow.dataset as ds
 
 from gbdp.utils.ids import ulid_from_key
-from gbdp.utils.io import data_root, ensure_dir, stable_json_dumps
+from gbdp.utils.io import data_root, ensure_dir, stable_json_dumps, storage_format
 from gbdp.utils.time import daterange, parse_date
 
 
@@ -37,6 +37,8 @@ def _publish_for_date(root: Path, dt: date, force: bool) -> List[Path]:
     outputs.append(_write_fact_standings(root, dt, bridge, force))
     outputs.append(_write_fact_boxscore_batting(root, dt, bridge, force))
     outputs.append(_write_fact_boxscore_pitching(root, dt, bridge, force))
+    outputs.append(_write_run_expectancy(root, dt, force))
+    outputs.append(_write_breakout_candidates(root, dt, force))
     return outputs
 
 
@@ -356,6 +358,37 @@ def _write_fact_plate_appearance(root: Path, dt: date, bridge: Dict[tuple, str],
                 "dt": dt.isoformat(),
             }
         )
+    # Retrosheet plays
+    for r in _read_silver(root, "retrosheet_local", "game_pbp", dt):
+        event_type = _map_retrosheet_event(r)
+        base_before = _base_state_from_br(r.get("br1_pre"), r.get("br2_pre"), r.get("br3_pre"))
+        base_after = _base_state_from_br(r.get("br1_post"), r.get("br2_post"), r.get("br3_post"))
+        outs_before = r.get("outs_pre")
+        outs_after = r.get("outs_post")
+        outs_on_play = None
+        if outs_before is not None and outs_after is not None:
+            outs_on_play = outs_after - outs_before
+        rows.append(
+            {
+                "pa_id": ulid_from_key(f"pa:retrosheet:{r.get('game_id')}:{r.get('event_id') or r.get('pn') or ''}", dt.isoformat()),
+                "game_id": ulid_from_key(f"game:retrosheet_local:{r.get('game_id')}", dt.isoformat()),
+                "inning": r.get("inning"),
+                "is_top_inning": str(r.get("top_bottom")) in {"0", "Top", "top"},
+                "batting_team_id": bridge.get(("team", "retrosheet_local", str(r.get("batting_team_id")))),
+                "fielding_team_id": bridge.get(("team", "retrosheet_local", str(r.get("pitching_team_id")))),
+                "batter_id": bridge.get(("player", "retrosheet_local", str(r.get("batter_id")))),
+                "pitcher_id": bridge.get(("player", "retrosheet_local", str(r.get("pitcher_id")))),
+                "event_type": event_type,
+                "rbi": r.get("rbi"),
+                "runs_scored_on_play": r.get("runs"),
+                "outs_on_play": outs_on_play,
+                "base_state_before": base_before,
+                "outs_before": outs_before,
+                "base_state_after": base_after,
+                "outs_after": outs_after,
+                "dt": dt.isoformat(),
+            }
+        )
     return _write_gold_table(root, "fact_plate_appearance", dt, rows, force)
 
 
@@ -456,6 +489,57 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
     return _write_gold_table(root, "fact_boxscore_pitching", dt, rows, force)
 
 
+def _write_run_expectancy(root: Path, dt: date, force: bool) -> Path:
+    # Compute RE by base_state_before + outs_before using available runs_scored_on_play
+    import duckdb
+    con = duckdb.connect()
+    path = root / "gold" / "fact_plate_appearance" / f"dt={dt.isoformat()}"
+    if not path.exists():
+        return _write_gold_table(root, "run_expectancy", dt, [], force)
+    con.execute(f"CREATE OR REPLACE VIEW pa AS SELECT * FROM read_parquet('{path}/*.parquet')")
+    rows = con.execute(
+        """
+        SELECT
+          base_state_before,
+          outs_before,
+          AVG(COALESCE(runs_scored_on_play, 0)) AS exp_runs
+        FROM pa
+        WHERE base_state_before IS NOT NULL AND outs_before IS NOT NULL
+        GROUP BY 1,2
+        """
+    ).fetchall()
+    out_rows = [
+        {"base_state": r[0], "outs": r[1], "exp_runs": float(r[2]), "dt": dt.isoformat()}
+        for r in rows
+    ]
+    return _write_gold_table(root, "run_expectancy", dt, out_rows, force)
+
+
+def _write_breakout_candidates(root: Path, dt: date, force: bool) -> Path:
+    # Simple heuristic: top 20 HR on dt from boxscore_batting
+    import duckdb
+    con = duckdb.connect()
+    path = root / "gold" / "fact_boxscore_batting" / f"dt={dt.isoformat()}"
+    if not path.exists():
+        return _write_gold_table(root, "breakout_candidates", dt, [], force)
+    con.execute(f"CREATE OR REPLACE VIEW b AS SELECT * FROM read_parquet('{path}/*.parquet')")
+    rows = con.execute(
+        """
+        SELECT player_id, SUM(hr) as hr, SUM(h) as h, SUM(ab) as ab
+        FROM b
+        WHERE player_id IS NOT NULL
+        GROUP BY 1
+        ORDER BY hr DESC, h DESC
+        LIMIT 20
+        """
+    ).fetchall()
+    out_rows = [
+        {"player_id": r[0], "hr": int(r[1] or 0), "h": int(r[2] or 0), "ab": int(r[3] or 0), "dt": dt.isoformat()}
+        for r in rows
+    ]
+    return _write_gold_table(root, "breakout_candidates", dt, out_rows, force)
+
+
 def _map_event_type(value: Any) -> str:
     if not value:
         return "UNKNOWN"
@@ -481,6 +565,43 @@ def _map_event_type(value: Any) -> str:
     return "UNKNOWN"
 
 
+def _map_retrosheet_event(r: Dict[str, Any]) -> str:
+    # Use explicit flags from plays.csv if present
+    def _is_one(key: str) -> bool:
+        v = r.get(key)
+        return str(v) == "1"
+
+    if _is_one("hr"):
+        return "HR"
+    if _is_one("triple"):
+        return "3B"
+    if _is_one("double"):
+        return "2B"
+    if _is_one("single"):
+        return "1B"
+    if _is_one("walk"):
+        return "BB"
+    if _is_one("hbp"):
+        return "HBP"
+    if _is_one("k"):
+        return "K"
+    if _is_one("roe"):
+        return "ERROR"
+    if _is_one("fc"):
+        return "FC"
+    if _is_one("sf"):
+        return "SAC"
+    if _is_one("sh"):
+        return "SAC"
+    if _is_one("gdp"):
+        return "DP"
+    if _is_one("tp"):
+        return "TP"
+    if _is_one("othout") or _is_one("noout"):
+        return "OUT"
+    return "UNKNOWN"
+
+
 def _base_state_from_statcast(r: Dict[str, Any]) -> int | None:
     on_1b = r.get("on_1b")
     on_2b = r.get("on_2b")
@@ -494,27 +615,62 @@ def _base_state_from_statcast(r: Dict[str, Any]) -> int | None:
         return None
 
 
+def _base_state_from_br(br1: Any, br2: Any, br3: Any) -> int | None:
+    def _present(v: Any) -> int:
+        if v in (None, "", "0", "NA"):
+            return 0
+        return 1
+    return _present(br1) + (_present(br2) * 2) + (_present(br3) * 4)
+
+
 def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any]], force: bool) -> Path:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
     out_dir = root / "gold" / table / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
+    out_path = out_dir / "part-00001.parquet"
     if out_path.exists() and not force:
         return out_path
     if not rows:
         rows = [{"empty": True}]
-    table_data = pa.Table.from_pylist(rows)
-    out_path = out_dir / "part-00001.parquet"
-    pq.write_table(table_data, out_path, use_dictionary=False)
+    fmt = storage_format()
+    if fmt == "parquet":
+        table_data = pa.Table.from_pylist(rows)
+        pq.write_table(table_data, out_path, use_dictionary=False)
+    elif fmt == "delta":
+        _write_delta(rows, out_dir)
+    else:
+        raise ValueError(f"Unsupported storage format: {fmt}")
     return out_path
+
+
+def _write_delta(rows: List[Dict[str, Any]], out_dir: Path) -> None:
+    try:
+        from pyspark.sql import SparkSession
+    except Exception as exc:
+        raise RuntimeError("pyspark is required for delta writes") from exc
+    spark = SparkSession.builder.getOrCreate()
+    df = spark.createDataFrame(rows)
+    df.write.format("delta").mode("overwrite").save(str(out_dir))
 
 
 def _read_silver(root: Path, source: str, entity: str, dt: date) -> List[Dict[str, Any]]:
     path = root / "silver" / source / entity / f"dt={dt.isoformat()}"
     if not path.exists():
         return []
-    return ds.dataset(path, format="parquet").to_table().to_pylist()
+    fmt = storage_format()
+    if fmt == "parquet":
+        return ds.dataset(path, format="parquet").to_table().to_pylist()
+    if fmt == "delta":
+        try:
+            from pyspark.sql import SparkSession
+        except Exception as exc:
+            raise RuntimeError("pyspark is required for delta reads") from exc
+        spark = SparkSession.builder.getOrCreate()
+        df = spark.read.format("delta").load(str(path))
+        return [row.asDict() for row in df.collect()]
+    raise ValueError(f"Unsupported storage format: {fmt}")
 
 
 def _league_id_for_code(code: str) -> str | None:
