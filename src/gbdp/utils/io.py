@@ -110,6 +110,18 @@ def dbfs_uri(path: Path) -> str:
     return str(path)
 
 
+def uc_location(path: Path) -> str:
+    # Unity Catalog table LOCATION should use /Volumes/... (no scheme)
+    p = path.as_posix()
+    if p.startswith("/dbfs/"):
+        p = "/" + p[len("/dbfs/") :]
+    if p.startswith("dbfs:/"):
+        p = "/" + p[len("dbfs:/") :]
+    if p.startswith("/Volumes/"):
+        return p
+    return p
+
+
 def _from_dbfs_uri(uri: str) -> Path:
     if uri.startswith("dbfs:/"):
         return Path("/dbfs/" + uri[len("dbfs:/") :])

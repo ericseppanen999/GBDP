@@ -14,6 +14,7 @@ from gbdp.utils.io import (
     path_exists,
     silver_root,
     storage_format,
+    uc_location,
 )
 
 
@@ -98,15 +99,15 @@ def _register_bronze_parsed(
             for entity_dir in list_dir(source_dir, dirs_only=True):
                 entity = entity_dir.name
                 table = f"{source}_{entity}"
-                location = dbfs_uri(entity_dir)
-                spark.sql(
-                    f"CREATE TABLE IF NOT EXISTS {catalog}.{schema}.{table} "
-                    f"USING PARQUET LOCATION '{location}'"
-                )
+            location = uc_location(entity_dir)
+            spark.sql(
+                f"CREATE TABLE IF NOT EXISTS {catalog}.{schema}.{table} "
+                f"USING PARQUET LOCATION '{location}'"
+            )
                 created.append((schema, table, location))
     requests_dir = bronze_path / "requests"
     if path_exists(requests_dir):
-        location = dbfs_uri(requests_dir)
+        location = uc_location(requests_dir)
         spark.sql(
             f"CREATE TABLE IF NOT EXISTS {catalog}.{schema}.requests "
             f"USING PARQUET LOCATION '{location}'"
@@ -130,7 +131,7 @@ def _register_silver(
         for entity_dir in list_dir(source_dir, dirs_only=True):
             entity = entity_dir.name
             table = f"{source}_{entity}"
-            location = dbfs_uri(entity_dir)
+            location = uc_location(entity_dir)
             _create_table(spark, catalog, schema, table, location, fmt)
             created.append((schema, table, location))
     return created
@@ -148,7 +149,7 @@ def _register_gold(
     created: List[Tuple[str, str, str]] = []
     for table_dir in list_dir(gold_path, dirs_only=True):
         table = table_dir.name
-        location = dbfs_uri(table_dir)
+        location = uc_location(table_dir)
         _create_table(spark, catalog, schema, table, location, fmt)
         created.append((schema, table, location))
     return created
@@ -180,7 +181,7 @@ def _register_expected_tables(
         for entity in endpoints.keys():
             table = f"{source}_{entity}"
             # bronze parsed
-            bronze_loc = dbfs_uri(bronze_path / "parsed" / source / entity)
+            bronze_loc = uc_location(bronze_path / "parsed" / source / entity)
             _ensure_dbfs_dir(bronze_loc)
             spark.sql(
                 f"CREATE TABLE IF NOT EXISTS {catalog}.{bronze_schema}.{table} "
@@ -188,13 +189,13 @@ def _register_expected_tables(
             )
             created.append((bronze_schema, table, bronze_loc))
             # silver
-            silver_loc = dbfs_uri(silver_path / source / entity)
+            silver_loc = uc_location(silver_path / source / entity)
             _ensure_dbfs_dir(silver_loc)
             _create_table(spark, catalog, silver_schema, table, silver_loc, fmt)
             created.append((silver_schema, table, silver_loc))
     # gold fixed list
     for table in _expected_gold_tables():
-        gold_loc = dbfs_uri(gold_path / table)
+        gold_loc = uc_location(gold_path / table)
         _ensure_dbfs_dir(gold_loc)
         _create_table(spark, catalog, gold_schema, table, gold_loc, fmt)
         created.append((gold_schema, table, gold_loc))
@@ -244,6 +245,10 @@ def _ensure_dbfs_dir(location: str) -> None:
     spark = SparkSession.builder.getOrCreate()
     dbutils = DBUtils(spark)
     try:
-        dbutils.fs.mkdirs(location)
+        # dbutils expects dbfs:/ scheme
+        if location.startswith("/Volumes/"):
+            dbutils.fs.mkdirs(f"dbfs:{location}")
+        else:
+            dbutils.fs.mkdirs(location)
     except Exception:
         pass
