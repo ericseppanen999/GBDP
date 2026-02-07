@@ -83,13 +83,16 @@ def _dbfs_fuse_available() -> bool:
 
 
 def _is_dbfs_path(path: Path) -> bool:
-    return path.as_posix().startswith("/dbfs/")
+    p = path.as_posix()
+    return p.startswith("/dbfs/") or p.startswith("/Volumes/")
 
 
 def _to_dbfs_uri(path: Path) -> str:
     path_str = path.as_posix()
     if path_str.startswith("/dbfs/"):
         return "dbfs:/" + path_str[len("/dbfs/") :]
+    if path_str.startswith("/Volumes/"):
+        return "dbfs:/" + path_str.lstrip("/")
     return path_str
 
 
