@@ -249,7 +249,7 @@ def write_bytes(path: Path, data: bytes, force: bool = False) -> Path:
             with open(tmp.name, "wb") as f:
                 f.write(data)
             dbutils.fs.mkdirs(_to_dbfs_uri(path.parent))
-        _dbfs_cp(f"file:{tmp.name}", _to_dbfs_uri(path), True)
+            _dbfs_cp(f"file:{tmp.name}", _to_dbfs_uri(path), True)
         finally:
             try:
                 os.unlink(tmp.name)
