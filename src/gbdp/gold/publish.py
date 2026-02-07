@@ -1072,8 +1072,13 @@ def _read_silver(root: Path, source: str, entity: str, dt: date) -> List[Dict[st
         except Exception as exc:
             raise RuntimeError("pyspark is required for delta reads") from exc
         spark = SparkSession.builder.getOrCreate()
-        df = spark.read.format("delta").load(spark_path(path))
-        return [row.asDict() for row in df.collect()]
+        try:
+            df = spark.read.format("delta").load(spark_path(path))
+            return [row.asDict() for row in df.collect()]
+        except Exception:
+            # Fallback to parquet when delta log is missing (legacy writes)
+            df = spark.read.format("parquet").load(spark_path(path))
+            return [row.asDict() for row in df.collect()]
     raise ValueError(f"Unsupported storage format: {fmt}")
 
 

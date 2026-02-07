@@ -35,7 +35,7 @@ def manual_root() -> Path:
 
 
 def ensure_dir(path: Path) -> None:
-    if _is_dbfs_path(path) and (_force_dbutils() or not _dbfs_fuse_available()):
+    if _needs_dbutils(path):
         dbutils = _dbutils_fs()
         if dbutils is None:
             raise RuntimeError("dbutils is required to create DBFS directories")
@@ -102,6 +102,17 @@ def _force_dbutils() -> bool:
 def _is_dbfs_path(path: Path) -> bool:
     p = path.as_posix()
     return p.startswith("/dbfs/") or p.startswith("/Volumes/")
+
+
+def _needs_dbutils(path: Path) -> bool:
+    if not _is_dbfs_path(path):
+        return False
+    if _force_dbutils():
+        return True
+    p = path.as_posix()
+    if p.startswith("/dbfs/Volumes") or p.startswith("/Volumes/"):
+        return True
+    return not _dbfs_fuse_available()
 
 
 def _to_dbfs_uri(path: Path) -> str:
@@ -181,7 +192,7 @@ def spark_path(path: Path) -> str:
 
 
 def path_exists(path: Path) -> bool:
-    if _is_dbfs_path(path) and (_force_dbutils() or not _dbfs_fuse_available()):
+    if _needs_dbutils(path):
         dbutils = _dbutils_fs()
         if dbutils is None:
             return False
@@ -206,7 +217,7 @@ def path_exists(path: Path) -> bool:
 
 
 def list_dir(path: Path, dirs_only: bool = False) -> List[Path]:
-    if _is_dbfs_path(path) and (_force_dbutils() or not _dbfs_fuse_available()):
+    if _needs_dbutils(path):
         dbutils = _dbutils_fs()
         if dbutils is None:
             return []
@@ -238,7 +249,7 @@ def list_dir(path: Path, dirs_only: bool = False) -> List[Path]:
 
 
 def file_size(path: Path) -> int | None:
-    if _is_dbfs_path(path) and (_force_dbutils() or not _dbfs_fuse_available()):
+    if _needs_dbutils(path):
         dbutils = _dbutils_fs()
         if dbutils is None:
             return None
