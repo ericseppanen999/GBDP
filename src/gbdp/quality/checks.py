@@ -11,16 +11,18 @@ from gbdp.utils.io import data_root, ensure_dir
 from gbdp.utils.time import daterange, parse_date
 
 
-def run_quality_checks(start: str, end: str, root: Path | None = None) -> List[Path]:
+def run_quality_checks(
+    start: str, end: str, root: Path | None = None, force: bool = False
+) -> List[Path]:
     root = root or data_root()
     outputs: List[Path] = []
     cfg = _load_quality_config()
     for d in daterange(parse_date(start), parse_date(end)):
-        outputs.append(_run_for_date(root, d, cfg))
+        outputs.append(_run_for_date(root, d, cfg, force))
     return outputs
 
 
-def _run_for_date(root: Path, dt: date, cfg: Dict) -> Path:
+def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
     con = duckdb.connect()
     results: List[Dict[str, object]] = []
 
@@ -68,6 +70,8 @@ def _run_for_date(root: Path, dt: date, cfg: Dict) -> Path:
     out_dir = root / "gold" / "audit_quality" / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
+    if out_path.exists() and not force:
+        return out_path
     _write_parquet(results, out_path)
     return out_path
 
@@ -88,4 +92,3 @@ def _write_parquet(rows: List[Dict[str, object]], path: Path) -> None:
         rows = [{"empty": True}]
     table = pa.Table.from_pylist(rows)
     pq.write_table(table, path, use_dictionary=False)
-

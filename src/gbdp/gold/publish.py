@@ -12,31 +12,31 @@ from gbdp.utils.io import data_root, ensure_dir, stable_json_dumps
 from gbdp.utils.time import daterange, parse_date
 
 
-def publish_gold(start: str, end: str, root: Path | None = None) -> List[Path]:
+def publish_gold(start: str, end: str, root: Path | None = None, force: bool = False) -> List[Path]:
     root = root or data_root()
     outputs: List[Path] = []
     for d in daterange(parse_date(start), parse_date(end)):
-        outputs.extend(_publish_for_date(root, d))
+        outputs.extend(_publish_for_date(root, d, force))
     return outputs
 
 
-def _publish_for_date(root: Path, dt: date) -> List[Path]:
+def _publish_for_date(root: Path, dt: date, force: bool) -> List[Path]:
     outputs: List[Path] = []
     bridge = _read_gold_bridge(root, dt)
 
-    outputs.append(_write_dim_league(root, dt))
-    outputs.append(_write_dim_team(root, dt, bridge))
-    outputs.append(_write_dim_player(root, dt, bridge))
-    outputs.append(_write_dim_season(root, dt))
+    outputs.append(_write_dim_league(root, dt, force))
+    outputs.append(_write_dim_team(root, dt, bridge, force))
+    outputs.append(_write_dim_player(root, dt, bridge, force))
+    outputs.append(_write_dim_season(root, dt, force))
 
-    outputs.append(_write_fact_game(root, dt, bridge))
-    outputs.append(_write_fact_roster(root, dt, bridge))
-    outputs.append(_write_fact_transaction(root, dt, bridge))
-    outputs.append(_write_fact_pitch(root, dt, bridge))
-    outputs.append(_write_fact_plate_appearance(root, dt, bridge))
-    outputs.append(_write_fact_standings(root, dt, bridge))
-    outputs.append(_write_fact_boxscore_batting(root, dt, bridge))
-    outputs.append(_write_fact_boxscore_pitching(root, dt, bridge))
+    outputs.append(_write_fact_game(root, dt, bridge, force))
+    outputs.append(_write_fact_roster(root, dt, bridge, force))
+    outputs.append(_write_fact_transaction(root, dt, bridge, force))
+    outputs.append(_write_fact_pitch(root, dt, bridge, force))
+    outputs.append(_write_fact_plate_appearance(root, dt, bridge, force))
+    outputs.append(_write_fact_standings(root, dt, bridge, force))
+    outputs.append(_write_fact_boxscore_batting(root, dt, bridge, force))
+    outputs.append(_write_fact_boxscore_pitching(root, dt, bridge, force))
     return outputs
 
 
@@ -48,7 +48,7 @@ def _read_gold_bridge(root: Path, dt: date) -> Dict[tuple, str]:
     return {(r["entity_type"], r["source"], r["source_id"]): r["canonical_id"] for r in data}
 
 
-def _write_dim_league(root: Path, dt: date) -> Path:
+def _write_dim_league(root: Path, dt: date, force: bool) -> Path:
     leagues_path = Path("configs/leagues.yaml")
     if leagues_path.exists():
         import yaml
@@ -70,10 +70,10 @@ def _write_dim_league(root: Path, dt: date) -> Path:
                 "dt": dt.isoformat(),
             }
         )
-    return _write_gold_table(root, "dim_league", dt, rows)
+    return _write_gold_table(root, "dim_league", dt, rows, force)
 
 
-def _write_dim_team(root: Path, dt: date, bridge: Dict[tuple, str]) -> Path:
+def _write_dim_team(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
     for r in _read_silver(root, "mlb_statsapi", "games", dt):
         rows.extend(_team_rows_from_game(r, "MLB", bridge, "mlb_statsapi"))
@@ -84,7 +84,7 @@ def _write_dim_team(root: Path, dt: date, bridge: Dict[tuple, str]) -> Path:
     for r in _read_silver(root, "retrosheet_local", "games", dt):
         rows.extend(_team_rows_from_game(r, "MLB", bridge, "retrosheet_local"))
     dedup = {(r["team_id"], r["team_name"]): r for r in rows}
-    return _write_gold_table(root, "dim_team", dt, list(dedup.values()))
+    return _write_gold_table(root, "dim_team", dt, list(dedup.values()), force)
 
 
 def _team_rows_from_game(row: Dict[str, Any], league_code: str, bridge: Dict[tuple, str], source: str):
@@ -116,7 +116,7 @@ def _team_rows_from_game(row: Dict[str, Any], league_code: str, bridge: Dict[tup
     return out
 
 
-def _write_dim_player(root: Path, dt: date, bridge: Dict[tuple, str]) -> Path:
+def _write_dim_player(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
     for r in _read_silver(root, "mlb_statsapi", "rosters", dt):
         rows.append(_player_row(r, "MLB", bridge, "mlb_statsapi"))
@@ -127,7 +127,7 @@ def _write_dim_player(root: Path, dt: date, bridge: Dict[tuple, str]) -> Path:
     for r in _read_silver(root, "retrosheet_local", "rosters", dt):
         rows.append(_player_row(r, "MLB", bridge, "retrosheet_local"))
     dedup = {r["player_id"]: r for r in rows if r.get("player_id")}
-    return _write_gold_table(root, "dim_player", dt, list(dedup.values()))
+    return _write_gold_table(root, "dim_player", dt, list(dedup.values()), force)
 
 
 def _player_row(r: Dict[str, Any], league_code: str, bridge: Dict[tuple, str], source: str) -> Dict[str, Any]:
@@ -156,7 +156,7 @@ def _player_row(r: Dict[str, Any], league_code: str, bridge: Dict[tuple, str], s
     }
 
 
-def _write_dim_season(root: Path, dt: date) -> Path:
+def _write_dim_season(root: Path, dt: date, force: bool) -> Path:
     year = dt.year
     rows = [
         {
@@ -187,16 +187,16 @@ def _write_dim_season(root: Path, dt: date) -> Path:
             "dt": dt.isoformat(),
         },
     ]
-    return _write_gold_table(root, "dim_season", dt, rows)
+    return _write_gold_table(root, "dim_season", dt, rows, force)
 
 
-def _write_fact_game(root: Path, dt: date, bridge: Dict[tuple, str]) -> Path:
+def _write_fact_game(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
     rows.extend(_fact_game_from_silver(root, dt, "mlb_statsapi", "MLB", bridge))
     rows.extend(_fact_game_from_silver(root, dt, "npb_spaia", "NPB", bridge))
     rows.extend(_fact_game_from_silver(root, dt, "indy_local", "INDY", bridge))
     rows.extend(_fact_game_from_silver(root, dt, "retrosheet_local", "MLB", bridge))
-    return _write_gold_table(root, "fact_game", dt, rows)
+    return _write_gold_table(root, "fact_game", dt, rows, force)
 
 
 def _fact_game_from_silver(root: Path, dt: date, source: str, league_code: str, bridge: Dict[tuple, str]):
@@ -226,7 +226,7 @@ def _fact_game_from_silver(root: Path, dt: date, source: str, league_code: str, 
     return rows
 
 
-def _write_fact_roster(root: Path, dt: date, bridge: Dict[tuple, str]) -> Path:
+def _write_fact_roster(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
     for r in _read_silver(root, "mlb_statsapi", "rosters", dt):
         rows.append(_fact_roster_row(r, "mlb_statsapi", "MLB", bridge, dt))
@@ -236,7 +236,7 @@ def _write_fact_roster(root: Path, dt: date, bridge: Dict[tuple, str]) -> Path:
         rows.append(_fact_roster_row(r, "indy_local", "INDY", bridge, dt))
     for r in _read_silver(root, "retrosheet_local", "rosters", dt):
         rows.append(_fact_roster_row(r, "retrosheet_local", "MLB", bridge, dt))
-    return _write_gold_table(root, "fact_roster", dt, rows)
+    return _write_gold_table(root, "fact_roster", dt, rows, force)
 
 
 def _fact_roster_row(r: Dict[str, Any], source: str, league_code: str, bridge: Dict[tuple, str], dt: date):
@@ -254,7 +254,7 @@ def _fact_roster_row(r: Dict[str, Any], source: str, league_code: str, bridge: D
     }
 
 
-def _write_fact_transaction(root: Path, dt: date, bridge: Dict[tuple, str]) -> Path:
+def _write_fact_transaction(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
     for r in _read_silver(root, "mlb_statsapi", "transactions", dt):
         rows.append(
@@ -270,10 +270,10 @@ def _write_fact_transaction(root: Path, dt: date, bridge: Dict[tuple, str]) -> P
                 "source": "mlb_statsapi",
             }
         )
-    return _write_gold_table(root, "fact_transaction", dt, rows)
+    return _write_gold_table(root, "fact_transaction", dt, rows, force)
 
 
-def _write_fact_pitch(root: Path, dt: date, bridge: Dict[tuple, str]) -> Path:
+def _write_fact_pitch(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
     for r in _read_silver(root, "mlb_statcast", "pitches", dt):
         game_pk = r.get("game_pk")
@@ -300,10 +300,10 @@ def _write_fact_pitch(root: Path, dt: date, bridge: Dict[tuple, str]) -> Path:
                 "dt": dt.isoformat(),
             }
         )
-    return _write_gold_table(root, "fact_pitch", dt, rows)
+    return _write_gold_table(root, "fact_pitch", dt, rows, force)
 
 
-def _write_fact_plate_appearance(root: Path, dt: date, bridge: Dict[tuple, str]) -> Path:
+def _write_fact_plate_appearance(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
     # MLB from statcast (dedup by pa_id)
     pa_map: Dict[str, Dict[str, Any]] = {}
@@ -356,10 +356,10 @@ def _write_fact_plate_appearance(root: Path, dt: date, bridge: Dict[tuple, str])
                 "dt": dt.isoformat(),
             }
         )
-    return _write_gold_table(root, "fact_plate_appearance", dt, rows)
+    return _write_gold_table(root, "fact_plate_appearance", dt, rows, force)
 
 
-def _write_fact_standings(root: Path, dt: date, bridge: Dict[tuple, str]) -> Path:
+def _write_fact_standings(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
     for r in _read_silver(root, "npb_spaia", "standings", dt):
         rows.append(
@@ -375,10 +375,10 @@ def _write_fact_standings(root: Path, dt: date, bridge: Dict[tuple, str]) -> Pat
                 "dt": dt.isoformat(),
             }
         )
-    return _write_gold_table(root, "fact_standings", dt, rows)
+    return _write_gold_table(root, "fact_standings", dt, rows, force)
 
 
-def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str]) -> Path:
+def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
     for r in _read_silver(root, "indy_local", "boxscore_batting", dt):
         rows.append(
@@ -416,10 +416,10 @@ def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str])
                 "dt": dt.isoformat(),
             }
         )
-    return _write_gold_table(root, "fact_boxscore_batting", dt, rows)
+    return _write_gold_table(root, "fact_boxscore_batting", dt, rows, force)
 
 
-def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]) -> Path:
+def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
     for r in _read_silver(root, "indy_local", "boxscore_pitching", dt):
         rows.append(
@@ -453,7 +453,7 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
                 "dt": dt.isoformat(),
             }
         )
-    return _write_gold_table(root, "fact_boxscore_pitching", dt, rows)
+    return _write_gold_table(root, "fact_boxscore_pitching", dt, rows, force)
 
 
 def _map_event_type(value: Any) -> str:
@@ -494,12 +494,14 @@ def _base_state_from_statcast(r: Dict[str, Any]) -> int | None:
         return None
 
 
-def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any]]) -> Path:
+def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any]], force: bool) -> Path:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
     out_dir = root / "gold" / table / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
+    if out_path.exists() and not force:
+        return out_path
     if not rows:
         rows = [{"empty": True}]
     table_data = pa.Table.from_pylist(rows)

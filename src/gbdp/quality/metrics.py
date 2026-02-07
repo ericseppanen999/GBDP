@@ -9,7 +9,7 @@ import duckdb
 from gbdp.utils.io import data_root, ensure_dir
 
 
-def write_run_audit(run_id: str, dt: str, status: str) -> Path:
+def write_run_audit(run_id: str, dt: str, status: str, force: bool = False) -> Path:
     root = data_root()
     metrics = _collect_row_counts(root, dt)
     row = {
@@ -24,6 +24,8 @@ def write_run_audit(run_id: str, dt: str, status: str) -> Path:
     out_dir = root / "gold" / "audit_pipeline_runs" / f"dt={dt}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
+    if out_path.exists() and not force:
+        return out_path
     _write_parquet([row], out_path)
     return out_path
 
@@ -53,4 +55,3 @@ def _write_parquet(rows: List[Dict], path: Path) -> None:
         rows = [{"empty": True}]
     table = pa.Table.from_pylist(rows)
     pq.write_table(table, path, use_dictionary=False)
-

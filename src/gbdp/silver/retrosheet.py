@@ -11,15 +11,17 @@ from gbdp.utils.io import data_root, ensure_dir, include_partition_cols_silver
 from gbdp.utils.time import daterange, parse_date
 
 
-def normalize_retrosheet(entity: str, start: str, end: str, root: Path | None = None) -> List[Path]:
+def normalize_retrosheet(
+    entity: str, start: str, end: str, root: Path | None = None, force: bool = False
+) -> List[Path]:
     root = root or data_root()
     outputs: List[Path] = []
     for d in daterange(parse_date(start), parse_date(end)):
-        outputs.append(_normalize_entity(root, entity, d))
+        outputs.append(_normalize_entity(root, entity, d, force))
     return outputs
 
 
-def _normalize_entity(root: Path, entity: str, dt: date) -> Path:
+def _normalize_entity(root: Path, entity: str, dt: date, force: bool) -> Path:
     path = root / "bronze" / "parsed" / "retrosheet_local" / entity / f"dt={dt.isoformat()}"
     rows: List[Dict[str, Any]] = []
     if path.exists():
@@ -45,7 +47,7 @@ def _normalize_entity(root: Path, entity: str, dt: date) -> Path:
                 row["dt"] = dt.isoformat()
                 row["source"] = "retrosheet_local"
             out_rows.append(row)
-        return _write(root, "games", dt, out_rows)
+        return _write(root, "games", dt, out_rows, force)
 
     if entity == "allplayers":
         include_partition_cols = include_partition_cols_silver()
@@ -63,7 +65,7 @@ def _normalize_entity(root: Path, entity: str, dt: date) -> Path:
                 row["dt"] = dt.isoformat()
                 row["source"] = "retrosheet_local"
             out_rows.append(row)
-        return _write(root, "rosters", dt, out_rows)
+        return _write(root, "rosters", dt, out_rows, force)
 
     if entity == "batting":
         include_partition_cols = include_partition_cols_silver()
@@ -87,7 +89,7 @@ def _normalize_entity(root: Path, entity: str, dt: date) -> Path:
                 row["dt"] = dt.isoformat()
                 row["source"] = "retrosheet_local"
             out_rows.append(row)
-        return _write(root, "boxscore_batting", dt, out_rows)
+        return _write(root, "boxscore_batting", dt, out_rows, force)
 
     if entity == "pitching":
         include_partition_cols = include_partition_cols_silver()
@@ -109,7 +111,7 @@ def _normalize_entity(root: Path, entity: str, dt: date) -> Path:
                 row["dt"] = dt.isoformat()
                 row["source"] = "retrosheet_local"
             out_rows.append(row)
-        return _write(root, "boxscore_pitching", dt, out_rows)
+        return _write(root, "boxscore_pitching", dt, out_rows, force)
 
     if entity == "plays":
         include_partition_cols = include_partition_cols_silver()
@@ -139,21 +141,21 @@ def _normalize_entity(root: Path, entity: str, dt: date) -> Path:
                 row["dt"] = dt.isoformat()
                 row["source"] = "retrosheet_local"
             out_rows.append(row)
-        return _write(root, "game_pbp", dt, out_rows)
+        return _write(root, "game_pbp", dt, out_rows, force)
 
     if entity == "teamstats":
-        return _write(root, "teamstats", dt, rows)
+        return _write(root, "teamstats", dt, rows, force)
 
     if entity == "fielding":
-        return _write(root, "fielding", dt, rows)
+        return _write(root, "fielding", dt, rows, force)
 
     raise ValueError(f"Unsupported retrosheet entity: {entity}")
 
 
-def _write(root: Path, entity: str, dt: date, rows: List[Dict[str, Any]]) -> Path:
+def _write(root: Path, entity: str, dt: date, rows: List[Dict[str, Any]], force: bool) -> Path:
     out_dir = root / "silver" / "retrosheet_local" / entity / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
-    return write_parquet(rows, out_dir / "part-00001.parquet")
+    return write_parquet(rows, out_dir / "part-00001.parquet", force=force)
 
 
 def _to_date(value: Any) -> str | None:

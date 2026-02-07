@@ -53,11 +53,13 @@ class BronzeWriter:
             / f"dt={payload.dt}"
         )
 
-    def write_raw(self, payload: RawPayload) -> Path:
+    def write_raw(self, payload: RawPayload, force: bool = False) -> Path:
         path = self._raw_path(payload)
         ensure_dir(path)
         filename = f"{payload.checksum}.json.gz"
         full_path = path / filename
+        if full_path.exists() and not force:
+            return full_path
         record = {
             "source": payload.source,
             "entity": payload.entity,
@@ -74,12 +76,14 @@ class BronzeWriter:
             json.dump(record, f, ensure_ascii=True)
         return full_path
 
-    def write_parsed(self, payload: RawPayload, records: Iterable[Dict[str, Any]]) -> Path:
+    def write_parsed(self, payload: RawPayload, records: Iterable[Dict[str, Any]], force: bool = False) -> Path:
         path = self._parsed_path(payload)
         ensure_dir(path)
         table = self._to_table(payload, records)
         filename = f"{payload.checksum}.parquet"
         full_path = path / filename
+        if full_path.exists() and not force:
+            return full_path
         pq.write_table(table, full_path, use_dictionary=False)
         return full_path
 

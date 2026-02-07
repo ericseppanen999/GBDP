@@ -14,7 +14,7 @@ from gbdp.utils.io import data_root, ensure_dir
 from gbdp.utils.time import daterange, parse_date
 
 
-def resolve_identity(start: str, end: str, root: Path | None = None) -> List[Path]:
+def resolve_identity(start: str, end: str, root: Path | None = None, force: bool = False) -> List[Path]:
     root = root or data_root()
     outputs: List[Path] = []
     overrides = load_manual_overrides(Path("manual_entity_links.csv"))
@@ -22,11 +22,11 @@ def resolve_identity(start: str, end: str, root: Path | None = None) -> List[Pat
         (o["entity_type"], o["source"], o["source_id"]): o["canonical_id"] for o in overrides
     }
     for d in daterange(parse_date(start), parse_date(end)):
-        outputs.append(_resolve_for_date(root, d, override_map))
+        outputs.append(_resolve_for_date(root, d, override_map, force))
     return outputs
 
 
-def _resolve_for_date(root: Path, dt: date, overrides: Dict[tuple, str]) -> Path:
+def _resolve_for_date(root: Path, dt: date, overrides: Dict[tuple, str], force: bool) -> Path:
     records: List[Dict[str, Any]] = []
     records.extend(_collect_player_sources(root, dt))
     records.extend(_collect_team_sources(root, dt))
@@ -77,6 +77,8 @@ def _resolve_for_date(root: Path, dt: date, overrides: Dict[tuple, str]) -> Path
     out_dir = root / "gold" / "bridge_source_ids" / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
+    if out_path.exists() and not force:
+        return out_path
     _write_parquet(bridge_rows, out_path)
     return out_path
 

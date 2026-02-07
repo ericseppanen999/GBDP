@@ -21,6 +21,7 @@ from gbdp.identity.resolver import resolve_identity
 from gbdp.gold.publish import publish_gold
 from gbdp.quality.checks import run_quality_checks
 from gbdp.quality.metrics import write_run_audit
+from gbdp.pipeline.runner import run_pipeline
 from gbdp.utils.io import data_root
 from gbdp.utils.logging import get_logger
 
@@ -60,7 +61,7 @@ def ingest(args: argparse.Namespace) -> None:
     for partition in partitions:
         payload = connector.fetch_partition(partition)
         records = connector.parse_payload(payload)
-        connector.write_bronze(payload, records)
+        connector.write_bronze(payload, records, force=args.force)
         connector.emit_watermark(partition, "ok")
 
 
@@ -82,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
     ingest_p.add_argument("--end", required=True, help="End date YYYY-MM-DD")
     ingest_p.add_argument("--sources", default="configs/sources.yaml", help="Path to sources.yaml")
+    ingest_p.add_argument("--force", action="store_true", help="Overwrite existing bronze outputs")
 
     silver_p = sub.add_parser("silver", help="Normalize bronze to silver")
     silver_p.add_argument(
@@ -112,18 +114,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     silver_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
     silver_p.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    silver_p.add_argument("--force", action="store_true", help="Overwrite existing silver outputs")
 
     identity_p = sub.add_parser("identity", help="Resolve identity and build bridge table")
     identity_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
     identity_p.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    identity_p.add_argument("--force", action="store_true", help="Overwrite existing bridge outputs")
 
     gold_p = sub.add_parser("gold", help="Publish gold dims/facts")
     gold_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
     gold_p.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    gold_p.add_argument("--force", action="store_true", help="Overwrite existing gold outputs")
 
     quality_p = sub.add_parser("quality", help="Run quality checks")
     quality_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
     quality_p.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    quality_p.add_argument("--force", action="store_true", help="Overwrite existing quality outputs")
 
     serve_p = sub.add_parser("serve", help="Run FastAPI server (local)")
     serve_p.add_argument("--host", default="0.0.0.0")
@@ -133,6 +139,19 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
     run_p.add_argument("--end", required=True, help="End date YYYY-MM-DD")
     run_p.add_argument("--sources", default="configs/sources.yaml", help="Path to sources.yaml")
+    run_p.add_argument("--force", action="store_true", help="Overwrite existing outputs")
+    run_p.add_argument("--stages", help="Comma-separated list of stages to run (optional)")
+    run_p.add_argument("--retries", type=int, default=0, help="Retry count per stage")
+    run_p.add_argument("--retry-delay", type=float, default=1.0, help="Retry delay seconds")
+
+    backfill_p = sub.add_parser("backfill", help="Backfill pipeline stages (alias of run)")
+    backfill_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
+    backfill_p.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    backfill_p.add_argument("--sources", default="configs/sources.yaml", help="Path to sources.yaml")
+    backfill_p.add_argument("--force", action="store_true", help="Overwrite existing outputs")
+    backfill_p.add_argument("--stages", help="Comma-separated list of stages to run (optional)")
+    backfill_p.add_argument("--retries", type=int, default=0, help="Retry count per stage")
+    backfill_p.add_argument("--retry-delay", type=float, default=1.0, help="Retry delay seconds")
     return parser
 
 
@@ -143,93 +162,33 @@ def main() -> None:
         ingest(args)
     if args.cmd == "silver":
         if args.source == "npb_spaia":
-            normalize_npb(args.entity, args.start, args.end)
+            normalize_npb(args.entity, args.start, args.end, force=args.force)
         elif args.source in {"mlb_statsapi", "mlb_statcast"}:
-            normalize_mlb(args.entity, args.start, args.end)
+            normalize_mlb(args.entity, args.start, args.end, force=args.force)
         elif args.source == "indy_local":
-            normalize_indy(args.entity, args.start, args.end)
+            normalize_indy(args.entity, args.start, args.end, force=args.force)
         elif args.source == "retrosheet_local":
-            normalize_retrosheet(args.entity, args.start, args.end)
+            normalize_retrosheet(args.entity, args.start, args.end, force=args.force)
     if args.cmd == "identity":
-        resolve_identity(args.start, args.end)
+        resolve_identity(args.start, args.end, force=args.force)
     if args.cmd == "gold":
-        publish_gold(args.start, args.end)
+        publish_gold(args.start, args.end, force=args.force)
     if args.cmd == "quality":
-        run_quality_checks(args.start, args.end)
+        run_quality_checks(args.start, args.end, force=args.force)
     if args.cmd == "serve":
         import uvicorn
 
         uvicorn.run("gbdp.serve.api:app", host=args.host, port=args.port, reload=False)
     if args.cmd == "run":
-        _run_pipeline(args)
+        stages = args.stages.split(",") if args.stages else None
+        run_pipeline(args.start, args.end, args.sources, args.force, stages, args.retries, args.retry_delay)
+    if args.cmd == "backfill":
+        stages = args.stages.split(",") if args.stages else None
+        run_pipeline(args.start, args.end, args.sources, args.force, stages, args.retries, args.retry_delay)
 
 
 def _run_pipeline(args: argparse.Namespace) -> None:
-    cfg = load_sources_config(Path(args.sources))
-    root = data_root()
-    writer = BronzeWriter(root)
-    cache = ResponseCache(root / "cache")
-
-    # Ingest MLB
-    mlb_stats = build_connector("mlb_statsapi", cfg["mlb_statsapi"], writer, cache)
-    for entity in ["schedule", "rosters", "transactions"]:
-        for p in mlb_stats.list_partitions(args.start, args.end, entity):
-            payload = mlb_stats.fetch_partition(p)
-            mlb_stats.write_bronze(payload, mlb_stats.parse_payload(payload))
-    mlb_statcast = build_connector("mlb_statcast", cfg["mlb_statcast"], writer, cache)
-    for p in mlb_statcast.list_partitions(args.start, args.end, "pitches"):
-        payload = mlb_statcast.fetch_partition(p)
-        mlb_statcast.write_bronze(payload, mlb_statcast.parse_payload(payload))
-
-    # Ingest NPB
-    npb = build_connector("npb_spaia", cfg["npb_spaia"], writer, cache)
-    for entity in ["schedules", "rosters", "standings", "games", "game_pbp", "game_pitches"]:
-        for p in npb.list_partitions(args.start, args.end, entity):
-            payload = npb.fetch_partition(p)
-            npb.write_bronze(payload, npb.parse_payload(payload))
-
-    # Ingest Indy (local file-based, optional)
-    if "indy_local" in cfg:
-        indy = build_connector("indy_local", cfg["indy_local"], writer, cache)
-        for entity in ["games", "rosters", "boxscore_batting", "boxscore_pitching"]:
-            for p in indy.list_partitions(args.start, args.end, entity):
-                payload = indy.fetch_partition(p)
-                indy.write_bronze(payload, indy.parse_payload(payload))
-
-    # Ingest Retrosheet (local zip/csv)
-    if "retrosheet_local" in cfg:
-        retro = build_connector("retrosheet_local", cfg["retrosheet_local"], writer, cache)
-        for entity in ["allplayers", "gameinfo", "teamstats", "batting", "pitching", "fielding", "plays"]:
-            for p in retro.list_partitions(args.start, args.end, entity):
-                payload = retro.fetch_partition(p)
-                retro.write_bronze(payload, retro.parse_payload(payload))
-
-    # Silver
-    normalize_mlb("games", args.start, args.end)
-    normalize_mlb("rosters", args.start, args.end)
-    normalize_mlb("transactions", args.start, args.end)
-    normalize_mlb("pitches", args.start, args.end)
-    normalize_npb("games", args.start, args.end)
-    normalize_npb("rosters", args.start, args.end)
-    normalize_npb("game_pbp", args.start, args.end)
-    normalize_npb("standings", args.start, args.end)
-    normalize_indy("games", args.start, args.end)
-    normalize_indy("rosters", args.start, args.end)
-    normalize_indy("boxscore_batting", args.start, args.end)
-    normalize_indy("boxscore_pitching", args.start, args.end)
-    normalize_retrosheet("allplayers", args.start, args.end)
-    normalize_retrosheet("gameinfo", args.start, args.end)
-    normalize_retrosheet("teamstats", args.start, args.end)
-    normalize_retrosheet("batting", args.start, args.end)
-    normalize_retrosheet("pitching", args.start, args.end)
-    normalize_retrosheet("fielding", args.start, args.end)
-    normalize_retrosheet("plays", args.start, args.end)
-
-    # Identity + Gold + Quality
-    resolve_identity(args.start, args.end)
-    publish_gold(args.start, args.end)
-    run_quality_checks(args.start, args.end)
-    write_run_audit("nightly", args.end, "ok")
+    raise RuntimeError("Legacy runner removed. Use `gbdp run` with --stages if needed.")
 
 
 if __name__ == "__main__":

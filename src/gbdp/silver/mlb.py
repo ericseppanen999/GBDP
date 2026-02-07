@@ -12,18 +12,20 @@ from gbdp.utils.io import data_root, ensure_dir, stable_json_dumps, include_part
 from gbdp.utils.time import daterange, parse_date
 
 
-def normalize_mlb(entity: str, start: str, end: str, root: Path | None = None) -> List[Path]:
+def normalize_mlb(
+    entity: str, start: str, end: str, root: Path | None = None, force: bool = False
+) -> List[Path]:
     root = root or data_root()
     outputs: List[Path] = []
     for d in daterange(parse_date(start), parse_date(end)):
         if entity == "games":
-            outputs.append(_normalize_games(root, d))
+            outputs.append(_normalize_games(root, d, force))
         elif entity == "rosters":
-            outputs.append(_normalize_rosters(root, d))
+            outputs.append(_normalize_rosters(root, d, force))
         elif entity == "transactions":
-            outputs.append(_normalize_transactions(root, d))
+            outputs.append(_normalize_transactions(root, d, force))
         elif entity == "pitches":
-            outputs.append(_normalize_pitches(root, d))
+            outputs.append(_normalize_pitches(root, d, force))
         else:
             raise ValueError(f"Unsupported MLB silver entity: {entity}")
     return outputs
@@ -45,7 +47,7 @@ def _read_bronze(source: str, entity: str, dt: date, root: Path) -> List[Dict[st
     return dataset.to_table().to_pylist()
 
 
-def _normalize_games(root: Path, dt: date) -> Path:
+def _normalize_games(root: Path, dt: date, force: bool) -> Path:
     rows = _read_bronze("mlb_statsapi", "schedule", dt, root)
     normalized: List[Dict[str, Any]] = []
     include_partition_cols = include_partition_cols_silver()
@@ -75,10 +77,10 @@ def _normalize_games(root: Path, dt: date) -> Path:
                 normalized.append(row)
     out_dir = _silver_path(root, "mlb_statsapi", "games", dt)
     ensure_dir(out_dir)
-    return write_parquet(normalized, out_dir / "part-00001.parquet")
+    return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 
 
-def _normalize_rosters(root: Path, dt: date) -> Path:
+def _normalize_rosters(root: Path, dt: date, force: bool) -> Path:
     rows = _read_bronze("mlb_statsapi", "rosters", dt, root)
     normalized: List[Dict[str, Any]] = []
     include_partition_cols = include_partition_cols_silver()
@@ -108,10 +110,10 @@ def _normalize_rosters(root: Path, dt: date) -> Path:
                 normalized.append(row)
     out_dir = _silver_path(root, "mlb_statsapi", "rosters", dt)
     ensure_dir(out_dir)
-    return write_parquet(normalized, out_dir / "part-00001.parquet")
+    return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 
 
-def _normalize_transactions(root: Path, dt: date) -> Path:
+def _normalize_transactions(root: Path, dt: date, force: bool) -> Path:
     rows = _read_bronze("mlb_statsapi", "transactions", dt, root)
     normalized: List[Dict[str, Any]] = []
     include_partition_cols = include_partition_cols_silver()
@@ -136,10 +138,10 @@ def _normalize_transactions(root: Path, dt: date) -> Path:
             normalized.append(row)
     out_dir = _silver_path(root, "mlb_statsapi", "transactions", dt)
     ensure_dir(out_dir)
-    return write_parquet(normalized, out_dir / "part-00001.parquet")
+    return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 
 
-def _normalize_pitches(root: Path, dt: date) -> Path:
+def _normalize_pitches(root: Path, dt: date, force: bool) -> Path:
     rows = _read_bronze("mlb_statcast", "pitches", dt, root)
     normalized: List[Dict[str, Any]] = []
     include_partition_cols = include_partition_cols_silver()
@@ -173,7 +175,7 @@ def _normalize_pitches(root: Path, dt: date) -> Path:
         normalized.append(row)
     out_dir = _silver_path(root, "mlb_statcast", "pitches", dt)
     ensure_dir(out_dir)
-    return write_parquet(normalized, out_dir / "part-00001.parquet")
+    return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 
 
 def _parse_json_maybe(value: Any) -> Any:

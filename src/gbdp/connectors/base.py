@@ -46,9 +46,9 @@ class BaseConnector:
     def parse_payload(self, payload: RawPayload) -> Iterable[Dict[str, Any]]:
         raise NotImplementedError
 
-    def write_bronze(self, payload: RawPayload, records: Iterable[Dict[str, Any]]) -> None:
-        self.writer.write_raw(payload)
-        self.writer.write_parsed(payload, records)
+    def write_bronze(self, payload: RawPayload, records: Iterable[Dict[str, Any]], force: bool = False) -> None:
+        self.writer.write_raw(payload, force=force)
+        self.writer.write_parsed(payload, records, force=force)
 
     def emit_watermark(self, partition: Partition, status: str) -> None:
         logger.info("watermark source=%s entity=%s dt=%s status=%s", self.source, partition.entity, partition.dt, status)

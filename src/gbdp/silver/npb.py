@@ -13,19 +13,19 @@ from gbdp.utils.time import daterange, parse_date
 
 
 def normalize_npb(
-    entity: str, start: str, end: str, root: Path | None = None
+    entity: str, start: str, end: str, root: Path | None = None, force: bool = False
 ) -> List[Path]:
     root = root or data_root()
     outputs: List[Path] = []
     for d in daterange(parse_date(start), parse_date(end)):
         if entity == "games":
-            outputs.append(_normalize_games(root, d))
+            outputs.append(_normalize_games(root, d, force))
         elif entity == "rosters":
-            outputs.append(_normalize_rosters(root, d))
+            outputs.append(_normalize_rosters(root, d, force))
         elif entity == "game_pbp":
-            outputs.append(_normalize_game_pbp(root, d))
+            outputs.append(_normalize_game_pbp(root, d, force))
         elif entity == "standings":
-            outputs.append(_normalize_standings(root, d))
+            outputs.append(_normalize_standings(root, d, force))
         else:
             raise ValueError(f"Unsupported NPB silver entity: {entity}")
     return outputs
@@ -48,7 +48,7 @@ def _read_bronze(entity: str, dt: date, root: Path) -> List[Dict[str, Any]]:
     return table.to_pylist()
 
 
-def _normalize_games(root: Path, dt: date) -> Path:
+def _normalize_games(root: Path, dt: date, force: bool) -> Path:
     rows = _read_bronze("games", dt, root)
     normalized: List[Dict[str, Any]] = []
     include_partition_cols = include_partition_cols_silver()
@@ -80,10 +80,10 @@ def _normalize_games(root: Path, dt: date) -> Path:
         normalized.append(row)
     out_dir = _silver_path(root, "games", dt)
     ensure_dir(out_dir)
-    return write_parquet(normalized, out_dir / "part-00001.parquet")
+    return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 
 
-def _normalize_rosters(root: Path, dt: date) -> Path:
+def _normalize_rosters(root: Path, dt: date, force: bool) -> Path:
     rows = _read_bronze("rosters", dt, root)
     normalized: List[Dict[str, Any]] = []
     include_partition_cols = include_partition_cols_silver()
@@ -123,10 +123,10 @@ def _normalize_rosters(root: Path, dt: date) -> Path:
                 normalized.append(row)
     out_dir = _silver_path(root, "rosters", dt)
     ensure_dir(out_dir)
-    return write_parquet(normalized, out_dir / "part-00001.parquet")
+    return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 
 
-def _normalize_game_pbp(root: Path, dt: date) -> Path:
+def _normalize_game_pbp(root: Path, dt: date, force: bool) -> Path:
     rows = _read_bronze("game_pbp", dt, root)
     normalized: List[Dict[str, Any]] = []
     include_partition_cols = include_partition_cols_silver()
@@ -164,10 +164,10 @@ def _normalize_game_pbp(root: Path, dt: date) -> Path:
                 normalized.append(row)
     out_dir = _silver_path(root, "game_pbp", dt)
     ensure_dir(out_dir)
-    return write_parquet(normalized, out_dir / "part-00001.parquet")
+    return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 
 
-def _normalize_standings(root: Path, dt: date) -> Path:
+def _normalize_standings(root: Path, dt: date, force: bool) -> Path:
     rows = _read_bronze("standings", dt, root)
     normalized: List[Dict[str, Any]] = []
     include_partition_cols = include_partition_cols_silver()
@@ -193,7 +193,7 @@ def _normalize_standings(root: Path, dt: date) -> Path:
             normalized.append(row)
     out_dir = _silver_path(root, "standings", dt)
     ensure_dir(out_dir)
-    return write_parquet(normalized, out_dir / "part-00001.parquet")
+    return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 
 
 def _parse_json_maybe(value: Any) -> Any:
