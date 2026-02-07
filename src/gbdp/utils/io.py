@@ -326,11 +326,17 @@ def write_parquet_table(table: Any, path: Path, force: bool = False) -> Path:
         # Always use Spark for DBFS parquet writes (serverless blocks local fs access)
         try:
             from pyspark.sql import SparkSession
+            from pyspark.sql import functions as F
+            from pyspark.sql.types import NullType
         except Exception as exc:
             raise RuntimeError("pyspark is required for parquet writes on DBFS") from exc
         spark = SparkSession.builder.getOrCreate()
         pdf = table.to_pandas()
         df = spark.createDataFrame(pdf)
+        # Parquet does not support NullType; cast null-only columns to string
+        for field in df.schema.fields:
+            if isinstance(field.dataType, NullType):
+                df = df.withColumn(field.name, F.lit(None).cast("string"))
         df.write.mode("overwrite").parquet(spark_path(path.parent))
         return path
     try:
