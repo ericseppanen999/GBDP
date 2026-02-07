@@ -1,4 +1,5 @@
-The .csv files available for download are comprised of seven master .csv files
+Retrosheet CSVs should be extracted to `data/manual/retrosheet/*.csv` before running the pipeline.
+The available data is comprised of seven master .csv files:
 
 allplayers.csv - contains basic information about all players divided by team-season
 gameinfo.csv - contains game-level information such as teams, attendance, umpires, etc.
@@ -515,4 +516,4 @@ pbp              'deduced' or 'full'
 
 
 
-link for CSV: https://www.retrosheet.org/downloads/csvdownloads.zip
+Source zip (extract before running): https://www.retrosheet.org/downloads/csvdownloads.zip

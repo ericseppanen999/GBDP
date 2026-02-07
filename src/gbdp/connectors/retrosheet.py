@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import csv
 import json
-import zipfile
 from io import BytesIO, TextIOWrapper
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List
 
 from gbdp.bronze.writer import RawPayload
 from gbdp.connectors.base import BaseConnector, Partition
@@ -16,8 +15,7 @@ from gbdp.utils.time import daterange, parse_date, utc_now
 class RetrosheetLocalConnector(BaseConnector):
     """
     Reads Retrosheet CSVs from:
-    - data/manual/csvdownloads.zip (preferred)
-    - data/manual/retrosheet/*.csv (fallback)
+    - data/manual/retrosheet/*.csv (extracted files)
     """
 
     source = "retrosheet_local"
@@ -65,15 +63,9 @@ class RetrosheetLocalConnector(BaseConnector):
         return []
 
     def _source_location(self) -> str:
-        zip_path = manual_root() / "csvdownloads.zip"
-        if path_exists(zip_path):
-            return str(zip_path)
         return str(manual_root() / "retrosheet")
 
     def _read_rows(self, entity: str, dt: str) -> List[Dict[str, Any]]:
-        zip_path = manual_root() / "csvdownloads.zip"
-        if path_exists(zip_path):
-            return self._read_from_zip(zip_path, entity, dt)
         return self._read_from_dir(manual_root() / "retrosheet", entity, dt)
 
     def _read_from_dir(self, base: Path, entity: str, dt: str) -> List[Dict[str, Any]]:
@@ -84,21 +76,7 @@ class RetrosheetLocalConnector(BaseConnector):
         wrapper = TextIOWrapper(BytesIO(data), encoding="utf-8")
         return self._filter_rows(csv.DictReader(wrapper), entity, dt)
 
-    def _read_from_zip(self, zip_path: Path, entity: str, dt: str) -> List[Dict[str, Any]]:
-        name = self._find_zip_member(zip_path, f"{entity}.csv")
-        if not name:
-            return []
-        with zipfile.ZipFile(BytesIO(read_bytes(zip_path)), "r") as zf:
-            with zf.open(name, "r") as bf:
-                wrapper = TextIOWrapper(bf, encoding="utf-8")
-                return self._filter_rows(csv.DictReader(wrapper), entity, dt)
-
-    def _find_zip_member(self, zip_path: Path, filename: str) -> Optional[str]:
-        with zipfile.ZipFile(BytesIO(read_bytes(zip_path)), "r") as zf:
-            for name in zf.namelist():
-                if name.lower().endswith(filename.lower()):
-                    return name
-        return None
+    # Zip reading removed; Retrosheet CSVs should be extracted to manual_root()/retrosheet
 
     def _filter_rows(self, reader: csv.DictReader, entity: str, dt: str) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []

@@ -125,7 +125,19 @@ def path_exists(path: Path) -> bool:
             return True
         except Exception:
             return False
-    return path.exists()
+    try:
+        return path.exists()
+    except OSError:
+        if _is_dbfs_path(path):
+            dbutils = _dbutils_fs()
+            if dbutils is None:
+                return False
+            try:
+                dbutils.fs.ls(_to_dbfs_uri(path))
+                return True
+            except Exception:
+                return False
+        return False
 
 
 def list_dir(path: Path, dirs_only: bool = False) -> List[Path]:
@@ -198,10 +210,29 @@ def write_bytes(path: Path, data: bytes, force: bool = False) -> Path:
             except Exception:
                 pass
         return path
-    ensure_dir(path.parent)
-    with open(path, "wb") as f:
-        f.write(data)
-    return path
+    try:
+        ensure_dir(path.parent)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+    except OSError:
+        if _is_dbfs_path(path):
+            dbutils = _dbutils_fs()
+            if dbutils is None:
+                raise
+            tmp = tempfile.NamedTemporaryFile(delete=False)
+            try:
+                with open(tmp.name, "wb") as f:
+                    f.write(data)
+                dbutils.fs.mkdirs(_to_dbfs_uri(path.parent))
+                dbutils.fs.cp(f"file:{tmp.name}", _to_dbfs_uri(path), True)
+            finally:
+                try:
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
+            return path
+        raise
 
 
 def read_text(path: Path, encoding: str = "utf-8") -> str:
@@ -235,13 +266,35 @@ def write_parquet_table(table: Any, path: Path, force: bool = False) -> Path:
             except Exception:
                 pass
         return path
-    ensure_dir(path.parent)
     try:
-        import pyarrow.parquet as pq
-    except Exception as exc:
-        raise RuntimeError("pyarrow is required for parquet writes") from exc
-    pq.write_table(table, path, use_dictionary=False)
-    return path
+        ensure_dir(path.parent)
+        try:
+            import pyarrow.parquet as pq
+        except Exception as exc:
+            raise RuntimeError("pyarrow is required for parquet writes") from exc
+        pq.write_table(table, path, use_dictionary=False)
+        return path
+    except OSError:
+        if _is_dbfs_path(path):
+            dbutils = _dbutils_fs()
+            if dbutils is None:
+                raise
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".parquet")
+            try:
+                import pyarrow.parquet as pq
+            except Exception as exc:
+                raise RuntimeError("pyarrow is required for parquet writes") from exc
+            try:
+                pq.write_table(table, tmp.name, use_dictionary=False)
+                dbutils.fs.mkdirs(_to_dbfs_uri(path.parent))
+                dbutils.fs.cp(f"file:{tmp.name}", _to_dbfs_uri(path), True)
+            finally:
+                try:
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
+            return path
+        raise
 
 
 def read_parquet_rows(path: Path) -> List[Dict[str, Any]]:
