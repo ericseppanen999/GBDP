@@ -79,7 +79,15 @@ def storage_format() -> str:
 
 
 def _dbfs_fuse_available() -> bool:
-    return Path("/dbfs").exists()
+    p = Path("/dbfs")
+    if not p.exists():
+        return False
+    try:
+        # Some serverless environments expose /dbfs but forbid access.
+        _ = next(p.iterdir(), None)
+        return True
+    except Exception:
+        return False
 
 
 def _is_dbfs_path(path: Path) -> bool:

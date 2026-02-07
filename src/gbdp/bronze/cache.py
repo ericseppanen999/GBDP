@@ -18,6 +18,9 @@ class ResponseCache:
 
     def get(self, key: str) -> Optional[Dict[str, Any]]:
         path = self._path(key)
+        if is_dbfs_path(path) and not dbfs_fuse_available():
+            # Serverless cannot read local files; skip cache reads.
+            return None
         if not path_exists(path):
             alt = path.with_suffix(".json")
             if not path_exists(alt):
