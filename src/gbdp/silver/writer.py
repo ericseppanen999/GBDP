@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable, List, Dict, Any
+from typing import Any, Dict, Iterable, List, Optional
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -11,14 +11,19 @@ from gbdp.utils.io import ensure_dir, storage_format, spark_path, path_exists
 
 
 def write_parquet(rows: Iterable[Dict[str, Any]], path: Path, force: bool = False) -> Path:
+    """
+    Parquet mode: writes to the file `path`.
+    Delta mode: ignores the filename and writes a UC-friendly delta table at the dataset root,
+               partitioned by dt (inferred from parent folder dt=YYYY-MM-DD if present).
+    """
+    ensure_dir(path.parent)
+
     data: List[Dict[str, Any]] = list(rows)
     if not data:
         data = [{"empty": True}]
 
     fmt = storage_format()
-
     if fmt == "parquet":
-        ensure_dir(path.parent)
         if path_exists(path) and not force:
             return path
         table = pa.Table.from_pylist(data)
@@ -26,32 +31,58 @@ def write_parquet(rows: Iterable[Dict[str, Any]], path: Path, force: bool = Fals
         return path
 
     if fmt == "delta":
-        # We write a delta table to a DIRECTORY, not a single file path.
-        out_dir = path if path.suffix == "" else path.parent
-        ensure_dir(out_dir)
-
-        delta_log = out_dir / "_delta_log"
-        if path_exists(delta_log) and not force:
-            return out_dir
-
-        _write_delta(data, out_dir)
-        return out_dir
+        _write_delta(data, path.parent, force=force)
+        return path
 
     raise ValueError(f"Unsupported storage format: {fmt}")
 
 
-def _write_delta(rows: List[Dict[str, Any]], out_dir: Path) -> None:
-    try:
-        from pyspark.sql import SparkSession
-        from pyspark.sql.types import (
-            StructType, StructField,
-            StringType, LongType, DoubleType, BooleanType, BinaryType
-        )
-    except Exception as exc:
-        raise RuntimeError("pyspark is required for delta writes") from exc
+def _infer_type(values: List[Any]) -> str:
+    for v in values:
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            return "boolean"
+        if isinstance(v, int) and not isinstance(v, bool):
+            return "long"
+        if isinstance(v, float):
+            return "double"
+        if isinstance(v, (bytes, bytearray)):
+            return "binary"
+        return "string"
+    return "string"
 
-    # Normalize values so schema inference is stable (dict/list -> JSON, others unchanged)
-    norm_rows: List[Dict[str, Any]] = []
+
+def _rows_to_df(spark, rows: List[Dict[str, Any]]):
+    """
+    Deterministic DF creation:
+      - dict/list -> JSON string (prevents STRUCT/MAP surprises like status)
+      - all-null cols -> STRING (prevents CANNOT_DETERMINE_TYPE)
+    """
+    from pyspark.sql.types import (
+        StructType,
+        StructField,
+        StringType,
+        LongType,
+        DoubleType,
+        BooleanType,
+        BinaryType,
+    )
+
+    def dtype(name: str):
+        return {
+            "string": StringType(),
+            "long": LongType(),
+            "double": DoubleType(),
+            "boolean": BooleanType(),
+            "binary": BinaryType(),
+        }.get(name, StringType())
+
+    if not rows:
+        schema = StructType([StructField("empty", BooleanType(), True)])
+        return spark.createDataFrame([], schema=schema)
+
+    norm: List[Dict[str, Any]] = []
     for r in rows:
         nr: Dict[str, Any] = {}
         for k, v in r.items():
@@ -59,34 +90,92 @@ def _write_delta(rows: List[Dict[str, Any]], out_dir: Path) -> None:
                 nr[k] = json.dumps(v, separators=(",", ":"), ensure_ascii=False)
             else:
                 nr[k] = v
-        norm_rows.append(nr)
+        norm.append(nr)
 
-    # Infer schema: if a column has no non-null values, default to STRING (avoids NullType)
-    keys = sorted({k for r in norm_rows for k in r.keys()})
-
-    def infer_type(values: List[Any]):
-        for v in values:
-            if v is None:
-                continue
-            if isinstance(v, bool):
-                return BooleanType()
-            if isinstance(v, int) and not isinstance(v, bool):
-                return LongType()
-            if isinstance(v, float):
-                return DoubleType()
-            if isinstance(v, (bytes, bytearray)):
-                return BinaryType()
-            return StringType()
-        return StringType()
-
+    keys = sorted({k for r in norm for k in r.keys()})
     fields = []
     for k in keys:
-        col_vals = [r.get(k) for r in norm_rows]
-        fields.append(StructField(k, infer_type(col_vals), nullable=True))
+        vals = [r.get(k) for r in norm]
+        fields.append(StructField(k, dtype(_infer_type(vals)), True))
 
     schema = StructType(fields)
+    return spark.createDataFrame(norm, schema=schema)
+
+
+def _delta_exists(spark, table_root: str) -> bool:
+    try:
+        spark.read.format("delta").load(table_root).limit(1).collect()
+        return True
+    except Exception:
+        return False
+
+
+def _table_root_and_dt(out_dir: Path) -> tuple[Path, Optional[str]]:
+    """
+    If out_dir is .../<dataset>/dt=YYYY-MM-DD -> treat <dataset> as table root and dt as partition key.
+    Otherwise treat out_dir itself as table root (no dt partition overwrite).
+    """
+    name = out_dir.name
+    if name.startswith("dt="):
+        return out_dir.parent, name.split("=", 1)[1]
+    return out_dir, None
+
+
+def _write_delta(rows: List[Dict[str, Any]], out_dir: Path, force: bool = False) -> None:
+    """
+    UC-friendly delta write:
+      - one delta table per dataset at table_root/
+      - partitioned by dt
+      - overwrite only dt partition (replaceWhere) when dt=... folder is used
+    """
+    from pyspark.sql import SparkSession
 
     spark = SparkSession.builder.getOrCreate()
-    df = spark.createDataFrame(norm_rows, schema=schema)
 
-    df.write.format("delta").mode("overwrite").save(spark_path(out_dir))
+    table_root_dir, dt_value = _table_root_and_dt(out_dir)
+    ensure_dir(table_root_dir)
+
+    if not rows:
+        return
+
+    # Enforce dt partition consistency when writing a dt folder
+    if dt_value is not None:
+        for r in rows:
+            r["dt"] = dt_value
+    else:
+        # If caller didn't pass dt folder, still ensure dt exists if present in rows
+        for r in rows:
+            r.setdefault("dt", None)
+
+    df = _rows_to_df(spark, rows)
+    table_root = spark_path(table_root_dir)
+
+    # First write creates table schema
+    if not _delta_exists(spark, table_root):
+        (
+            df.write.format("delta")
+            .mode("overwrite")
+            .option("overwriteSchema", "true")
+            .partitionBy("dt")
+            .save(table_root)
+        )
+        return
+
+    # Partition overwrite
+    w = (
+        df.write.format("delta")
+        .mode("overwrite")
+        .option("mergeSchema", "true")
+    )
+    if dt_value is not None:
+        w = w.option("replaceWhere", f"dt = '{dt_value}'")
+
+    try:
+        w.save(table_root)
+    except Exception as exc:
+        # This is the exact failure you're seeing if a column changed type across runs.
+        raise RuntimeError(
+            f"Delta write failed (likely schema/type conflict). "
+            f"If you recently changed how a field is represented (e.g., status struct -> string), "
+            f"delete the existing delta table at {table_root} and rerun. Original error: {exc}"
+        ) from exc
