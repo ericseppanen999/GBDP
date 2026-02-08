@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from gbdp.utils.ids import ulid_from_key
 from gbdp.utils.io import (
@@ -22,6 +22,164 @@ from gbdp.utils.io import (
 from gbdp.utils.time import utc_now
 from gbdp.utils.time import daterange, parse_date
 
+
+# -----------------------------
+# Delta helpers (fixes NullType + dt=... delta-log issues)
+# -----------------------------
+
+def _infer_type(values: List[Any]) -> str:
+    """
+    Conservative type inference to avoid Spark conversion errors:
+    - if any string-like appears -> string
+    - else if any float -> double
+    - else if any int -> long
+    - else if any bool -> boolean
+    - else if any bytes -> binary
+    - else -> string (all null)
+    """
+    has_str = False
+    has_float = False
+    has_int = False
+    has_bool = False
+    has_bin = False
+
+    for v in values:
+        if v is None:
+            continue
+        if isinstance(v, (dict, list)):
+            has_str = True
+            continue
+        if isinstance(v, str):
+            has_str = True
+            continue
+        if isinstance(v, bool):
+            has_bool = True
+            continue
+        if isinstance(v, int) and not isinstance(v, bool):
+            has_int = True
+            continue
+        if isinstance(v, float):
+            has_float = True
+            continue
+        if isinstance(v, (bytes, bytearray)):
+            has_bin = True
+            continue
+        # unknown types -> stringify
+        has_str = True
+
+    if has_str:
+        return "string"
+    if has_float:
+        return "double"
+    if has_int:
+        return "long"
+    if has_bool:
+        return "boolean"
+    if has_bin:
+        return "binary"
+    return "string"
+
+
+def _rows_to_df(spark, rows: List[Dict[str, Any]]):
+    """
+    Deterministic DataFrame creation:
+    - dict/list -> JSON string
+    - all-null cols -> STRING (prevents CANNOT_DETERMINE_TYPE)
+    - mixed types -> STRING (prevents cast failures)
+    """
+    from pyspark.sql.types import (
+        StructType,
+        StructField,
+        StringType,
+        LongType,
+        DoubleType,
+        BooleanType,
+        BinaryType,
+    )
+
+    def dtype(name: str):
+        return {
+            "string": StringType(),
+            "long": LongType(),
+            "double": DoubleType(),
+            "boolean": BooleanType(),
+            "binary": BinaryType(),
+        }.get(name, StringType())
+
+    if not rows:
+        schema = StructType([StructField("empty", BooleanType(), True)])
+        return spark.createDataFrame([], schema=schema)
+
+    norm: List[Dict[str, Any]] = []
+    for r in rows:
+        nr: Dict[str, Any] = {}
+        for k, v in r.items():
+            if isinstance(v, (dict, list)):
+                nr[k] = json.dumps(v, separators=(",", ":"), ensure_ascii=False)
+            else:
+                nr[k] = v
+        norm.append(nr)
+
+    keys = sorted({k for r in norm for k in r.keys()})
+    fields = []
+    for k in keys:
+        vals = [r.get(k) for r in norm]
+        fields.append(StructField(k, dtype(_infer_type(vals)), True))
+
+    schema = StructType(fields)
+    return spark.createDataFrame(norm, schema=schema)
+
+
+def _delta_exists(spark, table_root: str) -> bool:
+    try:
+        spark.read.format("delta").load(table_root).limit(1).collect()
+        return True
+    except Exception:
+        return False
+
+
+def _write_delta(rows: List[Dict[str, Any]], table_root_dir: Path, dt_value: Optional[str] = None) -> None:
+    """
+    Write ONE delta table at table_root_dir (UC-friendly), partitioned by dt.
+    Overwrite only dt partition when dt_value is provided (replaceWhere).
+    """
+    from pyspark.sql import SparkSession
+
+    spark = SparkSession.builder.getOrCreate()
+
+    if not rows:
+        return
+
+    if dt_value is not None:
+        for r in rows:
+            r["dt"] = dt_value
+
+    df = _rows_to_df(spark, rows)
+    table_root = spark_path(table_root_dir)
+
+    if not _delta_exists(spark, table_root):
+        (
+            df.write.format("delta")
+            .mode("overwrite")
+            .option("overwriteSchema", "true")
+            .partitionBy("dt")
+            .save(table_root)
+        )
+        return
+
+    w = (
+        df.write.format("delta")
+        .mode("overwrite")
+        .option("mergeSchema", "true")
+    )
+    if dt_value is not None:
+        w = w.option("replaceWhere", f"dt = '{dt_value}'")
+    w.save(table_root)
+
+
+# -----------------------------
+# Public API
+# -----------------------------
 
 def publish_gold(start: str, end: str, root: Path | None = None, force: bool = False) -> List[Path]:
     root = root or gold_root()
@@ -55,22 +213,36 @@ def _publish_for_date(root: Path, dt: date, force: bool) -> List[Path]:
     return outputs
 
 
+# -----------------------------
+# Reads
+# -----------------------------
+
 def _read_gold_bridge(root: Path, dt: date) -> Dict[tuple, str]:
-    path = root / "bridge_source_ids" / f"dt={dt.isoformat()}"
-    if not path_exists(path):
-        return {}
+    """
+    Parquet mode: reads root/bridge_source_ids/dt=YYYY-MM-DD
+    Delta mode: reads root/bridge_source_ids (delta root) and filters dt
+    """
+    dt_str = dt.isoformat()
     fmt = storage_format()
+
     if fmt == "parquet":
+        path = root / "bridge_source_ids" / f"dt={dt_str}"
+        if not path_exists(path):
+            return {}
         data = read_parquet_rows(path)
+
     elif fmt == "delta":
-        try:
-            from pyspark.sql import SparkSession
-        except Exception as exc:
-            raise RuntimeError("pyspark is required for delta reads") from exc
+        base = root / "bridge_source_ids"
+        if not path_exists(base):
+            return {}
+        from pyspark.sql import SparkSession
         spark = SparkSession.builder.getOrCreate()
-        data = [row.asDict() for row in spark.read.format("delta").load(spark_path(path)).collect()]
+        df = spark.read.format("delta").load(spark_path(base)).where(f"dt = '{dt_str}'")
+        data = [row.asDict() for row in df.collect()]
+
     else:
-        data = []
+        return {}
+
     out: Dict[tuple, str] = {}
     for r in data:
         entity_type = r.get("entity_type")
@@ -82,6 +254,114 @@ def _read_gold_bridge(root: Path, dt: date) -> Dict[tuple, str]:
         out[(entity_type, source, source_id)] = canonical_id
     return out
 
+
+def _read_silver(root: Path, source: str, entity: str, dt: date) -> List[Dict[str, Any]]:
+    """
+    Parquet mode: reads .../dt=YYYY-MM-DD folder.
+    Delta mode: reads ONE delta table at .../<source>/<entity> and filters dt.
+    Falls back to legacy parquet dt-folder if delta log missing.
+    """
+    dt_str = dt.isoformat()
+    fmt = storage_format()
+
+    if fmt == "parquet":
+        path = silver_root() / source / entity / f"dt={dt_str}"
+        if not path_exists(path):
+            return []
+        return read_parquet_rows(path)
+
+    if fmt == "delta":
+        base = silver_root() / source / entity
+        if not path_exists(base):
+            return []
+        from pyspark.sql import SparkSession
+        spark = SparkSession.builder.getOrCreate()
+        try:
+            df = spark.read.format("delta").load(spark_path(base)).where(f"dt = '{dt_str}'")
+            return [row.asDict() for row in df.collect()]
+        except Exception:
+            legacy = silver_root() / source / entity / f"dt={dt_str}"
+            if not path_exists(legacy) or not has_files_with_suffix(legacy, ".parquet"):
+                return []
+            df = spark.read.format("parquet").load(spark_path(legacy))
+            return [row.asDict() for row in df.collect()]
+
+    raise ValueError(f"Unsupported storage format: {fmt}")
+
+
+def _read_gold_snapshot(root: Path, table: str, dt: date) -> List[Dict[str, Any]]:
+    """
+    Parquet mode: reads root/<table>/dt=YYYY-MM-DD folder.
+    Delta mode: reads ONE delta table at root/<table> and filters dt.
+    """
+    dt_str = dt.isoformat()
+    fmt = storage_format()
+
+    if fmt == "parquet":
+        path = root / table / f"dt={dt_str}"
+        if not path_exists(path):
+            return []
+        return read_parquet_rows(path)
+
+    if fmt == "delta":
+        base = root / table
+        if not path_exists(base):
+            return []
+        from pyspark.sql import SparkSession
+        spark = SparkSession.builder.getOrCreate()
+        df = spark.read.format("delta").load(spark_path(base)).where(f"dt = '{dt_str}'")
+        return [row.asDict() for row in df.collect()]
+
+    raise ValueError(f"Unsupported storage format: {fmt}")
+
+
+# -----------------------------
+# Writes
+# -----------------------------
+
+def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any]], force: bool) -> Path:
+    """
+    Parquet mode: per-day folder with parquet files (unchanged).
+    Delta mode: ONE delta table at root/<table>, partitioned by dt (fixes UC + delta log errors).
+    """
+    fmt = storage_format()
+    dt_str = dt.isoformat()
+    now = utc_now().isoformat()
+
+    for r in rows:
+        r["dt"] = dt_str
+        r.setdefault("ingested_at_utc", now)
+
+    if fmt == "parquet":
+        out_dir = root / table / f"dt={dt_str}"
+        ensure_dir(out_dir)
+        out_path = out_dir / "part-00001.parquet"
+        if path_exists(out_path) and not force:
+            return out_path
+        if not rows:
+            rows = [{"empty": True, "dt": dt_str, "ingested_at_utc": now}]
+        import pyarrow as pa
+        table_data = pa.Table.from_pylist(rows)
+        write_parquet_table(table_data, out_path, force=True)
+        return out_path
+
+    if fmt == "delta":
+        table_root_dir = root / table
+        ensure_dir(table_root_dir)
+
+        # If you truly want empty days to be absent, just return.
+        if not rows:
+            return table_root_dir
+
+        _write_delta(rows, table_root_dir, dt_value=dt_str)
+        return table_root_dir
+
+    raise ValueError(f"Unsupported storage format: {fmt}")
+
+
+# -----------------------------
+# Dimension tables
+# -----------------------------
 
 def _write_dim_league(root: Path, dt: date, force: bool) -> Path:
     leagues_path = Path("configs/leagues.yaml")
@@ -256,6 +536,10 @@ def _write_dim_season(root: Path, dt: date, force: bool) -> Path:
     ]
     return _write_gold_table(root, "dim_season", dt, rows, force)
 
+
+# -----------------------------
+# Fact tables
+# -----------------------------
 
 def _write_fact_game(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
@@ -620,13 +904,19 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
     return _write_gold_table(root, "fact_boxscore_pitching", dt, rows, force)
 
 
+# -----------------------------
+# Derived tables (FIXED delta reads)
+# -----------------------------
+
 def _write_run_expectancy(root: Path, dt: date, force: bool) -> Path:
     # Compute RE by base_state_before + outs_before using available runs_scored_on_play
     fmt = storage_format()
-    path = root / "fact_plate_appearance" / f"dt={dt.isoformat()}"
-    if not path_exists(path):
-        return _write_gold_table(root, "run_expectancy", dt, [], force)
+    dt_str = dt.isoformat()
+
     if fmt == "parquet":
+        path = root / "fact_plate_appearance" / f"dt={dt_str}"
+        if not path_exists(path):
+            return _write_gold_table(root, "run_expectancy", dt, [], force)
         import duckdb
         con = duckdb.connect()
         con.execute(f"CREATE OR REPLACE VIEW pa AS SELECT * FROM read_parquet('{path}/*.parquet')")
@@ -641,12 +931,17 @@ def _write_run_expectancy(root: Path, dt: date, force: bool) -> Path:
             GROUP BY 1,2
             """
         ).fetchall()
+
     else:
         from pyspark.sql import SparkSession
         from pyspark.sql import functions as F
 
         spark = SparkSession.builder.getOrCreate()
-        df = spark.read.format("delta").load(spark_path(path))
+        base = root / "fact_plate_appearance"
+        if not path_exists(base):
+            return _write_gold_table(root, "run_expectancy", dt, [], force)
+
+        df = spark.read.format("delta").load(spark_path(base)).where(f"dt = '{dt_str}'")
         df = df.where("base_state_before IS NOT NULL AND outs_before IS NOT NULL")
         rows = [
             (r["base_state_before"], r["outs_before"], r["exp_runs"])
@@ -654,20 +949,20 @@ def _write_run_expectancy(root: Path, dt: date, force: bool) -> Path:
             .agg(F.avg(F.coalesce("runs_scored_on_play", F.lit(0))).alias("exp_runs"))
             .collect()
         ]
-    out_rows = [
-        {"base_state": r[0], "outs": r[1], "exp_runs": float(r[2]), "dt": dt.isoformat()}
-        for r in rows
-    ]
+
+    out_rows = [{"base_state": r[0], "outs": r[1], "exp_runs": float(r[2]), "dt": dt_str} for r in rows]
     return _write_gold_table(root, "run_expectancy", dt, out_rows, force)
 
 
 def _write_breakout_candidates(root: Path, dt: date, force: bool) -> Path:
     # Simple heuristic: top 20 HR on dt from boxscore_batting
     fmt = storage_format()
-    path = root / "fact_boxscore_batting" / f"dt={dt.isoformat()}"
-    if not path_exists(path):
-        return _write_gold_table(root, "breakout_candidates", dt, [], force)
+    dt_str = dt.isoformat()
+
     if fmt == "parquet":
+        path = root / "fact_boxscore_batting" / f"dt={dt_str}"
+        if not path_exists(path):
+            return _write_gold_table(root, "breakout_candidates", dt, [], force)
         import duckdb
         con = duckdb.connect()
         con.execute(f"CREATE OR REPLACE VIEW b AS SELECT * FROM read_parquet('{path}/*.parquet')")
@@ -681,12 +976,17 @@ def _write_breakout_candidates(root: Path, dt: date, force: bool) -> Path:
             LIMIT 20
             """
         ).fetchall()
+
     else:
         from pyspark.sql import SparkSession
         from pyspark.sql import functions as F
 
         spark = SparkSession.builder.getOrCreate()
-        df = spark.read.format("delta").load(spark_path(path))
+        base = root / "fact_boxscore_batting"
+        if not path_exists(base):
+            return _write_gold_table(root, "breakout_candidates", dt, [], force)
+
+        df = spark.read.format("delta").load(spark_path(base)).where(f"dt = '{dt_str}'")
         rows = [
             (r["player_id"], r["hr"], r["h"], r["ab"])
             for r in df.where("player_id IS NOT NULL")
@@ -696,8 +996,9 @@ def _write_breakout_candidates(root: Path, dt: date, force: bool) -> Path:
             .limit(20)
             .collect()
         ]
+
     out_rows = [
-        {"player_id": r[0], "hr": int(r[1] or 0), "h": int(r[2] or 0), "ab": int(r[3] or 0), "dt": dt.isoformat()}
+        {"player_id": r[0], "hr": int(r[1] or 0), "h": int(r[2] or 0), "ab": int(r[3] or 0), "dt": dt_str}
         for r in rows
     ]
     return _write_gold_table(root, "breakout_candidates", dt, out_rows, force)
@@ -706,6 +1007,8 @@ def _write_breakout_candidates(root: Path, dt: date, force: bool) -> Path:
 def _write_feature_player_rolling_30d(root: Path, dt: date, force: bool) -> Path:
     # Rolling 30d from fact_boxscore_batting across leagues
     fmt = storage_format()
+    dt_str = dt.isoformat()
+
     if fmt == "parquet":
         import duckdb
         con = duckdb.connect()
@@ -736,60 +1039,62 @@ def _write_feature_player_rolling_30d(root: Path, dt: date, force: bool) -> Path
         ).fetchall()
         out_rows = [
             {"player_id": r[0], "ab": int(r[1] or 0), "h": int(r[2] or 0), "hr": int(r[3] or 0),
-             "rbi": int(r[4] or 0), "bb": int(r[5] or 0), "so": int(r[6] or 0), "window_days": 30, "dt": dt.isoformat()}
+             "rbi": int(r[4] or 0), "bb": int(r[5] or 0), "so": int(r[6] or 0), "window_days": 30, "dt": dt_str}
             for r in rows
         ]
         return _write_gold_table(root, "feature_player_rolling_30d", dt, out_rows, force)
-    else:
-        from pyspark.sql import SparkSession
-        from pyspark.sql import functions as F
-        spark = SparkSession.builder.getOrCreate()
-        start_dt = (dt - timedelta(days=29)).isoformat()
-        dfs = []
-        for offset in range(0, 30):
-            d = (dt - timedelta(days=offset)).isoformat()
-            path = root / "fact_boxscore_batting" / f"dt={d}"
-            if path_exists(path):
-                dfs.append(spark.read.format("delta").load(spark_path(path)))
-        if not dfs:
-            return _write_gold_table(root, "feature_player_rolling_30d", dt, [], force)
-        df = dfs[0]
-        for part in dfs[1:]:
-            df = df.unionByName(part, allowMissingColumns=True)
-        df = df.where((F.col("dt") >= start_dt) & (F.col("dt") <= dt.isoformat()))
-        agg = (
-            df.where("player_id IS NOT NULL")
-            .groupBy("player_id")
-            .agg(
-                F.sum("ab").alias("ab"),
-                F.sum("h").alias("h"),
-                F.sum("hr").alias("hr"),
-                F.sum("rbi").alias("rbi"),
-                F.sum("bb").alias("bb"),
-                F.sum("so").alias("so"),
-            )
+
+    # delta: read ONE table and filter dt range
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
+
+    spark = SparkSession.builder.getOrCreate()
+    base = root / "fact_boxscore_batting"
+    if not path_exists(base):
+        return _write_gold_table(root, "feature_player_rolling_30d", dt, [], force)
+
+    start_dt = (dt - timedelta(days=29)).isoformat()
+    df = spark.read.format("delta").load(spark_path(base))
+    df = df.where((F.col("dt") >= start_dt) & (F.col("dt") <= dt_str))
+
+    agg = (
+        df.where("player_id IS NOT NULL")
+        .groupBy("player_id")
+        .agg(
+            F.sum("ab").alias("ab"),
+            F.sum("h").alias("h"),
+            F.sum("hr").alias("hr"),
+            F.sum("rbi").alias("rbi"),
+            F.sum("bb").alias("bb"),
+            F.sum("so").alias("so"),
         )
-        out_rows = [
-            {
-                "player_id": r["player_id"],
-                "ab": int(r["ab"] or 0),
-                "h": int(r["h"] or 0),
-                "hr": int(r["hr"] or 0),
-                "rbi": int(r["rbi"] or 0),
-                "bb": int(r["bb"] or 0),
-                "so": int(r["so"] or 0),
-                "window_days": 30,
-                "dt": dt.isoformat(),
-            }
-            for r in agg.collect()
-        ]
-        return _write_gold_table(root, "feature_player_rolling_30d", dt, out_rows, force)
+    )
+
+    out_rows = [
+        {
+            "player_id": r["player_id"],
+            "ab": int(r["ab"] or 0),
+            "h": int(r["h"] or 0),
+            "hr": int(r["hr"] or 0),
+            "rbi": int(r["rbi"] or 0),
+            "bb": int(r["bb"] or 0),
+            "so": int(r["so"] or 0),
+            "window_days": 30,
+            "dt": dt_str,
+        }
+        for r in agg.collect()
+    ]
+    return _write_gold_table(root, "feature_player_rolling_30d", dt, out_rows, force)
 
 
 def _write_fact_contract(root: Path, dt: date, force: bool) -> Path:
     # Placeholder until contract sources are integrated
     return _write_gold_table(root, "fact_contract", dt, [], force)
 
+
+# -----------------------------
+# Event mapping helpers
+# -----------------------------
 
 def _map_event_type(value: Any) -> str:
     if not value:
@@ -817,7 +1122,6 @@ def _map_event_type(value: Any) -> str:
 
 
 def _map_retrosheet_event(r: Dict[str, Any]) -> str:
-    # Use explicit flags from plays.csv if present
     def _is_one(key: str) -> bool:
         v = r.get(key)
         return str(v) == "1"
@@ -853,8 +1157,11 @@ def _map_retrosheet_event(r: Dict[str, Any]) -> str:
     return "UNKNOWN"
 
 
+# -----------------------------
+# NPB reconstruction helpers
+# -----------------------------
+
 def _reconstruct_npb_pa(rows: List[Dict[str, Any]], dt: date, bridge: Dict[tuple, str]) -> List[Dict[str, Any]]:
-    # Best-effort base/out reconstruction using text info; falls back to UNKNOWN
     by_game: Dict[str, List[Dict[str, Any]]] = {}
     for r in rows:
         gid = str(r.get("game_id") or "")
@@ -907,7 +1214,6 @@ def _reconstruct_npb_pa(rows: List[Dict[str, Any]], dt: date, bridge: Dict[tuple
 
 
 def _npb_infer_event(text: str, bases: List[int]) -> tuple[str, int, List[int]]:
-    # bases: [on1, on2, on3]
     t = text or ""
     if "三重殺" in t or "triple play" in t:
         return "TP", 3, [0, 0, 0]
@@ -931,7 +1237,6 @@ def _npb_infer_event(text: str, bases: List[int]) -> tuple[str, int, List[int]]:
 
 
 def _advance_bases(bases: List[int], bases_taken: int) -> List[int]:
-    # Simplified forced advance
     b1, b2, b3 = bases
     if bases_taken == 1:
         if b1:
@@ -974,139 +1279,9 @@ def _base_state_from_br(br1: Any, br2: Any, br3: Any) -> int | None:
     return _present(br1) + (_present(br2) * 2) + (_present(br3) * 4)
 
 
-def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any]], force: bool) -> Path:
-    out_dir = root / table / f"dt={dt.isoformat()}"
-    ensure_dir(out_dir)
-    out_path = out_dir / "part-00001.parquet"
-    if path_exists(out_path) and not force:
-        return out_path
-    if not rows:
-        # For delta, ensure key columns exist to prevent merge failures later.
-        fmt = storage_format()
-        key_cols = _gold_primary_keys().get(table) if fmt == "delta" else None
-        if key_cols:
-            empty_row = {k: "" for k in key_cols}
-            empty_row["dt"] = dt.isoformat()
-            empty_row["ingested_at_utc"] = utc_now().isoformat()
-            empty_row["empty"] = True
-            rows = [empty_row]
-        else:
-            rows = [{"empty": True}]
-    now = utc_now().isoformat()
-    for r in rows:
-        if "dt" not in r:
-            r["dt"] = dt.isoformat()
-        if "ingested_at_utc" not in r:
-            r["ingested_at_utc"] = now
-    fmt = storage_format()
-    if fmt == "parquet":
-        import pyarrow as pa
-        table_data = pa.Table.from_pylist(rows)
-        write_parquet_table(table_data, out_path, force=True)
-    elif fmt == "delta":
-        _write_delta(rows, out_dir, table)
-    else:
-        raise ValueError(f"Unsupported storage format: {fmt}")
-    return out_path
-
-
-def _write_delta(rows: List[Dict[str, Any]], out_dir: Path, table: str) -> None:
-    try:
-        from pyspark.sql import SparkSession
-    except Exception as exc:
-        raise RuntimeError("pyspark is required for delta writes") from exc
-    spark = SparkSession.builder.getOrCreate()
-    if not rows or all(all(v is None for v in r.values()) for r in rows):
-        rows = [{"empty": True}]
-    df = spark.createDataFrame(rows)
-    key_cols = _gold_primary_keys().get(table)
-    if not key_cols:
-        df.write.format("delta").mode("overwrite").save(spark_path(out_dir))
-        return
-    # If df doesn't contain key columns, avoid merge and overwrite.
-    if any(c not in df.columns for c in key_cols):
-        df.write.format("delta").mode("overwrite").save(spark_path(out_dir))
-        return
-    try:
-        from delta.tables import DeltaTable
-    except Exception:
-        df.write.format("delta").mode("overwrite").save(spark_path(out_dir))
-        return
-    path = spark_path(out_dir)
-    if not _delta_exists(spark, path):
-        df.write.format("delta").mode("overwrite").save(path)
-        return
-    delta_table = DeltaTable.forPath(spark, path)
-    try:
-        target_cols = set(delta_table.toDF().columns)
-    except Exception:
-        target_cols = set()
-    if any(c not in target_cols for c in key_cols):
-        df.write.format("delta").mode("overwrite").save(path)
-        return
-    cond = " AND ".join([f"t.{c} = s.{c}" for c in key_cols])
-    (
-        delta_table.alias("t")
-        .merge(df.alias("s"), cond)
-        .whenMatchedUpdateAll()
-        .whenNotMatchedInsertAll()
-        .execute()
-    )
-
-
-def _delta_exists(spark, path: str) -> bool:
-    try:
-        spark.read.format("delta").load(path).limit(1).collect()
-        return True
-    except Exception:
-        return False
-
-
-def _gold_primary_keys() -> Dict[str, List[str]]:
-    return {
-        "dim_league": ["league_id", "dt"],
-        "dim_team": ["team_id", "valid_from_dt"],
-        "dim_player": ["player_id", "valid_from_dt"],
-        "dim_season": ["season_id"],
-        "fact_game": ["game_id", "dt"],
-        "fact_roster": ["team_id", "player_id", "season_id", "dt"],
-        "fact_transaction": ["transaction_id"],
-        "fact_contract": ["contract_id", "dt"],
-        "fact_plate_appearance": ["pa_id", "dt"],
-        "fact_pitch": ["pitch_id", "dt"],
-        "fact_boxscore_batting": ["game_id", "player_id", "dt"],
-        "fact_boxscore_pitching": ["game_id", "player_id", "dt"],
-        "fact_standings": ["team_id", "season_id", "dt"],
-        "run_expectancy": ["base_state", "outs", "dt"],
-        "breakout_candidates": ["player_id", "dt"],
-        "feature_player_rolling_30d": ["player_id", "dt"],
-    }
-
-
-def _read_silver(root: Path, source: str, entity: str, dt: date) -> List[Dict[str, Any]]:
-    path = silver_root() / source / entity / f"dt={dt.isoformat()}"
-    if not path_exists(path):
-        return []
-    fmt = storage_format()
-    if fmt == "parquet":
-        return read_parquet_rows(path)
-    if fmt == "delta":
-        try:
-            from pyspark.sql import SparkSession
-        except Exception as exc:
-            raise RuntimeError("pyspark is required for delta reads") from exc
-        spark = SparkSession.builder.getOrCreate()
-        try:
-            df = spark.read.format("delta").load(spark_path(path))
-            return [row.asDict() for row in df.collect()]
-        except Exception:
-            # Fallback to parquet when delta log is missing (legacy writes)
-            if not has_files_with_suffix(path, ".parquet"):
-                return []
-            df = spark.read.format("parquet").load(spark_path(path))
-            return [row.asDict() for row in df.collect()]
-    raise ValueError(f"Unsupported storage format: {fmt}")
-
+# -----------------------------
+# SCD2 helpers
+# -----------------------------
 
 def _apply_scd2(
     root: Path,
@@ -1200,21 +1375,9 @@ def _latest_dt_before(root: Path, table: str, dt: date) -> date | None:
     return sorted(candidates)[-1]
 
 
-def _read_gold_snapshot(root: Path, table: str, dt: date) -> List[Dict[str, Any]]:
-    path = root / table / f"dt={dt.isoformat()}"
-    if not path_exists(path):
-        return []
-    fmt = storage_format()
-    if fmt == "parquet":
-        return read_parquet_rows(path)
-    try:
-        from pyspark.sql import SparkSession
-    except Exception as exc:
-        raise RuntimeError("pyspark is required for delta reads") from exc
-    spark = SparkSession.builder.getOrCreate()
-    df = spark.read.format("delta").load(spark_path(path))
-    return [row.asDict() for row in df.collect()]
-
+# -----------------------------
+# League config
+# -----------------------------
 
 def _league_id_for_code(code: str) -> str | None:
     leagues_path = Path("configs/leagues.yaml")
