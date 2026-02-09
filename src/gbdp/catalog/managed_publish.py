@@ -184,21 +184,41 @@ def _publish_bronze_parsed(spark, dt: date, catalog: str, schema: str) -> None:
 
 
 def _write_managed(spark, df, full_name: str, dt: date) -> None:
+    from pyspark.sql import functions as F
+
+    dt_str = dt.isoformat()
+    if "dt" not in df.columns:
+        df = df.withColumn("dt", F.lit(dt_str))
+
+    # Create table if missing
     if not _table_exists(spark, full_name):
-        if "dt" in df.columns:
-            df.write.format("delta").mode("overwrite").partitionBy("dt").saveAsTable(full_name)
-        else:
-            df.write.format("delta").mode("overwrite").saveAsTable(full_name)
+        df.write.format("delta").mode("overwrite").partitionBy("dt").saveAsTable(full_name)
         return
 
-    # Overwrite only the dt partition
-    if "dt" in df.columns:
-        df.write.format("delta").mode("overwrite").option("replaceWhere", f"dt = '{dt.isoformat()}'").option(
-            "overwriteSchema", "true"
-        ).saveAsTable(full_name)
-    else:
-        df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(full_name)
+    # Try overwrite just this dt partition (NO overwriteSchema here; not allowed with replaceWhere)
+    try:
+        (
+            df.write.format("delta")
+            .mode("overwrite")
+            .option("replaceWhere", f"dt = '{dt_str}'")
+            .saveAsTable(full_name)
+        )
+        return
+    except Exception as e:
+        msg = str(e)
 
+        # UC schema mismatch / legacy delta schema errors -> do a one-time full overwrite w/ overwriteSchema
+        if "schema mismatch" in msg.lower() or "schema migration is not allowed" in msg.lower() or "_LEGACY_ERROR_TEMP_DELTA_0007" in msg:
+            (
+                df.write.format("delta")
+                .mode("overwrite")
+                .option("overwriteSchema", "true")
+                .partitionBy("dt")
+                .saveAsTable(full_name)
+            )
+            return
+
+        raise
 
 def _publish_bronze_requests(spark, dt: date, catalog: str, schema: str) -> None:
     base = bronze_root() / "requests"
