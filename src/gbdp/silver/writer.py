@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from gbdp.utils.io import ensure_dir, storage_format, spark_path, path_exists
+from gbdp.utils.io import ensure_dir, storage_format, spark_path, path_exists, has_files_with_suffix
 
 
 def write_parquet(rows: Iterable[Dict[str, Any]], path: Path, force: bool = False) -> Path:
@@ -138,14 +138,21 @@ def _write_delta(rows: List[Dict[str, Any]], out_dir: Path, force: bool = False)
     if not rows:
         return
 
+    # If a parquet dataset already exists (no delta log), keep using parquet.
+    delta_log = table_root_dir / "_delta_log"
+    if not path_exists(delta_log) and has_files_with_suffix(table_root_dir, ".parquet"):
+        df = _rows_to_df(spark, rows)
+        df.write.mode("overwrite").parquet(spark_path(out_dir))
+        return
+
     # Enforce dt partition consistency when writing a dt folder
     if dt_value is not None:
         for r in rows:
             r["dt"] = dt_value
     else:
-        # If caller didn't pass dt folder, still ensure dt exists if present in rows
+        # Ensure dt exists to keep partitioning consistent
         for r in rows:
-            r.setdefault("dt", None)
+            r.setdefault("dt", "")
 
     df = _rows_to_df(spark, rows)
     table_root = spark_path(table_root_dir)
