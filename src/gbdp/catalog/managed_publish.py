@@ -13,6 +13,7 @@ from gbdp.utils.io import (
     silver_root,
     spark_path,
     storage_format,
+    has_files_with_suffix,
 )
 from gbdp.utils.time import daterange, parse_date
 
@@ -69,7 +70,12 @@ def _publish_gold(spark, dt: date, catalog: str, schema: str) -> None:
         part = table_dir / f"dt={dt.isoformat()}"
         if not path_exists(part):
             continue
-        df = spark.read.format("delta").load(spark_path(part))
+        try:
+            df = spark.read.format("delta").load(spark_path(part))
+        except Exception:
+            if not has_files_with_suffix(part, ".parquet"):
+                continue
+            df = spark.read.format("parquet").load(spark_path(part))
         from pyspark.sql import functions as F
         if "dt" not in df.columns:
             df = df.withColumn("dt", F.lit(dt.isoformat()))
