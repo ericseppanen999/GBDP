@@ -251,8 +251,13 @@ def _read_gold_bridge(root: Path, dt: date) -> Dict[tuple, str]:
             return {}
         from pyspark.sql import SparkSession
         spark = SparkSession.builder.getOrCreate()
+        dt_path = base / f"dt={dt_str}"
+        dt_delta_log = dt_path / "_delta_log"
         try:
-            df = spark.read.format("delta").load(spark_path(base)).where(f"dt = '{dt_str}'")
+            if path_exists(dt_delta_log):
+                df = spark.read.format("delta").load(spark_path(dt_path))
+            else:
+                df = spark.read.format("delta").load(spark_path(base)).where(f"dt = '{dt_str}'")
             data = [row.asDict() for row in df.collect()]
         except Exception:
             # Fallback to legacy parquet dt folder if delta log missing
