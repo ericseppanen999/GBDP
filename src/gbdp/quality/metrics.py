@@ -68,7 +68,10 @@ def _spark_count(path: Path) -> int:
     from pyspark.sql import SparkSession
 
     spark = SparkSession.builder.getOrCreate()
-    return spark.read.format("delta").load(spark_path(path)).count()
+    try:
+        return spark.read.format("delta").load(spark_path(path)).count()
+    except Exception:
+        return spark.read.format("parquet").load(spark_path(path)).count()
 
 
 def _write_parquet(rows: List[Dict], path: Path) -> None:

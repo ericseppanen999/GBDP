@@ -159,14 +159,21 @@ def _write_delta(rows: List[Dict[str, Any]], out_dir: Path, force: bool = False)
 
     # First write creates table schema
     if not _delta_exists(spark, table_root):
-        (
-            df.write.format("delta")
-            .mode("overwrite")
-            .option("overwriteSchema", "true")
-            .partitionBy("dt")
-            .save(table_root)
-        )
-        return
+        try:
+            (
+                df.write.format("delta")
+                .mode("overwrite")
+                .option("overwriteSchema", "true")
+                .partitionBy("dt")
+                .save(table_root)
+            )
+            return
+        except Exception as exc:
+            msg = str(exc)
+            if "DELTA_MISSING_TRANSACTION_LOG" in msg or "Incompatible format detected" in msg:
+                df.write.mode("overwrite").parquet(spark_path(out_dir))
+                return
+            raise
 
     # Partition overwrite
     w = (
@@ -180,6 +187,10 @@ def _write_delta(rows: List[Dict[str, Any]], out_dir: Path, force: bool = False)
     try:
         w.save(table_root)
     except Exception as exc:
+        msg = str(exc)
+        if "DELTA_MISSING_TRANSACTION_LOG" in msg or "Incompatible format detected" in msg:
+            df.write.mode("overwrite").parquet(spark_path(out_dir))
+            return
         # This is the exact failure you're seeing if a column changed type across runs.
         raise RuntimeError(
             f"Delta write failed (likely schema/type conflict). "

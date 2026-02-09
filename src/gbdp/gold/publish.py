@@ -158,14 +158,21 @@ def _write_delta(rows: List[Dict[str, Any]], table_root_dir: Path, dt_value: Opt
     table_root = spark_path(table_root_dir)
 
     if not _delta_exists(spark, table_root):
-        (
-            df.write.format("delta")
-            .mode("overwrite")
-            .option("overwriteSchema", "true")
-            .partitionBy("dt")
-            .save(table_root)
-        )
-        return
+        try:
+            (
+                df.write.format("delta")
+                .mode("overwrite")
+                .option("overwriteSchema", "true")
+                .partitionBy("dt")
+                .save(table_root)
+            )
+            return
+        except Exception as exc:
+            msg = str(exc)
+            if "DELTA_MISSING_TRANSACTION_LOG" in msg or "Incompatible format detected" in msg:
+                df.write.mode("overwrite").parquet(spark_path(table_root_dir))
+                return
+            raise
 
     w = (
         df.write.format("delta")
@@ -174,7 +181,14 @@ def _write_delta(rows: List[Dict[str, Any]], table_root_dir: Path, dt_value: Opt
     )
     if dt_value is not None:
         w = w.option("replaceWhere", f"dt = '{dt_value}'")
-    w.save(table_root)
+    try:
+        w.save(table_root)
+    except Exception as exc:
+        msg = str(exc)
+        if "DELTA_MISSING_TRANSACTION_LOG" in msg or "Incompatible format detected" in msg:
+            df.write.mode("overwrite").parquet(spark_path(table_root_dir))
+            return
+        raise
 
 
 # -----------------------------
