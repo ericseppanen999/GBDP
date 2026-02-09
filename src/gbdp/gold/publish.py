@@ -251,8 +251,15 @@ def _read_gold_bridge(root: Path, dt: date) -> Dict[tuple, str]:
             return {}
         from pyspark.sql import SparkSession
         spark = SparkSession.builder.getOrCreate()
-        df = spark.read.format("delta").load(spark_path(base)).where(f"dt = '{dt_str}'")
-        data = [row.asDict() for row in df.collect()]
+        try:
+            df = spark.read.format("delta").load(spark_path(base)).where(f"dt = '{dt_str}'")
+            data = [row.asDict() for row in df.collect()]
+        except Exception:
+            # Fallback to legacy parquet dt folder if delta log missing
+            legacy = root / "bridge_source_ids" / f"dt={dt_str}"
+            if not path_exists(legacy) or not has_files_with_suffix(legacy, ".parquet"):
+                return {}
+            data = read_parquet_rows(legacy)
 
     else:
         return {}
