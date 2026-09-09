@@ -1,0 +1,197 @@
+# Semantic layer for the GBDP gold schema.
+#
+# This is the metadata that both the /schema API endpoint and the MCP server
+# expose to a query client (human or LLM) so it can write correct SQL without
+# reverse-engineering the pipeline source. It documents table grain, key
+# columns, join keys, and known caveats/limitations -- including honest notes
+# about tables that are thinner than their name implies.
+#
+# All ID columns (player_id, team_id, game_id, league_id, season_id) are
+# ULIDs assigned by identity resolution, NOT the raw per-source IDs (an MLB
+# Stats API player_id and an NPB SPAIA player_id for the same real person
+# resolve to the SAME canonical player_id here once matched). source_* /
+# source_id columns, where present, hold the original per-source ID.
+
+tables:
+  dim_player:
+    description: >
+      Canonical player dimension, one row per player per validity period
+      (SCD2 -- filter to is_current = true for the current view, or use
+      dt to see the dimension as of a specific date).
+    grain: one row per player_id per valid_from_dt
+    columns:
+      player_id: Canonical ULID, stable across all sources for the same real player.
+      primary_name: Display name.
+      bats: Batting handedness (L/R/S/UNK).
+      throws: Throwing handedness (L/R/UNK).
+      primary_position: Roster position abbreviation, source-dependent format.
+      league_id: FK to dim_league -- the league this player's most recent roster entry came from.
+      is_current: True if this is the current/latest version of this player's attributes.
+      source / source_player_id: The source system and raw ID that first established this row.
+    caveats: >
+      height_cm/weight_kg/nationality/dob/alternate_names are schema
+      placeholders -- not populated by any connector yet, always null.
+      For kbo_api specifically, source_player_id is the player's NAME (no
+      numeric player ID exists anywhere in that source's API responses),
+      so it is weaker than other sources' identity resolution.
+
+  dim_team:
+    description: Canonical team dimension (SCD2, same pattern as dim_player).
+    grain: one row per team_id per valid_from_dt
+    columns:
+      team_id: Canonical ULID.
+      team_name: Display name (native-language for NPB/KBO; not translated).
+      league_id: FK to dim_league.
+      source / source_team_id: Origin source and raw team code/ID.
+    caveats: team_abbrev and home_city are schema placeholders, always null.
+
+  dim_league:
+    description: Static reference table of leagues, one row per league per dt snapshot.
+    grain: one row per league_code
+    columns:
+      league_id: Canonical UUID (static per league, defined in configs/leagues.yaml).
+      league_code: MLB / NPB / KBO / LMB / INDY.
+
+  dim_season:
+    description: >
+      Synthetic season reference generated per-league per-year on every
+      pipeline run (not derived from real season schedule data) -- season
+      boundaries are approximate calendar-month guesses, not the league's
+      actual opening day / postseason end.
+    grain: one row per league_code per season_year
+
+  fact_game:
+    description: One row per game, across all leagues and sources.
+    grain: one row per game_id
+    columns:
+      game_id: Canonical ULID, derived from f"game:{source}:{source_game_id}".
+      home_team_id / away_team_id: FK to dim_team.
+      home_score / away_score: Final (or as-of-fetch) score.
+      status: Free-text status string, vocabulary varies by source (e.g. "Final" vs a source-native string).
+      source / source_game_id: Origin connector and that connector's raw game ID.
+    caveats: >
+      The SAME real-world game can appear more than once if multiple
+      sources cover it (e.g. an MLB game from both mlb_statsapi and
+      retrosheet_local) -- game_id is derived per-source, there is no
+      cross-source game de-duplication. Filter by `source` if you need
+      exactly-once game counts for MLB.
+
+  fact_roster:
+    description: Daily roster snapshot -- one row per player rostered to a team on a given dt.
+    grain: one row per (team_id, player_id, dt)
+
+  fact_transaction:
+    description: MLB transactions (trades, signings, DFA, etc.) from mlb_statsapi only.
+    grain: one row per transaction_id
+
+  fact_pitch:
+    description: >
+      Pitch-by-pitch data. Currently MLB-only, sourced from Statcast
+      (mlb_statcast) via Baseball Savant's CSV export.
+    grain: one row per pitch_id
+    columns:
+      pitcher_id / batter_id: FK to dim_player.
+      pitch_type: Statcast pitch type code (FF, SL, CH, etc.).
+      release_speed: MPH.
+      result: The `description` field from Statcast (e.g. "swinging_strike", "ball", "hit_into_play").
+    caveats: >
+      Availability lags real-time -- Baseball Savant often hasn't published
+      "yesterday"'s data yet by the time the nightly job runs at 04:00 UTC.
+      Do not assume a recent dt has full (or any) pitch coverage; check
+      pitch_coverage in audit_quality for that date first.
+
+  fact_plate_appearance:
+    description: One row per completed plate appearance, MLB (from Statcast) and NPB (reconstructed from play-by-play text).
+    grain: one row per pa_id
+    columns:
+      event_type: Canonical outcome (e.g. HR, 1B, BB, K, OUT) -- mapped from source-specific vocab.
+      base_state_before / base_state_after: Integer-encoded baserunner state (0-7, bitmask of 1B/2B/3B occupied).
+      outs_before / outs_after: 0-3.
+      runs_scored_on_play: Used to derive run_expectancy.
+
+  fact_boxscore_batting:
+    description: >
+      Per-player, per-game batting line. Populated from mlb_statsapi
+      (full detail), kbo_api (partial), indy_local/kbo_local/lmb_local/
+      retrosheet_local (only if manual data has been supplied -- currently
+      none has, so these sources contribute zero rows in practice).
+    grain: one row per (game_id, player_id, source)
+    columns:
+      ab, h, 2b, 3b, hr, bb, so, rbi, r: Standard batting counting stats for that single game.
+    caveats: >
+      kbo_api rows only populate ab/h/rbi/r -- 2b/3b/hr/bb/so are always
+      null for that source (not broken out anywhere in KBO's API response).
+      There is no rollup table: this is per-GAME, not per-season. To get a
+      season line, SUM() across rows for a player_id within a date range
+      yourself (see season_batting_line under derived_metrics below).
+
+  fact_boxscore_pitching:
+    description: Per-player, per-game pitching line. Same source coverage notes as fact_boxscore_batting.
+    grain: one row per (game_id, player_id, source)
+    columns:
+      ip: Innings pitched as a STRING (e.g. "6.1" = 6 and 1/3 innings, "6.2" = 6 and 2/3) -- NOT a decimal fraction. Do not divide/sum this as a plain float without conversion.
+      h, r, er, bb, so, hr: Standard pitching counting stats for that single game.
+
+  fact_standings:
+    description: NPB standings only (npb_spaia). No other league populates this.
+    grain: one row per team_id per dt
+
+  fact_contract:
+    description: Schema placeholder -- no connector populates this yet. Always empty.
+
+  bridge_source_ids:
+    description: >
+      The identity-resolution bridge table mapping every (entity_type,
+      source, source_id) to a canonical_id. Query this if you need to go
+      from a raw source ID (e.g. an MLB Stats API player_id you already
+      know) to the canonical player_id/team_id used everywhere else in gold.
+    grain: one row per (entity_type, source, source_id, dt)
+    columns:
+      confidence: Match confidence score (0-1) from the identity-resolution rules.
+      match_method: How the match was made (e.g. exact source_id reuse, name+dob heuristic, manual override).
+
+  run_expectancy:
+    description: >
+      Simple run-expectancy matrix: average runs scored on the rest of the
+      inning, by (base_state, outs), computed fresh from that day's
+      fact_plate_appearance data only (not a rolling/historical model).
+    grain: one row per (base_state, outs) per dt
+    caveats: Based on a single day's plate appearances -- small sample, noisy. Not a real historical RE24-style matrix.
+
+  breakout_candidates:
+    description: >
+      NOT real breakout modeling despite the name. Currently just the top
+      20 single-game home-run performances for that date from
+      fact_boxscore_batting, sorted by hr. No trend analysis, no rate
+      stats, no year-over-year comparison.
+    grain: up to 20 rows per dt
+
+  feature_player_rolling_30d:
+    description: Rolling 30-day feature aggregates per player, intended for ML feature use.
+    grain: one row per player_id per dt
+
+audit_tables:
+  # Operational/observability tables, not intended for baseball analysis.
+  # Listed for completeness in case a query needs to check data quality
+  # before trusting a given dt's analytical tables.
+  audit_quality: Per-check pass/fail results from the quality_checks pipeline stage (uniqueness, referential integrity, coverage thresholds, etc.) -- see the `ok` column.
+  audit_pipeline_runs: One row per nightly/backfill run with row-count summaries.
+  audit_stage_runs: Per-stage timing/status for a given pipeline run.
+  audit_schema: Bronze schema-drift detection snapshots.
+  merge_events: Log of manual identity-override merges applied during identity resolution.
+
+derived_metrics:
+  # Formulas an LLM/client should apply itself -- none of these are
+  # materialized columns anywhere in gold.
+  batting_average: "h / NULLIF(ab, 0)"
+  on_base_percentage: "(h + bb) / NULLIF(ab + bb, 0)  -- approximate: HBP/SF not tracked separately in fact_boxscore_batting"
+  slugging_percentage: "(h - 2b - 3b - hr) + 2*2b + 3*3b + 4*hr) / NULLIF(ab, 0)  -- singles inferred as h - 2b - 3b - hr"
+  era: >
+    9 * SUM(er) / NULLIF(SUM(ip_outs) / 3.0, 0), where ip_outs must first
+    be derived from the fact_boxscore_pitching.ip STRING: whole innings
+    part * 3 + fractional part (0/1/2) -- see the ip caveat on
+    fact_boxscore_pitching above. Do not sum the ip strings directly.
+  season_batting_line: >
+    SELECT player_id, SUM(ab) ab, SUM(h) h, SUM(hr) hr, SUM(rbi) rbi,
+    SUM(h)/NULLIF(SUM(ab),0) avg FROM fact_boxscore_batting
+    WHERE dt BETWEEN :start AND :end GROUP BY player_id

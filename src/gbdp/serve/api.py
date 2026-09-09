@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
 
-from gbdp.serve.db import query
+from gbdp.serve.db import UnsafeSqlError, load_semantic_layer, query, run_sql
 
 app = FastAPI(title="GBDP API", version="0.1.0")
 
@@ -87,3 +88,29 @@ def run_expectancy(league: str | None = None, season: int | None = None, as_of: 
 @app.get("/breakout-candidates")
 def breakout_candidates(league: str | None = None, season: int | None = None, as_of: str | None = None):
     return query("breakout_candidates", dt=as_of)
+
+
+@app.get("/schema")
+def schema():
+    """Semantic layer: table descriptions, columns, caveats, derived-metric
+    formulas. Read this before writing a /query SQL string."""
+    return load_semantic_layer()
+
+
+class QueryRequest(BaseModel):
+    sql: str
+    limit: int = 1000
+
+
+@app.post("/query")
+def run_query(req: QueryRequest):
+    """Ad-hoc read-only SQL against the gold layer. Tables are addressable
+    by their bare semantic-layer name (e.g. `fact_game`) regardless of
+    whether the backend is parquet/DuckDB or Delta/Spark. See GET /schema
+    for what's available before writing a query."""
+    try:
+        return run_sql(req.sql, limit=req.limit)
+    except UnsafeSqlError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"query failed: {exc}")

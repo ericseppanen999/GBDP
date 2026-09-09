@@ -10,13 +10,19 @@ dependencies = [
   "pydantic>=2.5.0",
   "PyYAML>=6.0.1",
   "duckdb>=0.10.0",
-  "fastapi>=0.110.0",
+  # mcp pulls in a starlette version too new for fastapi<0.135 (confirmed:
+  # FastAPI() constructor itself fails at import time with fastapi 0.115.6 +
+  # the starlette mcp installs) -- floor bumped specifically to stay
+  # compatible with mcp's starlette requirement.
+  "fastapi>=0.135.0",
   "uvicorn>=0.27.0",
   "pytest>=8.0.0",
+  "mcp>=1.0.0,<2.0.0",
 ]
 
 [project.scripts]
 gbdp = "gbdp.cli:main"
+gbdp-mcp = "gbdp.mcp_server:main"
 
 [tool.black]
 line-length = 100
