@@ -27,6 +27,13 @@ class Partition:
 
 class BaseConnector:
     source: str
+    # Per-entity list of field names that MUST be present as keys on a real
+    # (non-empty, non-error) parsed record. Populated for entities where a
+    # wrong-endpoint/wrong-report bug has actually happened in production
+    # (see: mlb_statcast silently returning a leaderboard report instead of
+    # pitch-by-pitch data) -- this is exactly what would have caught that bug
+    # at ingestion time instead of several layers downstream, silently.
+    EXPECTED_FIELDS: Dict[str, List[str]] = {}
 
     def __init__(self, writer: BronzeWriter, cache: ResponseCache) -> None:
         self.writer = writer
@@ -48,8 +55,28 @@ class BaseConnector:
         raise NotImplementedError
 
     def write_bronze(self, payload: RawPayload, records: Iterable[Dict[str, Any]], force: bool = False) -> None:
+        records = list(records)
+        self._check_contract(payload.entity, records)
         self.writer.write_raw(payload, force=force)
         self.writer.write_parsed(payload, records, force=force)
+
+    def _check_contract(self, entity: str, records: List[Dict[str, Any]]) -> None:
+        expected = self.EXPECTED_FIELDS.get(entity)
+        if not expected:
+            return
+        real_record = next(
+            (r for r in records if isinstance(r, dict) and "raw_text" not in r and not r.get("empty")),
+            None,
+        )
+        if real_record is None:
+            return  # genuinely no data for this partition; nothing to validate
+        missing = [f for f in expected if f not in real_record]
+        if missing:
+            raise RuntimeError(
+                f"{self.source}:{entity} contract violation: response is missing expected "
+                f"field(s) {missing} -- this usually means the wrong endpoint/report was "
+                f"fetched (got keys: {sorted(real_record.keys())[:15]})"
+            )
 
     def emit_watermark(self, partition: Partition, status: str) -> None:
         logger.info("watermark source=%s entity=%s dt=%s status=%s", self.source, partition.entity, partition.dt, status)

@@ -9,6 +9,12 @@ from gbdp.utils.time import daterange, parse_date
 
 class MlbStatcastConnector(BaseConnector):
     source = "mlb_statcast"
+    # Without type=details, Baseball Savant silently returns a small
+    # aggregate leaderboard report instead of pitch-by-pitch data -- no
+    # game_pk, no per-pitch columns at all. This is exactly what happened in
+    # production; this check catches it at ingestion instead of several
+    # layers downstream where it just looks like "very low pitch coverage".
+    EXPECTED_FIELDS = {"pitches": ["game_pk", "pitch_type", "batter", "pitcher"]}
 
     def __init__(self, writer, cache, base_url: str) -> None:
         super().__init__(writer, cache)
@@ -46,6 +52,13 @@ class MlbStatcastConnector(BaseConnector):
         import csv
         from io import StringIO
 
-        buffer = StringIO(payload.body_text)
+        # Baseball Savant's CSV export is served with a leading BOM. Left in
+        # place, csv.DictReader folds it into the FIRST column's key (e.g.
+        # "pitch_type" becomes a key with the BOM baked in), silently making
+        # that one column unreadable by its real name while every other
+        # column parses fine -- confirmed in production: pitch_type came
+        # back None forever.
+        text = payload.body_text.lstrip("﻿")
+        buffer = StringIO(text)
         reader = csv.DictReader(buffer)
         return list(reader)

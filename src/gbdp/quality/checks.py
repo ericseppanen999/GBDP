@@ -76,7 +76,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
         else:
             dupes = _spark_uniqueness(root / table, dt_str, cols)
         results.append(
-            {"check": "uniqueness", "table": table, "columns": cols_sql, "dupes": dupes, "dt": dt_str}
+            {"check": "uniqueness", "table": table, "columns": cols_sql, "dupes": dupes, "dt": dt_str, "ok": dupes == 0}
         )
 
     # Referential integrity
@@ -104,6 +104,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                 "key": key,
                 "missing": missing,
                 "dt": dt_str,
+                "ok": missing == 0,
             }
         )
 
@@ -235,7 +236,27 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
     if path_exists(out_path) and not force:
         return out_path
     _write_parquet(results, out_path)
+    _enforce(results, dt_str)
     return out_path
+
+
+# Structural invariants: these should never fail on correct code, regardless
+# of upstream data availability, so a violation blocks the pipeline.
+_HARD_CHECKS = {"uniqueness", "referential_integrity", "row_count_min", "base_state_range", "outs_range"}
+# Completeness/coverage signals: these can legitimately vary with upstream
+# publishing lag (confirmed: Statcast often isn't published yet for "yesterday"
+# by the time the nightly job runs), so they're monitored but non-blocking.
+_SOFT_CHECKS = {"pitch_coverage", "npb_pbp_coverage", "schema_drift"}
+
+
+def _enforce(results: List[Dict[str, object]], dt_str: str) -> None:
+    hard_failures = [r for r in results if r.get("check") in _HARD_CHECKS and r.get("ok") is False]
+    soft_failures = [r for r in results if r.get("check") in _SOFT_CHECKS and r.get("ok") is False]
+    for r in soft_failures:
+        logger.warning("quality_checks dt=%s SOFT FAIL: %s", dt_str, r)
+    if hard_failures:
+        summary = "; ".join(f"{r.get('check')}:{r.get('table') or r.get('child') or ''}" for r in hard_failures)
+        raise RuntimeError(f"quality_checks dt={dt_str} failed hard invariant(s): {summary}")
 
 
 def _load_quality_config() -> Dict:

@@ -11,6 +11,11 @@ from gbdp.utils.time import daterange, parse_date
 
 class MlbStatsApiConnector(BaseConnector):
     source = "mlb_statsapi"
+    EXPECTED_FIELDS = {
+        "schedule": ["dates"],
+        "rosters": ["teams"],
+        "transactions": ["transactions"],
+    }
 
     def __init__(self, writer, cache, base_url: str) -> None:
         super().__init__(writer, cache)
