@@ -335,3 +335,26 @@ def test_npb_roster_extracts_player_id_from_person_info_id():
 
     assert len(rows) == 1
     assert rows[0]["player_id"] == "1750802", f"player_id not extracted: {rows[0]}"
+
+
+# --- Bug 10: gold_publish writes ONE Delta table per fact table, one dt at --
+# a time, via replaceWhere + mergeSchema. _infer_type() decided a field's
+# type purely from that single write's batch of rows, so a date where every
+# contributing source happened to leave a field null (e.g. kbo_api boxscore
+# rows never populate 2b/3b/hr/bb/so) inferred it as STRING (the all-null
+# fallback), while a date with real data inferred it as LONG -- and Delta
+# legitimately refuses to merge those types. Confirmed live during a real
+# backfill: register_uc failed with "[DELTA_FAILED_TO_MERGE_FIELDS] Failed
+# to merge fields 'c_2b' and 'c_2b'" on fact_boxscore_batting.
+def test_infer_type_pins_known_numeric_fields_even_when_all_null():
+    from gbdp.gold.publish import _infer_type
+
+    assert _infer_type([None, None, None], field_name="2b") == "long"
+    assert _infer_type([None, None], field_name="release_speed") == "double"
+    # A field with real data must still infer the SAME type an all-null
+    # batch for that field now gets, or the fix doesn't actually prevent
+    # cross-date drift.
+    assert _infer_type([1, 2, None], field_name="2b") == "long"
+    # Unrecognized fields keep the original (safe) all-null-to-string
+    # fallback -- this fix is a targeted pin, not a blanket type guess.
+    assert _infer_type([None, None], field_name="some_unrelated_field") == "string"

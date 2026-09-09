@@ -31,7 +31,36 @@ logger = get_logger("gbdp.gold")
 # Delta helpers (fixes NullType + dt=... delta-log issues)
 # -----------------------------
 
-def _infer_type(values: List[Any]) -> str:
+# Gold tables are written incrementally, one dt at a time, into ONE Delta
+# table via replaceWhere + mergeSchema. If a field's TYPE is inferred purely
+# from that single write's batch of rows, a date where every source happens
+# to leave the field null (e.g. kbo_api boxscore rows never populate hr/bb/
+# so; a date with no MLB boxscore data yet) infers as STRING (the all-null
+# fallback), while a date with real data infers as LONG/DOUBLE -- and Delta
+# legitimately refuses to merge those ("Failed to merge fields 'x' and 'x'"
+# -- confirmed live on fact_boxscore_batting.2b during a real backfill: kbo
+# rows are always-null for it, and register_uc failed exactly this way).
+# Pin these known counting/measurement fields to their real type up front so
+# an all-null batch infers the SAME type a populated batch would, instead of
+# drifting to "string" and poisoning schema merge for every later write.
+_KNOWN_NUMERIC_FIELD_TYPES: Dict[str, str] = {
+    # fact_boxscore_batting / fact_boxscore_pitching
+    "ab": "long", "h": "long", "2b": "long", "3b": "long", "hr": "long",
+    "bb": "long", "so": "long", "rbi": "long", "r": "long", "er": "long",
+    # fact_pitch
+    "pitch_number_in_pa": "long", "balls_before": "long", "strikes_before": "long",
+    "release_speed": "double", "plate_x": "double", "plate_z": "double",
+    # fact_plate_appearance
+    "outs_on_play": "long", "base_state_before": "long", "outs_before": "long",
+    "base_state_after": "long", "outs_after": "long", "runs_scored_on_play": "long",
+    # fact_game
+    "home_score": "long", "away_score": "long",
+    # fact_standings
+    "w": "long", "l": "long", "t": "long",
+}
+
+
+def _infer_type(values: List[Any], field_name: str | None = None) -> str:
     """
     Conservative type inference to avoid Spark conversion errors:
     - if any string-like appears -> string
@@ -39,7 +68,7 @@ def _infer_type(values: List[Any]) -> str:
     - else if any int -> long
     - else if any bool -> boolean
     - else if any bytes -> binary
-    - else -> string (all null)
+    - else -> known numeric type for field_name if any, else string (all null)
     """
     has_str = False
     has_float = False
@@ -81,6 +110,8 @@ def _infer_type(values: List[Any]) -> str:
         return "boolean"
     if has_bin:
         return "binary"
+    if field_name and field_name in _KNOWN_NUMERIC_FIELD_TYPES:
+        return _KNOWN_NUMERIC_FIELD_TYPES[field_name]
     return "string"
 
 
@@ -128,7 +159,7 @@ def _rows_to_df(spark, rows: List[Dict[str, Any]]):
     fields = []
     for k in keys:
         vals = [r.get(k) for r in norm]
-        fields.append(StructField(k, dtype(_infer_type(vals)), True))
+        fields.append(StructField(k, dtype(_infer_type(vals, field_name=k)), True))
 
     schema = StructType(fields)
     return spark.createDataFrame(norm, schema=schema)
