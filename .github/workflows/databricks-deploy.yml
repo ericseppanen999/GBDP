@@ -6,7 +6,43 @@ on:
       - main
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run unit tests
+        run: pytest tests/ -q
+
+      # Real end-to-end run against live MLB Stats API / Statcast for a fixed
+      # historical date (already verified clean in manual testing). Bundle
+      # validate only checks config syntax -- this is what actually catches a
+      # broken connector, a bad transform, or a data-quality regression
+      # before it ever reaches prod. NPB/KBO/LMB/indy/retrosheet have no
+      # local fixture data available here (data/ is gitignored) and degrade
+      # to empty results gracefully rather than failing.
+      - name: Run end-to-end pipeline smoke test
+        run: |
+          python -m gbdp.cli run \
+            --start 2025-04-01 --end 2025-04-01 \
+            --leagues mlb \
+            --stages fetch_schedules,fetch_rosters,fetch_transactions,fetch_pitches,silver_normalize,identity_resolve,gold_publish,quality_checks \
+            --force
+        env:
+          GBDP_DATA_ROOT: /tmp/gbdp-ci-smoke-test
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
