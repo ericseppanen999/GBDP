@@ -32,6 +32,10 @@ def normalize_mlb(
             outputs.append(_normalize_transactions(root, d, force))
         elif entity == "pitches":
             outputs.append(_normalize_pitches(root, d, force))
+        elif entity == "boxscore_batting":
+            outputs.append(_normalize_boxscore_batting(root, d, force))
+        elif entity == "boxscore_pitching":
+            outputs.append(_normalize_boxscore_pitching(root, d, force))
         else:
             raise ValueError(f"Unsupported MLB silver entity: {entity}")
     return outputs
@@ -179,6 +183,90 @@ def _normalize_pitches(root: Path, dt: date, force: bool) -> Path:
             row["source"] = "mlb_statcast"
         normalized.append(row)
     out_dir = _silver_path(root, "mlb_statcast", "pitches", dt)
+    ensure_dir(out_dir)
+    return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
+
+
+def _iter_boxscore_player_stats(root: Path, dt: date, stat_key: str):
+    """Yield (game_pk, team_id, player_id, player_name, stats_dict) for every
+    player in every game's boxscore who has a non-empty `stat_key` stat block
+    (i.e. actually batted or actually pitched in the game)."""
+    rows = _read_bronze("mlb_statsapi", "boxscore", dt, root)
+    for r in rows:
+        games = r.get("games")
+        if isinstance(games, str):
+            games = _parse_json_maybe(games)
+        if isinstance(games, dict):
+            games = games.get("games", [])
+        for game_entry in games or []:
+            game_pk = game_entry.get("game_pk")
+            box = _parse_json_maybe(game_entry.get("body_text")) or {}
+            teams = box.get("teams", {}) if isinstance(box, dict) else {}
+            for side in ("home", "away"):
+                team = teams.get(side) or {}
+                team_id = _as_str((team.get("team") or {}).get("id"))
+                for p in (team.get("players") or {}).values():
+                    stats = ((p.get("stats") or {}).get(stat_key)) or {}
+                    if not stats:
+                        continue
+                    person = p.get("person") or {}
+                    yield game_pk, team_id, _as_str(person.get("id")), stats, p
+
+
+def _normalize_boxscore_batting(root: Path, dt: date, force: bool) -> Path:
+    normalized: List[Dict[str, Any]] = []
+    include_partition_cols = include_partition_cols_silver()
+    for game_pk, team_id, player_id, batting, p in _iter_boxscore_player_stats(root, dt, "batting"):
+        if not batting.get("atBats") and not batting.get("plateAppearances"):
+            continue  # entered the game but never had a plate appearance
+        row = {
+            "game_id": _as_str(game_pk),
+            "team_id": team_id,
+            "player_id": player_id,
+            "ab": _as_int(batting.get("atBats")),
+            "h": _as_int(batting.get("hits")),
+            "2b": _as_int(batting.get("doubles")),
+            "3b": _as_int(batting.get("triples")),
+            "hr": _as_int(batting.get("homeRuns")),
+            "bb": _as_int(batting.get("baseOnBalls")),
+            "so": _as_int(batting.get("strikeOuts")),
+            "rbi": _as_int(batting.get("rbi")),
+            "r": _as_int(batting.get("runs")),
+            "raw_json": stable_json_dumps(p),
+        }
+        if include_partition_cols:
+            row["dt"] = dt.isoformat()
+            row["source"] = "mlb_statsapi"
+        normalized.append(row)
+    out_dir = _silver_path(root, "mlb_statsapi", "boxscore_batting", dt)
+    ensure_dir(out_dir)
+    return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
+
+
+def _normalize_boxscore_pitching(root: Path, dt: date, force: bool) -> Path:
+    normalized: List[Dict[str, Any]] = []
+    include_partition_cols = include_partition_cols_silver()
+    for game_pk, team_id, player_id, pitching, p in _iter_boxscore_player_stats(root, dt, "pitching"):
+        if not pitching.get("inningsPitched"):
+            continue  # in the pitching stats block but never actually appeared
+        row = {
+            "game_id": _as_str(game_pk),
+            "team_id": team_id,
+            "player_id": player_id,
+            "ip": pitching.get("inningsPitched"),
+            "h": _as_int(pitching.get("hits")),
+            "r": _as_int(pitching.get("runs")),
+            "er": _as_int(pitching.get("earnedRuns")),
+            "bb": _as_int(pitching.get("baseOnBalls")),
+            "so": _as_int(pitching.get("strikeOuts")),
+            "hr": _as_int(pitching.get("homeRuns")),
+            "raw_json": stable_json_dumps(p),
+        }
+        if include_partition_cols:
+            row["dt"] = dt.isoformat()
+            row["source"] = "mlb_statsapi"
+        normalized.append(row)
+    out_dir = _silver_path(root, "mlb_statsapi", "boxscore_pitching", dt)
     ensure_dir(out_dir)
     return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 

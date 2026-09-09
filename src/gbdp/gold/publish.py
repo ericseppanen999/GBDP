@@ -839,6 +839,25 @@ def _write_fact_standings(root: Path, dt: date, bridge: Dict[tuple, str], force:
 
 def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
+    for r in _read_silver(root, "mlb_statsapi", "boxscore_batting", dt):
+        rows.append(
+            {
+                "game_id": ulid_from_key(f"game:mlb_statsapi:{r.get('game_id')}", dt.isoformat()),
+                "team_id": bridge.get(("team", "mlb_statsapi", str(r.get("team_id")))),
+                "player_id": bridge.get(("player", "mlb_statsapi", str(r.get("player_id")))),
+                "ab": r.get("ab"),
+                "h": r.get("h"),
+                "2b": r.get("2b"),
+                "3b": r.get("3b"),
+                "hr": r.get("hr"),
+                "bb": r.get("bb"),
+                "so": r.get("so"),
+                "rbi": r.get("rbi"),
+                "r": r.get("r"),
+                "dt": dt.isoformat(),
+                "source": "mlb_statsapi",
+            }
+        )
     for r in _read_silver(root, "indy_local", "boxscore_batting", dt):
         rows.append(
             {
@@ -920,6 +939,23 @@ def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str],
 
 def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
+    for r in _read_silver(root, "mlb_statsapi", "boxscore_pitching", dt):
+        rows.append(
+            {
+                "game_id": ulid_from_key(f"game:mlb_statsapi:{r.get('game_id')}", dt.isoformat()),
+                "team_id": bridge.get(("team", "mlb_statsapi", str(r.get("team_id")))),
+                "player_id": bridge.get(("player", "mlb_statsapi", str(r.get("player_id")))),
+                "ip": r.get("ip"),
+                "h": r.get("h"),
+                "r": r.get("r"),
+                "er": r.get("er"),
+                "bb": r.get("bb"),
+                "so": r.get("so"),
+                "hr": r.get("hr"),
+                "dt": dt.isoformat(),
+                "source": "mlb_statsapi",
+            }
+        )
     for r in _read_silver(root, "indy_local", "boxscore_pitching", dt):
         rows.append(
             {

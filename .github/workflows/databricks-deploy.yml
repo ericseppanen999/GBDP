@@ -36,7 +36,7 @@ jobs:
           python -m gbdp.cli run \
             --start 2025-04-01 --end 2025-04-01 \
             --leagues mlb \
-            --stages fetch_schedules,fetch_rosters,fetch_transactions,fetch_pitches,silver_normalize,identity_resolve,gold_publish,quality_checks \
+            --stages fetch_schedules,fetch_rosters,fetch_transactions,fetch_pitches,fetch_boxscores,silver_normalize,identity_resolve,gold_publish,quality_checks \
             --force
         env:
           GBDP_DATA_ROOT: /tmp/gbdp-ci-smoke-test

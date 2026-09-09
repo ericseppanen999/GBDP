@@ -128,6 +128,7 @@ def _pipeline_stages() -> Dict[str, Callable]:
         "fetch_games": _stage_fetch_games,
         "fetch_pbp": _stage_fetch_pbp,
         "fetch_pitches": _stage_fetch_pitches,
+        "fetch_boxscores": _stage_fetch_boxscores,
         "fetch_npb_stats": _stage_fetch_npb_stats,
         "silver_normalize": _stage_silver,
         "identity_resolve": _stage_identity,
@@ -229,6 +230,13 @@ def _stage_fetch_pitches(start, end, cfg, writer, cache, force, leagues=None):
         _run_partitions(npb, npb.list_partitions(start, end, "game_pitches"), force, "fetch_pitches:npb_spaia:game_pitches")
 
 
+def _stage_fetch_boxscores(start, end, cfg, writer, cache, force, leagues=None):
+    if not _allowed(leagues, "mlb"):
+        return
+    mlb = MlbStatsApiConnector(writer, cache, cfg["mlb_statsapi"]["base_url"])
+    _run_partitions(mlb, mlb.list_partitions(start, end, "boxscore"), force, "fetch_boxscores:mlb_statsapi:boxscore")
+
+
 def _stage_fetch_npb_stats(start, end, cfg, writer, cache, force, leagues=None):
     if not _allowed(leagues, "npb"):
         return
@@ -250,7 +258,7 @@ def _stage_fetch_npb_stats(start, end, cfg, writer, cache, force, leagues=None):
 
 def _stage_silver(start, end, cfg, writer, cache, force, leagues=None):
     if _allowed(leagues, "mlb"):
-        for entity in ["games", "rosters", "transactions", "pitches"]:
+        for entity in ["games", "rosters", "transactions", "pitches", "boxscore_batting", "boxscore_pitching"]:
             _run_step(f"silver_normalize:mlb:{entity}", lambda entity=entity: normalize_mlb(entity, start, end, force=force))
     if _allowed(leagues, "npb"):
         for entity in [
