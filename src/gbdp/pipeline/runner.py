@@ -13,6 +13,7 @@ from gbdp.bronze.cache import ResponseCache
 from gbdp.bronze.writer import BronzeWriter
 from gbdp.connectors.indy import IndyLocalConnector
 from gbdp.connectors.kbo import KboLocalConnector
+from gbdp.connectors.kbo_api import KboApiConnector
 from gbdp.connectors.lmb import LmbLocalConnector
 from gbdp.connectors.mlb_statcast import MlbStatcastConnector
 from gbdp.connectors.mlb_statsapi import MlbStatsApiConnector
@@ -22,6 +23,7 @@ from gbdp.identity.resolver import resolve_identity
 from gbdp.quality.checks import run_quality_checks
 from gbdp.quality.metrics import write_run_audit
 from gbdp.silver.indy import normalize_indy
+from gbdp.silver.kbo_api import normalize_kbo_api
 from gbdp.silver.local_boxscore import normalize_local_boxscore
 from gbdp.silver.mlb import normalize_mlb
 from gbdp.silver.npb import normalize_npb
@@ -206,6 +208,9 @@ def _stage_fetch_games(start, end, cfg, writer, cache, force, leagues=None):
         kbo = KboLocalConnector(writer, cache)
         for entity in ["games", "boxscore_batting", "boxscore_pitching"]:
             _run_partitions(kbo, kbo.list_partitions(start, end, entity), force, f"fetch_games:kbo_local:{entity}")
+    if "kbo_api" in cfg and _allowed(leagues, "kbo"):
+        kbo_api = KboApiConnector(writer, cache)
+        _run_partitions(kbo_api, kbo_api.list_partitions(start, end, "games"), force, "fetch_games:kbo_api:games")
     if "lmb_local" in cfg and _allowed(leagues, "lmb"):
         lmb = LmbLocalConnector(writer, cache)
         for entity in ["games", "boxscore_batting", "boxscore_pitching"]:
@@ -231,10 +236,12 @@ def _stage_fetch_pitches(start, end, cfg, writer, cache, force, leagues=None):
 
 
 def _stage_fetch_boxscores(start, end, cfg, writer, cache, force, leagues=None):
-    if not _allowed(leagues, "mlb"):
-        return
-    mlb = MlbStatsApiConnector(writer, cache, cfg["mlb_statsapi"]["base_url"])
-    _run_partitions(mlb, mlb.list_partitions(start, end, "boxscore"), force, "fetch_boxscores:mlb_statsapi:boxscore")
+    if _allowed(leagues, "mlb"):
+        mlb = MlbStatsApiConnector(writer, cache, cfg["mlb_statsapi"]["base_url"])
+        _run_partitions(mlb, mlb.list_partitions(start, end, "boxscore"), force, "fetch_boxscores:mlb_statsapi:boxscore")
+    if "kbo_api" in cfg and _allowed(leagues, "kbo"):
+        kbo_api = KboApiConnector(writer, cache)
+        _run_partitions(kbo_api, kbo_api.list_partitions(start, end, "boxscore"), force, "fetch_boxscores:kbo_api:boxscore")
 
 
 def _stage_fetch_npb_stats(start, end, cfg, writer, cache, force, leagues=None):
@@ -285,6 +292,9 @@ def _stage_silver(start, end, cfg, writer, cache, force, leagues=None):
                 f"silver_normalize:kbo_local:{entity}",
                 lambda entity=entity: normalize_local_boxscore("kbo_local", entity, start, end, force=force),
             )
+    if "kbo_api" in cfg and _allowed(leagues, "kbo"):
+        for entity in ["games", "boxscore_batting", "boxscore_pitching"]:
+            _run_step(f"silver_normalize:kbo_api:{entity}", lambda entity=entity: normalize_kbo_api(entity, start, end, force=force))
     if "lmb_local" in cfg and _allowed(leagues, "lmb"):
         for entity in ["games", "rosters", "boxscore_batting", "boxscore_pitching"]:
             _run_step(

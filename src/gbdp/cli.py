@@ -13,6 +13,7 @@ from gbdp.connectors.mlb_statcast import MlbStatcastConnector
 from gbdp.connectors.mlb_statsapi import MlbStatsApiConnector
 from gbdp.connectors.npb_spaia import NpbSpaiaConnector
 from gbdp.connectors.kbo import KboLocalConnector
+from gbdp.connectors.kbo_api import KboApiConnector
 from gbdp.connectors.lmb import LmbLocalConnector
 from gbdp.connectors.indy import IndyLocalConnector
 from gbdp.connectors.retrosheet import RetrosheetLocalConnector
@@ -21,6 +22,7 @@ from gbdp.silver.mlb import normalize_mlb
 from gbdp.silver.indy import normalize_indy
 from gbdp.silver.retrosheet import normalize_retrosheet
 from gbdp.silver.local_boxscore import normalize_local_boxscore
+from gbdp.silver.kbo_api import normalize_kbo_api
 from gbdp.identity.resolver import resolve_identity
 from gbdp.gold.publish import publish_gold
 from gbdp.quality.checks import run_quality_checks
@@ -49,6 +51,8 @@ def build_connector(source: str, cfg: Dict, writer: BronzeWriter, cache: Respons
         return IndyLocalConnector(writer, cache)
     if source == "kbo_local":
         return KboLocalConnector(writer, cache)
+    if source == "kbo_api":
+        return KboApiConnector(writer, cache)
     if source == "lmb_local":
         return LmbLocalConnector(writer, cache)
     if source == "retrosheet_local":
@@ -81,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_p.add_argument(
         "--source",
         required=True,
-        choices=["mlb_statsapi", "mlb_statcast", "npb_spaia", "indy_local", "kbo_local", "lmb_local", "retrosheet_local"],
+        choices=["mlb_statsapi", "mlb_statcast", "npb_spaia", "indy_local", "kbo_local", "kbo_api", "lmb_local", "retrosheet_local"],
     )
     ingest_p.add_argument(
         "--entity",
@@ -104,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
     silver_p.add_argument(
         "--source",
         required=True,
-        choices=["npb_spaia", "mlb_statsapi", "mlb_statcast", "indy_local", "kbo_local", "lmb_local", "retrosheet_local"],
+        choices=["npb_spaia", "mlb_statsapi", "mlb_statcast", "indy_local", "kbo_local", "kbo_api", "lmb_local", "retrosheet_local"],
     )
     silver_p.add_argument(
         "--entity",
@@ -291,6 +295,8 @@ def main() -> None:
             normalize_indy(args.entity, args.start, args.end, force=args.force)
         elif args.source in {"kbo_local", "lmb_local"}:
             normalize_local_boxscore(args.source, args.entity, args.start, args.end, force=args.force)
+        elif args.source == "kbo_api":
+            normalize_kbo_api(args.entity, args.start, args.end, force=args.force)
         elif args.source == "retrosheet_local":
             normalize_retrosheet(args.entity, args.start, args.end, force=args.force)
     if args.cmd == "identity":

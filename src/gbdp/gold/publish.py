@@ -630,6 +630,7 @@ def _write_fact_game(root: Path, dt: date, bridge: Dict[tuple, str], force: bool
     rows.extend(_fact_game_from_silver(root, dt, "npb_spaia", "NPB", bridge))
     rows.extend(_fact_game_from_silver(root, dt, "indy_local", "INDY", bridge))
     rows.extend(_fact_game_from_silver(root, dt, "kbo_local", "KBO", bridge))
+    rows.extend(_fact_game_from_silver(root, dt, "kbo_api", "KBO", bridge))
     rows.extend(_fact_game_from_silver(root, dt, "lmb_local", "LMB", bridge))
     rows.extend(_fact_game_from_silver(root, dt, "retrosheet_local", "MLB", bridge))
     return _write_gold_table(root, "fact_game", dt, rows, force)
@@ -858,6 +859,27 @@ def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str],
                 "source": "mlb_statsapi",
             }
         )
+    for r in _read_silver(root, "kbo_api", "boxscore_batting", dt):
+        rows.append(
+            {
+                "game_id": ulid_from_key(f"game:kbo_api:{r.get('game_id')}", dt.isoformat()),
+                "team_id": bridge.get(("team", "kbo_api", str(r.get("team_id")))),
+                # kbo_api exposes no numeric player ID anywhere -- player_name
+                # is the only available bridge key for this source.
+                "player_id": bridge.get(("player", "kbo_api", str(r.get("player_name")))),
+                "ab": r.get("ab"),
+                "h": r.get("h"),
+                "2b": None,
+                "3b": None,
+                "hr": None,
+                "bb": None,
+                "so": None,
+                "rbi": r.get("rbi"),
+                "r": r.get("r"),
+                "dt": dt.isoformat(),
+                "source": "kbo_api",
+            }
+        )
     for r in _read_silver(root, "indy_local", "boxscore_batting", dt):
         rows.append(
             {
@@ -954,6 +976,23 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
                 "hr": r.get("hr"),
                 "dt": dt.isoformat(),
                 "source": "mlb_statsapi",
+            }
+        )
+    for r in _read_silver(root, "kbo_api", "boxscore_pitching", dt):
+        rows.append(
+            {
+                "game_id": ulid_from_key(f"game:kbo_api:{r.get('game_id')}", dt.isoformat()),
+                "team_id": bridge.get(("team", "kbo_api", str(r.get("team_id")))),
+                "player_id": bridge.get(("player", "kbo_api", str(r.get("player_name")))),
+                "ip": r.get("ip"),
+                "h": r.get("h"),
+                "r": r.get("r"),
+                "er": r.get("er"),
+                "bb": r.get("bb"),
+                "so": r.get("so"),
+                "hr": r.get("hr"),
+                "dt": dt.isoformat(),
+                "source": "kbo_api",
             }
         )
     for r in _read_silver(root, "indy_local", "boxscore_pitching", dt):

@@ -140,6 +140,23 @@ indy_local:
       path: "manual/indy/boxscore_pitching"
       required_params: []
 
+kbo_api:
+  # Unofficial: koreabaseball.com has no published/documented public API.
+  # This hits internal ASP.NET .asmx JSON web services that the site's own
+  # frontend JS calls (reverse-engineered from Schedule.aspx and
+  # GameCenter/ReviewNew.aspx page source). Could change or be blocked by
+  # KBO without notice. base_url is informational only -- the connector
+  # hardcodes the real endpoint URLs since they live under a fixed /ws/ path
+  # unrelated to any single "API root".
+  base_url: "https://www.koreabaseball.com"
+  endpoints:
+    games:
+      path: "/ws/Main.asmx/GetKboGameList"
+      required_params: ["leId", "srId", "date"]
+    boxscore:
+      path: "/ws/Schedule.asmx/GetBoxScoreScroll"
+      required_params: ["leId", "srId", "seasonId", "gameId"]
+
 kbo_local:
   base_url: "local"
   endpoints:

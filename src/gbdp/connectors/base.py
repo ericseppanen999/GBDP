@@ -169,6 +169,106 @@ class BaseConnector:
                 time.sleep(sleep_s)
         raise RuntimeError(f"HTTP GET failed after {self.retries} attempts: {last_exc}")
 
+    def http_post(self, url: str, data: Optional[Dict[str, Any]] = None, referer: Optional[str] = None) -> RawPayload:
+        # Mirrors http_get's caching/retry/throttle/request-log behavior for
+        # form-encoded POST endpoints (e.g. ASP.NET .asmx web services that
+        # only accept POST with form-urlencoded params, not query strings).
+        # Some such services (confirmed: koreabaseball.com's .asmx endpoints)
+        # silently return an HTML error page instead of JSON -- still HTTP
+        # 200 -- if the request doesn't carry a same-origin Referer, even
+        # though no session/cookie is otherwise required.
+        data = data or {}
+        key = request_hash(url, data)
+        cached = None
+        if os.getenv("GBDP_DISABLE_CACHE", "false").lower() not in ("1", "true", "yes"):
+            cached = self.cache.get(key)
+        if cached is not None:
+            if os.getenv("GBDP_DISABLE_REQUEST_LOG", "false").lower() not in ("1", "true", "yes"):
+                write_request_log(
+                    {
+                        "source": self.source,
+                        "url": cached["url"],
+                        "params": cached["params"],
+                        "status_code": cached["status_code"],
+                        "cached": True,
+                        "latency_ms": 0,
+                        "retries": 0,
+                        "fetched_at_utc": cached["fetched_at_utc"],
+                        "dt": cached["fetched_at_utc"][:10],
+                    }
+                )
+            return RawPayload(
+                source=self.source,
+                entity="unknown",
+                dt="unknown",
+                url=cached["url"],
+                params=cached["params"],
+                status_code=cached["status_code"],
+                fetched_at_utc=cached["fetched_at_utc"],
+                checksum=cached["checksum"],
+                content_type=cached.get("content_type", "application/json"),
+                body_text=cached["body_text"],
+            )
+
+        headers = {
+            "User-Agent": self.user_agent,
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        if referer:
+            headers["Referer"] = referer
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, self.retries + 1):
+            try:
+                self._throttle()
+                start = time.time()
+                resp = requests.post(url, data=data, headers=headers, timeout=self.timeout)
+                latency_ms = int((time.time() - start) * 1000)
+                body_text = resp.text
+                checksum = sha256_bytes(body_text.encode("utf-8"))
+                fetched_at = utc_now().isoformat()
+                payload = {
+                    "url": url,
+                    "params": data,
+                    "status_code": resp.status_code,
+                    "fetched_at_utc": fetched_at,
+                    "checksum": checksum,
+                    "content_type": resp.headers.get("Content-Type", ""),
+                    "body_text": body_text,
+                }
+                if os.getenv("GBDP_DISABLE_CACHE", "false").lower() not in ("1", "true", "yes"):
+                    self.cache.set(key, payload)
+                if os.getenv("GBDP_DISABLE_REQUEST_LOG", "false").lower() not in ("1", "true", "yes"):
+                    write_request_log(
+                        {
+                            "source": self.source,
+                            "url": url,
+                            "params": data,
+                            "status_code": resp.status_code,
+                            "cached": False,
+                            "latency_ms": latency_ms,
+                            "retries": attempt - 1,
+                            "fetched_at_utc": fetched_at,
+                            "dt": fetched_at[:10],
+                        }
+                    )
+                return RawPayload(
+                    source=self.source,
+                    entity="unknown",
+                    dt="unknown",
+                    url=url,
+                    params=data,
+                    status_code=resp.status_code,
+                    fetched_at_utc=fetched_at,
+                    checksum=checksum,
+                    content_type=resp.headers.get("Content-Type", ""),
+                    body_text=body_text,
+                )
+            except Exception as exc:
+                last_exc = exc
+                sleep_s = self.backoff ** attempt
+                time.sleep(sleep_s)
+        raise RuntimeError(f"HTTP POST failed after {self.retries} attempts: {last_exc}")
+
     def _throttle(self) -> None:
         now = time.time()
         wait = self.min_interval - (now - self._last_request_ts)

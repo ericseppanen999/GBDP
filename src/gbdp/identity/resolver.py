@@ -184,6 +184,26 @@ def _collect_player_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
                 "league_code": "KBO",
             }
         )
+    # KBO API has no roster endpoint discovered/wired up -- kbo_api exposes
+    # no numeric player ID anywhere in its responses either (checked), so
+    # box score appearances (by player_name) are the only source of player
+    # identity for this connector. Less robust than a real ID, but functional.
+    for entity in ("boxscore_batting", "boxscore_pitching"):
+        for r in _read_silver(silver_root(), "kbo_api", entity, dt):
+            source_id = r.get("player_name")
+            if not source_id:
+                continue
+            rows.append(
+                {
+                    "entity_type": "player",
+                    "source": "kbo_api",
+                    "source_id": str(source_id),
+                    "name": source_id,
+                    "dob": None,
+                    "team_id": r.get("team_id"),
+                    "league_code": "KBO",
+                }
+            )
     # LMB rosters silver
     lmb_rosters = _read_silver(silver_root(), "lmb_local", "rosters", dt)
     for r in lmb_rosters:
@@ -281,6 +301,22 @@ def _collect_team_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
                     {
                         "entity_type": "team",
                         "source": "kbo_local",
+                        "source_id": str(team_id),
+                        "name": team_name,
+                        "league_code": "KBO",
+                    }
+                )
+    kbo_api_games = _read_silver(silver_root(), "kbo_api", "games", dt)
+    for r in kbo_api_games:
+        for team_id, team_name in [
+            (r.get("home_team_id"), r.get("home_team_name")),
+            (r.get("away_team_id"), r.get("away_team_name")),
+        ]:
+            if team_id:
+                rows.append(
+                    {
+                        "entity_type": "team",
+                        "source": "kbo_api",
                         "source_id": str(team_id),
                         "name": team_name,
                         "league_code": "KBO",
