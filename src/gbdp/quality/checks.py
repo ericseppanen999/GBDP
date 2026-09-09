@@ -235,7 +235,19 @@ def _write_parquet(rows: List[Dict[str, object]], path: Path) -> None:
     if not rows:
         rows = [{"empty": True}]
     import pyarrow as pa
-    table = pa.Table.from_pylist(rows)
+    # pa.Table.from_pylist infers its schema from a subset of rows and does not
+    # union heterogeneous keys across the list, silently dropping/misaligning
+    # fields for rows shaped differently than the ones it sampled. Normalize
+    # every row to the full key set first so each check type keeps its fields.
+    all_keys: List[str] = []
+    seen = set()
+    for row in rows:
+        for k in row:
+            if k not in seen:
+                seen.add(k)
+                all_keys.append(k)
+    normalized = [{k: row.get(k) for k in all_keys} for row in rows]
+    table = pa.Table.from_pylist(normalized)
     write_parquet_table(table, path, force=True)
 
 
