@@ -7,6 +7,10 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from gbdp.utils.logging import get_logger
+
+logger = get_logger("gbdp.io")
+
 
 def _normalize_path(value: str) -> Path:
     if value.startswith("dbfs:/"):
@@ -187,6 +191,30 @@ def _dbfs_put(dst: str, text: str, overwrite: bool = False) -> None:
     dbutils.fs.put(dst, text, overwrite)
 
 
+def _is_not_found_error(exc: BaseException) -> bool:
+    msg = str(exc)
+    return "FileNotFoundException" in msg or "does not exist" in msg or "PATH_NOT_FOUND" in msg
+
+
+def _dbutils_ls(path: Path):
+    """List a DBFS/Volumes path via dbutils.fs.ls.
+
+    Returns None both when the path doesn't exist and when dbutils is unavailable, matching
+    the previous fail-open behavior of callers. Unlike a bare except-and-swallow, genuine
+    errors (auth, throttling, transient RPC failures) are logged at WARNING instead of being
+    silently indistinguishable from "path not found".
+    """
+    dbutils = _dbutils_fs()
+    if dbutils is None:
+        return None
+    try:
+        return dbutils.fs.ls(_to_dbfs_uri(path))
+    except BaseException as exc:
+        if not _is_not_found_error(exc):
+            logger.warning("dbutils.fs.ls(%s) failed: %s", _to_dbfs_uri(path), exc)
+        return None
+
+
 def spark_path(path: Path) -> str:
     if _is_dbfs_path(path):
         return _to_dbfs_uri(path)
@@ -195,37 +223,19 @@ def spark_path(path: Path) -> str:
 
 def path_exists(path: Path) -> bool:
     if _needs_dbutils(path):
-        dbutils = _dbutils_fs()
-        if dbutils is None:
-            return False
-        try:
-            dbutils.fs.ls(_to_dbfs_uri(path))
-            return True
-        except BaseException:
-            return False
+        return _dbutils_ls(path) is not None
     try:
         return path.exists()
     except OSError:
         if _is_dbfs_path(path):
-            dbutils = _dbutils_fs()
-            if dbutils is None:
-                return False
-            try:
-                dbutils.fs.ls(_to_dbfs_uri(path))
-                return True
-            except BaseException:
-                return False
+            return _dbutils_ls(path) is not None
         return False
 
 
 def list_dir(path: Path, dirs_only: bool = False) -> List[Path]:
     if _needs_dbutils(path):
-        dbutils = _dbutils_fs()
-        if dbutils is None:
-            return []
-        try:
-            entries = dbutils.fs.ls(_to_dbfs_uri(path))
-        except BaseException:
+        entries = _dbutils_ls(path)
+        if entries is None:
             return []
         results: List[Path] = []
         for e in entries:
@@ -252,12 +262,8 @@ def list_dir(path: Path, dirs_only: bool = False) -> List[Path]:
 
 def file_size(path: Path) -> int | None:
     if _needs_dbutils(path):
-        dbutils = _dbutils_fs()
-        if dbutils is None:
-            return None
-        try:
-            entries = dbutils.fs.ls(_to_dbfs_uri(path))
-        except BaseException:
+        entries = _dbutils_ls(path)
+        if entries is None:
             return None
         if not entries:
             return 0
@@ -276,12 +282,8 @@ def file_size(path: Path) -> int | None:
 
 def has_files_with_suffix(path: Path, suffix: str) -> bool:
     if _needs_dbutils(path):
-        dbutils = _dbutils_fs()
-        if dbutils is None:
-            return False
-        try:
-            entries = dbutils.fs.ls(_to_dbfs_uri(path))
-        except BaseException:
+        entries = _dbutils_ls(path)
+        if entries is None:
             return False
         for e in entries:
             is_dir = False
@@ -439,7 +441,10 @@ def read_parquet_rows(path: Path) -> List[Dict[str, Any]]:
     except Exception as exc:
         raise RuntimeError("pyarrow is required for parquet reads") from exc
     if not _needs_dbutils(path):
-        dataset = ds.dataset(path, format="parquet")
+        files = sorted(str(p) for p in path.glob("*.parquet"))
+        if not files:
+            return []
+        dataset = ds.dataset(files, format="parquet")
         return dataset.to_table().to_pylist()
     # Serverless-safe path: use Spark to read DBFS/Volumes parquet
     if not has_files_with_suffix(path, ".parquet"):

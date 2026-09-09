@@ -5,7 +5,6 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List
 
-import pyarrow.dataset as ds
 
 from gbdp.identity.manual_overrides import load_manual_overrides
 from gbdp.identity.rules import player_match_key, team_match_key
@@ -14,12 +13,16 @@ from gbdp.utils.io import (
     ensure_dir,
     gold_root,
     path_exists,
+    read_parquet_rows,
     silver_root,
     spark_path,
     storage_format,
     write_parquet_table,
 )
 from gbdp.utils.time import daterange, parse_date
+from gbdp.utils.logging import get_logger
+
+logger = get_logger("gbdp.identity")
 
 
 def resolve_identity(start: str, end: str, root: Path | None = None, force: bool = False) -> List[Path]:
@@ -29,7 +32,9 @@ def resolve_identity(start: str, end: str, root: Path | None = None, force: bool
     override_map = {
         (o["entity_type"], o["source"], o["source_id"]): o["canonical_id"] for o in overrides
     }
-    for d in daterange(parse_date(start), parse_date(end)):
+    days = list(daterange(parse_date(start), parse_date(end)))
+    for i, d in enumerate(days, 1):
+        logger.info("identity_resolve dt=%s (%d/%d)", d.isoformat(), i, len(days))
         outputs.append(_resolve_for_date(root, d, override_map, force))
         _write_merge_events(root, d, overrides, force)
     return outputs
@@ -301,37 +306,95 @@ def _collect_team_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
 
 
 def _read_silver(root: Path, source: str, entity: str, dt: date) -> List[Dict[str, Any]]:
-    path = root / "silver" / source / entity / f"dt={dt.isoformat()}"
+    path = root / source / entity / f"dt={dt.isoformat()}"
     if not path_exists(path):
         return []
-    fmt = storage_format()
-    if fmt == "parquet":
-        dataset = ds.dataset(path, format="parquet")
-        return dataset.to_table().to_pylist()
+    # Delta if _delta_log present, otherwise parquet (read_parquet_rows handles DBFS safely)
+    if path_exists(path / "_delta_log"):
+        try:
+            from pyspark.sql import SparkSession
+            spark = SparkSession.builder.getOrCreate()
+            return spark.read.format("delta").load(spark_path(path)).toPandas().to_dict(orient="records")
+        except Exception:
+            return []
     try:
-        from pyspark.sql import SparkSession
-    except Exception as exc:
-        raise RuntimeError("pyspark is required for delta reads") from exc
-    spark = SparkSession.builder.getOrCreate()
-    return spark.read.format("delta").load(spark_path(path)).toPandas().to_dict(orient="records")
+        return read_parquet_rows(path)
+    except Exception:
+        return []
 
 
 def _write_output(rows: List[Dict[str, Any]], out_dir: Path, out_path: Path) -> None:
-    if not rows:
-        rows = [{"empty": True}]
     fmt = storage_format()
     if fmt == "parquet":
+        if not rows:
+            rows = [{"empty": True}]
         import pyarrow as pa
         table = pa.Table.from_pylist(rows)
         write_parquet_table(table, out_path, force=True)
+        return
+    if not rows:
         return
     try:
         from pyspark.sql import SparkSession
     except Exception as exc:
         raise RuntimeError("pyspark is required for delta writes") from exc
     spark = SparkSession.builder.getOrCreate()
+    # Replace all-None columns with "" before createDataFrame — Spark can't infer NullType
+    null_cols = {k for k in rows[0] if all(r.get(k) is None for r in rows)}
+    if null_cols:
+        rows = [{k: ("" if k in null_cols else v) for k, v in r.items()} for r in rows]
     df = spark.createDataFrame(rows)
-    df.write.format("delta").mode("overwrite").save(spark_path(out_dir))
+    # Cast any remaining NullType columns to string
+    from pyspark.sql import functions as F
+    from pyspark.sql.types import NullType
+    for field in df.schema.fields:
+        if isinstance(field.dataType, NullType):
+            df = df.withColumn(field.name, F.lit(None).cast("string"))
+
+    # out_dir is a dt= partition folder; write to the table root with partitionBy("dt")
+    if out_dir.name.startswith("dt="):
+        table_root = spark_path(out_dir.parent)
+        dt_value = out_dir.name.split("=", 1)[1]
+        try:
+            spark.read.format("delta").load(table_root).limit(1).collect()
+            table_exists = True
+        except Exception:
+            table_exists = False
+
+        def _fresh_write():
+            (
+                df.write.format("delta")
+                .mode("overwrite")
+                .option("overwriteSchema", "true")
+                .partitionBy("dt")
+                .save(table_root)
+            )
+
+        try:
+            if table_exists:
+                (
+                    df.write.format("delta")
+                    .mode("overwrite")
+                    .option("mergeSchema", "true")
+                    .option("replaceWhere", f"dt = '{dt_value}'")
+                    .save(table_root)
+                )
+            else:
+                _fresh_write()
+        except Exception as exc:
+            msg = str(exc)
+            if "DELTA_MISSING_TRANSACTION_LOG" in msg or "Incompatible format detected" in msg:
+                # Stale per-partition delta logs are blocking the root-level write — clear and retry
+                try:
+                    from pyspark.dbutils import DBUtils
+                    DBUtils(spark).fs.rm(table_root, True)
+                except Exception:
+                    pass
+                _fresh_write()
+            else:
+                raise
+    else:
+        df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(spark_path(out_dir))
 
 
 def _write_merge_events(root: Path, dt: date, overrides: List[Dict[str, str]], force: bool) -> None:

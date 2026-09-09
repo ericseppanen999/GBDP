@@ -18,6 +18,10 @@ from gbdp.utils.io import (
     write_text,
 )
 from gbdp.utils.time import daterange, parse_date
+from gbdp.utils.logging import get_logger
+import time
+
+logger = get_logger("gbdp.quality")
 
 
 def run_quality_checks(
@@ -27,8 +31,12 @@ def run_quality_checks(
     root = root or gold_root()
     outputs: List[Path] = []
     cfg = _load_quality_config()
-    for d in daterange(parse_date(start), parse_date(end)):
+    days = list(daterange(parse_date(start), parse_date(end)))
+    for i, d in enumerate(days, 1):
+        t0 = time.monotonic()
+        logger.info("quality_checks dt=%s (%d/%d)", d.isoformat(), i, len(days))
         outputs.append(_run_for_date(root, d, cfg, force))
+        logger.info("quality_checks dt=%s done (%.1fs)", d.isoformat(), time.monotonic() - t0)
     return outputs
 
 

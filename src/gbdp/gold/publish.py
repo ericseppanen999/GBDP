@@ -21,6 +21,10 @@ from gbdp.utils.io import (
 )
 from gbdp.utils.time import utc_now
 from gbdp.utils.time import daterange, parse_date
+from gbdp.utils.logging import get_logger
+import time
+
+logger = get_logger("gbdp.gold")
 
 
 # -----------------------------
@@ -188,6 +192,15 @@ def _write_delta(rows: List[Dict[str, Any]], table_root_dir: Path, dt_value: Opt
         if "DELTA_MISSING_TRANSACTION_LOG" in msg or "Incompatible format detected" in msg:
             df.write.mode("overwrite").parquet(spark_path(table_root_dir))
             return
+        if "DELTA_FAILED_TO_MERGE_FIELDS" in msg or "delta_failed_to_merge_fields" in msg.lower():
+            (
+                df.write.format("delta")
+                .mode("overwrite")
+                .option("overwriteSchema", "true")
+                .partitionBy("dt")
+                .save(table_root)
+            )
+            return
         raise
 
 
@@ -198,32 +211,41 @@ def _write_delta(rows: List[Dict[str, Any]], table_root_dir: Path, dt_value: Opt
 def publish_gold(start: str, end: str, root: Path | None = None, force: bool = False) -> List[Path]:
     root = root or gold_root()
     outputs: List[Path] = []
-    for d in daterange(parse_date(start), parse_date(end)):
+    days = list(daterange(parse_date(start), parse_date(end)))
+    for i, d in enumerate(days, 1):
+        t0 = time.monotonic()
+        logger.info("gold_publish dt=%s (%d/%d)", d.isoformat(), i, len(days))
         outputs.extend(_publish_for_date(root, d, force))
+        logger.info("gold_publish dt=%s done (%.1fs)", d.isoformat(), time.monotonic() - t0)
     return outputs
 
 
 def _publish_for_date(root: Path, dt: date, force: bool) -> List[Path]:
-    outputs: List[Path] = []
     bridge = _read_gold_bridge(root, dt)
 
-    outputs.append(_write_dim_league(root, dt, force))
-    outputs.append(_write_dim_team(root, dt, bridge, force))
-    outputs.append(_write_dim_player(root, dt, bridge, force))
-    outputs.append(_write_dim_season(root, dt, force))
-
-    outputs.append(_write_fact_game(root, dt, bridge, force))
-    outputs.append(_write_fact_roster(root, dt, bridge, force))
-    outputs.append(_write_fact_transaction(root, dt, bridge, force))
-    outputs.append(_write_fact_pitch(root, dt, bridge, force))
-    outputs.append(_write_fact_plate_appearance(root, dt, bridge, force))
-    outputs.append(_write_fact_standings(root, dt, bridge, force))
-    outputs.append(_write_fact_boxscore_batting(root, dt, bridge, force))
-    outputs.append(_write_fact_boxscore_pitching(root, dt, bridge, force))
-    outputs.append(_write_run_expectancy(root, dt, force))
-    outputs.append(_write_breakout_candidates(root, dt, force))
-    outputs.append(_write_feature_player_rolling_30d(root, dt, force))
-    outputs.append(_write_fact_contract(root, dt, force))
+    steps: List[tuple] = [
+        ("dim_league", lambda: _write_dim_league(root, dt, force)),
+        ("dim_team", lambda: _write_dim_team(root, dt, bridge, force)),
+        ("dim_player", lambda: _write_dim_player(root, dt, bridge, force)),
+        ("dim_season", lambda: _write_dim_season(root, dt, force)),
+        ("fact_game", lambda: _write_fact_game(root, dt, bridge, force)),
+        ("fact_roster", lambda: _write_fact_roster(root, dt, bridge, force)),
+        ("fact_transaction", lambda: _write_fact_transaction(root, dt, bridge, force)),
+        ("fact_pitch", lambda: _write_fact_pitch(root, dt, bridge, force)),
+        ("fact_plate_appearance", lambda: _write_fact_plate_appearance(root, dt, bridge, force)),
+        ("fact_standings", lambda: _write_fact_standings(root, dt, bridge, force)),
+        ("fact_boxscore_batting", lambda: _write_fact_boxscore_batting(root, dt, bridge, force)),
+        ("fact_boxscore_pitching", lambda: _write_fact_boxscore_pitching(root, dt, bridge, force)),
+        ("run_expectancy", lambda: _write_run_expectancy(root, dt, force)),
+        ("breakout_candidates", lambda: _write_breakout_candidates(root, dt, force)),
+        ("feature_player_rolling_30d", lambda: _write_feature_player_rolling_30d(root, dt, force)),
+        ("fact_contract", lambda: _write_fact_contract(root, dt, force)),
+    ]
+    outputs: List[Path] = []
+    for name, fn in steps:
+        t0 = time.monotonic()
+        outputs.append(fn())
+        logger.info("  gold table=%s dt=%s (%.1fs)", name, dt.isoformat(), time.monotonic() - t0)
     return outputs
 
 
@@ -254,17 +276,23 @@ def _read_gold_bridge(root: Path, dt: date) -> Dict[tuple, str]:
         dt_path = base / f"dt={dt_str}"
         dt_delta_log = dt_path / "_delta_log"
         try:
-            if path_exists(dt_delta_log):
-                df = spark.read.format("delta").load(spark_path(dt_path))
-            else:
-                df = spark.read.format("delta").load(spark_path(base)).where(f"dt = '{dt_str}'")
+            # Always prefer root-level partitioned table first
+            df = spark.read.format("delta").load(spark_path(base)).where(f"dt = '{dt_str}'")
             data = [row.asDict() for row in df.collect()]
         except Exception:
-            # Fallback to legacy parquet dt folder if delta log missing
-            legacy = root / "bridge_source_ids" / f"dt={dt_str}"
-            if not path_exists(legacy) or not has_files_with_suffix(legacy, ".parquet"):
-                return {}
-            data = read_parquet_rows(legacy)
+            try:
+                # Legacy: partition folder was itself a delta table
+                if path_exists(dt_delta_log):
+                    df = spark.read.format("delta").load(spark_path(dt_path))
+                    data = [row.asDict() for row in df.collect()]
+                else:
+                    raise
+            except Exception:
+                # Last resort: legacy parquet partition folder
+                legacy = root / "bridge_source_ids" / f"dt={dt_str}"
+                if not path_exists(legacy) or not has_files_with_suffix(legacy, ".parquet"):
+                    return {}
+                data = read_parquet_rows(legacy)
 
     else:
         return {}
@@ -358,14 +386,15 @@ def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any
         r["dt"] = dt_str
         r.setdefault("ingested_at_utc", now)
 
+    if not rows:
+        return root / table
+
     if fmt == "parquet":
         out_dir = root / table / f"dt={dt_str}"
         ensure_dir(out_dir)
         out_path = out_dir / "part-00001.parquet"
         if path_exists(out_path) and not force:
             return out_path
-        if not rows:
-            rows = [{"empty": True, "dt": dt_str, "ingested_at_utc": now}]
         import pyarrow as pa
         table_data = pa.Table.from_pylist(rows)
         write_parquet_table(table_data, out_path, force=True)
@@ -374,10 +403,6 @@ def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any
     if fmt == "delta":
         table_root_dir = root / table
         ensure_dir(table_root_dir)
-
-        # If you truly want empty days to be absent, just return.
-        if not rows:
-            return table_root_dir
 
         _write_delta(rows, table_root_dir, dt_value=dt_str)
         return table_root_dir
@@ -582,8 +607,10 @@ def _fact_game_from_silver(root: Path, dt: date, source: str, league_code: str, 
     rows = []
     for r in _read_silver(root, source, "games", dt):
         game_id = ulid_from_key(f"game:{source}:{r.get('game_id')}", dt.isoformat())
-        home_team = bridge.get(("team", source, str(r.get("home_team_id"))))
-        away_team = bridge.get(("team", source, str(r.get("away_team_id"))))
+        home_src = str(r.get("home_team_id")) if r.get("home_team_id") is not None else None
+        away_src = str(r.get("away_team_id")) if r.get("away_team_id") is not None else None
+        home_team = (bridge.get(("team", source, home_src)) if home_src else None) or (ulid_from_key(f"team:{source}:{home_src}", dt.isoformat()) if home_src else None)
+        away_team = (bridge.get(("team", source, away_src)) if away_src else None) or (ulid_from_key(f"team:{source}:{away_src}", dt.isoformat()) if away_src else None)
         rows.append(
             {
                 "game_id": game_id,
@@ -623,8 +650,10 @@ def _write_fact_roster(root: Path, dt: date, bridge: Dict[tuple, str], force: bo
 
 
 def _fact_roster_row(r: Dict[str, Any], source: str, league_code: str, bridge: Dict[tuple, str], dt: date):
-    team = bridge.get(("team", source, str(r.get("team_id"))))
-    player = bridge.get(("player", source, str(r.get("player_id"))))
+    team_src = str(r.get("team_id")) if r.get("team_id") is not None else None
+    player_src = str(r.get("player_id")) if r.get("player_id") is not None else None
+    team = (bridge.get(("team", source, team_src)) if team_src else None) or (ulid_from_key(f"team:{source}:{team_src}", dt.isoformat()) if team_src else None)
+    player = (bridge.get(("player", source, player_src)) if player_src else None) or (ulid_from_key(f"player:{source}:{player_src}", dt.isoformat()) if player_src else None)
     return {
         "team_id": team,
         "player_id": player,
