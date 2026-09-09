@@ -444,7 +444,17 @@ def read_parquet_rows(path: Path) -> List[Dict[str, Any]]:
         files = sorted(str(p) for p in path.glob("*.parquet"))
         if not files:
             return []
-        dataset = ds.dataset(files, format="parquet")
+        # ds.dataset() infers its schema from a subset of the given files rather
+        # than unioning all of them, so columns present only in files it didn't
+        # sample are silently dropped from the entire scan. Partitions commonly
+        # mix files from before/after a source added fields, so union schemas
+        # across every file explicitly before building the dataset.
+        if len(files) > 1:
+            schemas = [pq.ParquetFile(f).schema_arrow for f in files]
+            schema = pa.unify_schemas(schemas, promote_options="permissive")
+        else:
+            schema = None
+        dataset = ds.dataset(files, format="parquet", schema=schema)
         return dataset.to_table().to_pylist()
     # Serverless-safe path: use Spark to read DBFS/Volumes parquet
     if not has_files_with_suffix(path, ".parquet"):

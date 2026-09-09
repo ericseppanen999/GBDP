@@ -24,6 +24,7 @@ class MlbStatcastConnector(BaseConnector):
             raise ValueError(f"Unsupported Statcast entity: {partition.entity}")
         params = {
             "all": "true",
+            "type": "details",
             "game_date_gt": partition.dt,
             "game_date_lt": partition.dt,
         }
