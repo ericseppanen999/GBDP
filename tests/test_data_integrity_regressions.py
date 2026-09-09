@@ -76,6 +76,24 @@ def test_bronze_to_table_preserves_sparse_record_fields():
     assert row_a2["c"] == "y"
 
 
+# --- Bug 2b (found on the first real nightly run, on live data): a Python --
+# int outside signed-int64 range crashes pyarrow table construction for the
+# ENTIRE partition with "Python int too large to convert to C long".
+# Confirmed live: NPB's player_batting_detail_saber endpoint returns
+# 18446744073709552000 (~2^64, an unsigned-underflow sentinel) for some
+# players' RunsCreatedForOrder/PApKForOrder fields.
+def test_bronze_to_table_nulls_out_of_range_ints_instead_of_crashing():
+    writer = BronzeWriter(root=Path("unused"))
+    payload = _payload()
+    records = [
+        {"name": "Test Player", "runs_created_for_order": 18446744073709552000, "batting_average": 0.300}
+    ]
+    table = writer._to_table(payload, records)
+    row = table.to_pylist()[0]
+    assert row["runs_created_for_order"] is None
+    assert row["batting_average"] == 0.300
+
+
 # --- Bug 3: pyarrow's dataset reader infers its schema from a sample of -----
 # files rather than unioning all of them, so a column present only in files
 # it didn't sample gets silently dropped from the ENTIRE scan -- including

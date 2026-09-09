@@ -200,7 +200,18 @@ def _write_delta(rows: List[Dict[str, Any]], out_dir: Path, force: bool = False)
         if "DELTA_MISSING_TRANSACTION_LOG" in msg or "Incompatible format detected" in msg:
             df.write.mode("overwrite").parquet(spark_path(out_dir))
             return
-        if "DELTA_FAILED_TO_MERGE_FIELDS" in msg or "delta_failed_to_merge_fields" in msg.lower():
+        # unresolved_column / cannot be resolved: confirmed live in managed_publish.py's
+        # equivalent handler -- a target table that has NEVER had a real write can end
+        # up with a genuinely empty schema, so replaceWhere's "dt = ..." predicate fails
+        # to resolve `dt` at all (a more fundamental case of the same missing-columns
+        # problem, not just a field-level mismatch). ADD COLUMNS handles going from zero
+        # columns to N the same way it handles adding one missing column.
+        if (
+            "DELTA_FAILED_TO_MERGE_FIELDS" in msg
+            or "delta_failed_to_merge_fields" in msg.lower()
+            or "unresolved_column" in msg.lower()
+            or "cannot be resolved" in msg.lower()
+        ):
             # Widen the table's schema additively (ADD COLUMNS never touches existing
             # rows or other partitions), then retry the same partition-scoped write.
             # Do NOT fall back to mode("overwrite") without replaceWhere here -- that

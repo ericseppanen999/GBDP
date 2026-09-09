@@ -22,6 +22,25 @@ from gbdp.utils.io import (
 )
 from gbdp.utils.time import utc_now
 
+# PyArrow (and Spark's py4j int conversion on DBFS writes) both raise on any
+# Python int outside signed-int64 range. Confirmed live in production: NPB's
+# player_batting_detail_saber endpoint returns 18446744073709552000 (~2^64,
+# an unsigned-underflow sentinel, almost certainly meant to represent a null/
+# undefined stat) for some players' RunsCreatedForOrder/PApKForOrder fields.
+# Left unguarded this crashes table construction for the entire partition
+# with "Python int too large to convert to C long". Null it out instead --
+# it's already meaningless as a value, not a number worth keeping.
+_INT64_MIN = -(2**63)
+_INT64_MAX = 2**63 - 1
+
+
+def _safe_int_value(v: Any) -> Any:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int) and not (_INT64_MIN <= v <= _INT64_MAX):
+        return None
+    return v
+
 
 @dataclass
 class RawPayload:
@@ -108,7 +127,7 @@ class BronzeWriter:
                 if isinstance(v, (dict, list)):
                     row[k] = stable_json_dumps(v)
                 else:
-                    row[k] = v
+                    row[k] = _safe_int_value(v)
             if include_partition_cols:
                 row["dt"] = payload.dt
                 row["source"] = payload.source

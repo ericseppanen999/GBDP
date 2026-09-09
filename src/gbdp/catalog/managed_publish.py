@@ -286,7 +286,24 @@ def _write_managed(spark, df, full_name: str, dt: date) -> None:
         # mode("overwrite") here without replaceWhere -- that replaces the ENTIRE
         # table with just this partition's rows, silently destroying every other
         # date ever written to it.
-        if "schema mismatch" in msg or "schema migration is not allowed" in msg or "_legacy_error_temp_delta_0007" in msg or "delta_failed_to_merge_fields" in msg:
+        #
+        # unresolved_column / cannot be resolved: confirmed live -- a target
+        # table that has NEVER had a real write (e.g. breakout_candidates on a
+        # day it happened to have zero rows, before any real schema was ever
+        # established) can end up registered in UC with a genuinely empty
+        # schema. replaceWhere's "dt = ..." predicate then fails to resolve
+        # `dt` at all (a more fundamental case of the same "table doesn't
+        # have the columns this write needs yet" problem), not just a field-
+        # level mismatch. ADD COLUMNS handles going from zero columns to N
+        # the same way it handles adding one missing column.
+        if (
+            "schema mismatch" in msg
+            or "schema migration is not allowed" in msg
+            or "_legacy_error_temp_delta_0007" in msg
+            or "delta_failed_to_merge_fields" in msg
+            or "unresolved_column" in msg
+            or "cannot be resolved" in msg
+        ):
             _add_missing_columns(spark, full_name, df)
             _write_partition()
             return
