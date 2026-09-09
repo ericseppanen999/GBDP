@@ -133,4 +133,16 @@ class BronzeWriter:
                 empty_row["source"] = payload.source
                 empty_row["entity"] = payload.entity
             normalized.append(empty_row)
-        return pa.Table.from_pylist(normalized)
+        # pa.Table.from_pylist infers its schema from a subset of rows rather
+        # than unioning all of them, silently dropping/misaligning fields for
+        # rows shaped differently (e.g. records with sparse/optional keys).
+        # Normalize to the full key union first so every field survives.
+        all_keys: List[str] = []
+        seen = set()
+        for row in normalized:
+            for k in row:
+                if k not in seen:
+                    seen.add(k)
+                    all_keys.append(k)
+        uniform = [{k: row.get(k) for k in all_keys} for row in normalized]
+        return pa.Table.from_pylist(uniform)

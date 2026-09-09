@@ -393,13 +393,20 @@ def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any
         r["dt"] = dt_str
         r.setdefault("ingested_at_utc", now)
 
-    if not rows:
-        return root / table
-
     if fmt == "parquet":
         out_dir = root / table / f"dt={dt_str}"
-        ensure_dir(out_dir)
         out_path = out_dir / "part-00001.parquet"
+        if not rows:
+            # A prior (buggy) run may have written real-looking rows to this
+            # partition; a correct recompute now yielding zero rows should be
+            # able to clear that out rather than leaving stale data forever.
+            if force and path_exists(out_path):
+                try:
+                    out_path.unlink()
+                except OSError as exc:
+                    logger.warning("failed to clear empty gold partition %s: %s", out_path, exc)
+            return out_path
+        ensure_dir(out_dir)
         if path_exists(out_path) and not force:
             return out_path
         import pyarrow as pa
@@ -409,12 +416,30 @@ def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any
 
     if fmt == "delta":
         table_root_dir = root / table
+        if not rows:
+            if force:
+                _delete_delta_partition(table_root_dir, dt_str)
+            return table_root_dir
         ensure_dir(table_root_dir)
-
         _write_delta(rows, table_root_dir, dt_value=dt_str)
         return table_root_dir
 
     raise ValueError(f"Unsupported storage format: {fmt}")
+
+
+def _delete_delta_partition(table_root_dir: Path, dt_str: str) -> None:
+    try:
+        from pyspark.sql import SparkSession
+    except Exception:
+        return
+    spark = SparkSession.builder.getOrCreate()
+    table_root = spark_path(table_root_dir)
+    if not _delta_exists(spark, table_root):
+        return
+    try:
+        spark.sql(f"DELETE FROM delta.`{table_root}` WHERE dt = '{dt_str}'")
+    except Exception as exc:
+        logger.warning("failed to clear empty gold partition %s dt=%s: %s", table_root, dt_str, exc)
 
 
 # -----------------------------
