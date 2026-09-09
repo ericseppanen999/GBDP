@@ -1,0 +1,300 @@
+bundle:
+  name: gbdp
+
+# Authentication: set DATABRICKS_HOST and DATABRICKS_TOKEN environment variables
+# (or configure a profile in ~/.databrickscfg).
+# GitHub Actions reads these from repository secrets.
+
+variables:
+  uc_catalog:
+    description: Unity Catalog catalog name (must be pre-created by a workspace admin)
+    default: gbdp
+
+  bronze_schema:
+    description: UC schema for bronze tables
+    default: bronze_gbdp
+
+  silver_schema:
+    description: UC schema for silver tables
+    default: silver_gbdp
+
+  gold_schema:
+    description: UC schema for gold tables
+    default: gold_gbdp
+
+# Files synced to the workspace on every deploy (data/ excluded — too large).
+sync:
+  exclude:
+    - .git
+    - .github
+    - data/**
+    - "**/__pycache__"
+    - "**/*.pyc"
+    - "**/*.egg-info/**"
+    - .env
+    - .env.*
+
+resources:
+  # -------------------------------------------------------------------------
+  # Jobs — Free Edition runs on serverless compute only (no job clusters).
+  # Python dependencies are declared in the environment spec below.
+  # -------------------------------------------------------------------------
+  jobs:
+
+    # -- Nightly pipeline ---------------------------------------------------
+    gbdp_nightly:
+      name: gbdp-nightly
+      description: Nightly ingestion pipeline covering the last 7 days
+      max_concurrent_runs: 1
+      timeout_seconds: 0
+      queue:
+        enabled: true
+
+      email_notifications:
+        on_success:
+          - eric.t.seppanen@gmail.com
+        on_failure:
+          - eric.t.seppanen@gmail.com
+
+      # Runs at 04:00 UTC daily.
+      schedule:
+        quartz_cron_expression: "0 0 4 * * ?"
+        timezone_id: UTC
+        pause_status: UNPAUSED
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - requests
+              - pyarrow
+              - python-dateutil
+              - pydantic
+              - pyyaml
+              - duckdb
+
+      tasks:
+        - task_key: gbdp_run
+          description: Full pipeline — ingest → silver → identity → gold → quality
+          environment_key: default
+          spark_python_task:
+            python_file: ${workspace.file_path}/dbx_entry.py
+            parameters:
+              - run
+              - --start
+              - "1970-01-01"   # placeholder; --window yesterday overrides this
+              - --end
+              - "1970-01-01"   # placeholder; --window yesterday overrides this
+              - --window
+              - yesterday
+              - --sources
+              - ${workspace.file_path}/configs/sources.yaml
+              - --storage-format
+              - delta
+              - --bronze-root
+              - /Volumes/${var.uc_catalog}/${var.bronze_schema}/bronze_vol/gbdp/bronze
+              - --silver-root
+              - /Volumes/${var.uc_catalog}/${var.silver_schema}/silver_vol/gbdp/silver
+              - --gold-root
+              - /Volumes/${var.uc_catalog}/${var.gold_schema}/gold_vol/gbdp/gold
+              - --manual-root
+              - /Volumes/${var.uc_catalog}/${var.bronze_schema}/bronze_vol/gbdp/manual
+              - --retries
+              - "2"
+              - --retry-delay
+              - "5"
+              - --uc-catalog
+              - ${var.uc_catalog}
+              - --uc-bronze-schema
+              - ${var.bronze_schema}
+              - --uc-silver-schema
+              - ${var.silver_schema}
+              - --uc-gold-schema
+              - ${var.gold_schema}
+              - --uc-mode
+              - managed
+              - --http-timeout
+              - "120"
+              - --http-retries
+              - "5"
+
+    # -- Purge stale nested delta logs --------------------------------------
+    gbdp_purge_stale:
+      name: gbdp-purge-stale
+      description: Delete gold tables with stale nested delta logs
+      max_concurrent_runs: 1
+      email_notifications:
+        on_failure:
+          - eric.t.seppanen@gmail.com
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - pyarrow
+              - pyyaml
+      tasks:
+        - task_key: gbdp_purge_stale
+          environment_key: default
+          spark_python_task:
+            python_file: ${workspace.file_path}/dbx_entry.py
+            parameters:
+              - purge-stale
+              - --gold-root
+              - /Volumes/${var.uc_catalog}/${var.gold_schema}/gold_vol/gbdp/gold
+
+    # -- Data check ---------------------------------------------------------
+    gbdp_check_data:
+      name: gbdp-check-data
+      description: Report gold table row counts for a given date
+      max_concurrent_runs: 1
+      email_notifications:
+        on_failure:
+          - eric.t.seppanen@gmail.com
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - requests
+              - pyarrow
+              - python-dateutil
+              - pydantic
+              - pyyaml
+              - duckdb
+      tasks:
+        - task_key: gbdp_check_data
+          environment_key: default
+          spark_python_task:
+            python_file: ${workspace.file_path}/dbx_entry.py
+            parameters:
+              - check-data
+              - --storage-format
+              - delta
+              - --gold-root
+              - /Volumes/${var.uc_catalog}/${var.gold_schema}/gold_vol/gbdp/gold
+
+    # -- Delta write smoke test ---------------------------------------------
+    gbdp_test_write:
+      name: gbdp-test-write
+      description: Smoke-test Delta write path against a throwaway table
+      max_concurrent_runs: 1
+      email_notifications:
+        on_failure:
+          - eric.t.seppanen@gmail.com
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - requests
+              - pyarrow
+              - python-dateutil
+              - pydantic
+              - pyyaml
+              - duckdb
+      tasks:
+        - task_key: gbdp_test_write
+          environment_key: default
+          spark_python_task:
+            python_file: ${workspace.file_path}/dbx_entry.py
+            parameters:
+              - test-write
+              - --storage-format
+              - delta
+              - --gold-root
+              - /Volumes/${var.uc_catalog}/${var.gold_schema}/gold_vol/gbdp/gold
+
+    # -- Manual backfill ----------------------------------------------------
+    gbdp_backfill:
+      name: gbdp-backfill
+      description: Historical backfill — trigger manually with start_date / end_date
+      max_concurrent_runs: 1
+      timeout_seconds: 0
+      queue:
+        enabled: true
+
+      email_notifications:
+        on_failure:
+          - eric.t.seppanen@gmail.com
+
+      parameters:
+        - name: start_date
+          default: "1960-04-12"
+        - name: end_date
+          default: "1960-04-19"
+        - name: leagues
+          default: all
+        - name: stages
+          default: ""
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - requests
+              - pyarrow
+              - python-dateutil
+              - pydantic
+              - pyyaml
+              - duckdb
+
+      tasks:
+        - task_key: gbdp_backfill
+          description: Historical data ingestion for a custom date range
+          environment_key: default
+          spark_python_task:
+            python_file: ${workspace.file_path}/dbx_entry.py
+            parameters:
+              - backfill
+              - --sources
+              - ${workspace.file_path}/configs/sources.yaml
+              - --force
+              - --storage-format
+              - delta
+              - --bronze-root
+              - /Volumes/${var.uc_catalog}/${var.bronze_schema}/bronze_vol/gbdp/bronze
+              - --silver-root
+              - /Volumes/${var.uc_catalog}/${var.silver_schema}/silver_vol/gbdp/silver
+              - --gold-root
+              - /Volumes/${var.uc_catalog}/${var.gold_schema}/gold_vol/gbdp/gold
+              - --manual-root
+              - /Volumes/${var.uc_catalog}/${var.bronze_schema}/bronze_vol/gbdp/manual
+              - --retries
+              - "2"
+              - --retry-delay
+              - "5"
+              - --chunk
+              - month
+              - --uc-catalog
+              - ${var.uc_catalog}
+              - --uc-bronze-schema
+              - ${var.bronze_schema}
+              - --uc-silver-schema
+              - ${var.silver_schema}
+              - --uc-gold-schema
+              - ${var.gold_schema}
+              - --uc-mode
+              - managed
+              - --http-timeout
+              - "180"
+              - --http-retries
+              - "1"
+
+# ---------------------------------------------------------------------------
+# Deployment targets
+# ---------------------------------------------------------------------------
+targets:
+  # Local iteration: `databricks bundle deploy` (default)
+  dev:
+    mode: development
+    default: true
+
+  # Production: `databricks bundle deploy --target prod`
+  # Used by GitHub Actions on every push to main.
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/eric.t.seppanen@gmail.com/.bundle/${bundle.name}/${bundle.target}

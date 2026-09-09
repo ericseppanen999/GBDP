@@ -1,4 +1,4 @@
-name: Databricks Sync
+name: Deploy to Databricks
 
 on:
   push:
@@ -6,40 +6,22 @@ on:
       - main
 
 jobs:
-  sync:
+  deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Sync Databricks Repo
+      - name: Set up Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Validate bundle
+        run: databricks bundle validate --target prod
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-          DATABRICKS_REPO_PATH: ${{ secrets.DATABRICKS_REPO_PATH }}
-          GIT_BRANCH: ${{ github.ref_name }}
-          GIT_URL: ${{ github.server_url }}/${{ github.repository }}.git
-        run: |
-          set -euo pipefail
 
-          if [ -z "${DATABRICKS_HOST}" ] || [ -z "${DATABRICKS_TOKEN}" ] || [ -z "${DATABRICKS_REPO_PATH}" ]; then
-            echo "Missing required secrets: DATABRICKS_HOST, DATABRICKS_TOKEN, DATABRICKS_REPO_PATH"
-            exit 1
-          fi
-
-          auth_header="Authorization: Bearer ${DATABRICKS_TOKEN}"
-          base="${DATABRICKS_HOST}/api/2.0/repos"
-
-          repo_id=$(curl -sS -H "$auth_header" "${base}?path=${DATABRICKS_REPO_PATH}" | jq -r '.repos[0].id // empty')
-
-          if [ -z "$repo_id" ]; then
-            echo "Creating repo at ${DATABRICKS_REPO_PATH}"
-            curl -sS -X POST -H "$auth_header" -H "Content-Type: application/json" \
-              -d "{\"path\":\"${DATABRICKS_REPO_PATH}\",\"url\":\"${GIT_URL}\",\"provider\":\"gitHub\"}" \
-              "${base}" | jq .
-          else
-            echo "Updating repo ${repo_id} to branch ${GIT_BRANCH}"
-            curl -sS -X PATCH -H "$auth_header" -H "Content-Type: application/json" \
-              -d "{\"branch\":\"${GIT_BRANCH}\"}" \
-              "${base}/${repo_id}" | jq .
-          fi
+      - name: Deploy bundle
+        run: databricks bundle deploy --target prod
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}

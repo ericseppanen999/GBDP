@@ -68,10 +68,31 @@ def _spark_count(path: Path) -> int:
     from pyspark.sql import SparkSession
 
     spark = SparkSession.builder.getOrCreate()
+
+    # path is a dt= partition folder — read from the table root and filter
+    if path.name.startswith("dt="):
+        table_root = path.parent
+        dt_value = path.name.split("=", 1)[1]
+        try:
+            return (
+                spark.read.format("delta")
+                .load(spark_path(table_root))
+                .where(f"dt = '{dt_value}'")
+                .count()
+            )
+        except Exception:
+            pass
+
+    # Fallback: partition folder is itself a delta table (legacy layout)
     try:
         return spark.read.format("delta").load(spark_path(path)).count()
     except Exception:
+        pass
+
+    try:
         return spark.read.format("parquet").load(spark_path(path)).count()
+    except Exception:
+        return 0
 
 
 def _write_parquet(rows: List[Dict], path: Path) -> None:

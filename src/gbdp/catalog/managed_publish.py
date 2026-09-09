@@ -132,11 +132,28 @@ def _publish_gold(spark, dt: date, catalog: str, schema: str) -> None:
                 df = None
 
         if df is None:
-            # Parquet fallback: read partition folder
             part = table_dir / f"dt={dt_str}"
-            if not path_exists(part) or not has_files_with_suffix(part, ".parquet"):
+            if not path_exists(part):
                 continue
-            df = spark.read.format("parquet").load(spark_path(part))
+            # Some partition folders are themselves delta tables (nested delta log).
+            if path_exists(part / "_delta_log"):
+                try:
+                    df = spark.read.format("delta").load(spark_path(part))
+                except Exception:
+                    continue
+            elif has_files_with_suffix(part, ".parquet"):
+                try:
+                    df = spark.read.format("parquet").load(spark_path(part))
+                except Exception as e:
+                    if "DELTA_INVALID_FORMAT" in str(e) or "delta_invalid_format" in str(e).lower():
+                        try:
+                            df = spark.read.format("delta").load(spark_path(part))
+                        except Exception:
+                            continue
+                    else:
+                        continue
+            else:
+                continue
 
         from pyspark.sql import functions as F
         if "dt" not in df.columns:
@@ -244,27 +261,43 @@ def _write_managed(spark, df, full_name: str, dt: date) -> None:
         df.write.format("delta").mode("overwrite").partitionBy("dt").saveAsTable(full_name)
         return
 
-    # Try overwrite just this dt partition (NO overwriteSchema here; not allowed with replaceWhere)
-    try:
+    # Try overwrite just this dt partition (NO overwriteSchema here; not allowed with replaceWhere).
+    # mergeSchema IS allowed with replaceWhere and is what actually lets new columns show up
+    # going forward instead of being silently dropped to match whatever schema the table
+    # happened to get on its first (possibly empty/narrow) write.
+    def _write_partition():
         (
             df.write.format("delta")
             .mode("overwrite")
             .option("replaceWhere", f"dt = '{dt_str}'")
+            .option("mergeSchema", "true")
             .saveAsTable(full_name)
         )
+
+    try:
+        _write_partition()
         return
     except Exception as e:
         msg = str(e).lower()
 
-        # UC schema mismatch / ACL blocks automerge -> one-time full overwrite with overwriteSchema
-        if "schema mismatch" in msg or "schema migration is not allowed" in msg or "_legacy_error_temp_delta_0007" in msg:
-            (
-                df.write.format("delta")
-                .mode("overwrite")
-                .option("overwriteSchema", "true")
-                .partitionBy("dt")
-                .saveAsTable(full_name)
-            )
+        # UC schema mismatch / ACL blocks automerge -> widen the schema additively
+        # (ALTER TABLE ADD COLUMNS never touches existing rows or other partitions)
+        # and retry the same partition-scoped write. Do NOT fall back to a bare
+        # mode("overwrite") here without replaceWhere -- that replaces the ENTIRE
+        # table with just this partition's rows, silently destroying every other
+        # date ever written to it.
+        if "schema mismatch" in msg or "schema migration is not allowed" in msg or "_legacy_error_temp_delta_0007" in msg or "delta_failed_to_merge_fields" in msg:
+            _add_missing_columns(spark, full_name, df)
+            _write_partition()
             return
 
         raise
+
+
+def _add_missing_columns(spark, full_name: str, df) -> None:
+    existing = {f.name for f in spark.table(full_name).schema.fields}
+    new_fields = [f for f in df.schema.fields if f.name not in existing]
+    if not new_fields:
+        return
+    ddl = ", ".join(f"`{f.name}` {f.dataType.simpleString()}" for f in new_fields)
+    spark.sql(f"ALTER TABLE {full_name} ADD COLUMNS ({ddl})")

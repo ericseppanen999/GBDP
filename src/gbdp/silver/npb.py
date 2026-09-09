@@ -57,8 +57,8 @@ def _bronze_path(root: Path, entity: str, dt: date) -> Path:
     return bronze_root() / "parsed" / "npb_spaia" / entity / f"dt={dt.isoformat()}"
 
 
-def _silver_path(root: Path, entity: str, dt: date) -> Path:
-    return root / "npb_spaia" / entity / f"dt={dt.isoformat()}"
+def _silver_path(root: Path, source: str, entity: str, dt: date) -> Path:
+    return root / source / entity / f"dt={dt.isoformat()}"
 
 
 def _read_bronze(entity: str, dt: date, root: Path) -> List[Dict[str, Any]]:
@@ -98,7 +98,7 @@ def _normalize_games(root: Path, dt: date, force: bool) -> Path:
             row["dt"] = dt.isoformat()
             row["source"] = "npb_spaia"
         normalized.append(row)
-    out_dir = _silver_path(root, "games", dt)
+    out_dir = _silver_path(root, "npb_spaia", "games", dt)
     ensure_dir(out_dir)
     return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 
@@ -141,7 +141,7 @@ def _normalize_rosters(root: Path, dt: date, force: bool) -> Path:
                     row["dt"] = dt.isoformat()
                     row["source"] = "npb_spaia"
                 normalized.append(row)
-    out_dir = _silver_path(root, "rosters", dt)
+    out_dir = _silver_path(root, "npb_spaia", "rosters", dt)
     ensure_dir(out_dir)
     return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 
@@ -182,7 +182,7 @@ def _normalize_game_pbp(root: Path, dt: date, force: bool) -> Path:
                     row["dt"] = dt.isoformat()
                     row["source"] = "npb_spaia"
                 normalized.append(row)
-    out_dir = _silver_path(root, "game_pbp", dt)
+    out_dir = _silver_path(root, "npb_spaia", "game_pbp", dt)
     ensure_dir(out_dir)
     return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 
@@ -211,7 +211,7 @@ def _normalize_standings(root: Path, dt: date, force: bool) -> Path:
                 row["dt"] = dt.isoformat()
                 row["source"] = "npb_spaia"
             normalized.append(row)
-    out_dir = _silver_path(root, "standings", dt)
+    out_dir = _silver_path(root, "npb_spaia", "standings", dt)
     ensure_dir(out_dir)
     return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 

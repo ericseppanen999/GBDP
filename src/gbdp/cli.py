@@ -182,8 +182,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--manual-root", help="Override manual data root path")
     run_p.add_argument(
         "--window",
-        choices=["nightly"],
-        help="Override start/end with a built-in window (nightly = last 7 days ending yesterday)",
+        choices=["nightly", "yesterday"],
+        help="Override start/end with a built-in window (nightly = last 7 days ending yesterday, yesterday = yesterday only)",
     )
     run_p.add_argument(
         "--leagues",
@@ -204,8 +204,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--http-min-interval", type=float, help="HTTP min interval seconds")
 
     backfill_p = sub.add_parser("backfill", help="Backfill pipeline stages (alias of run)")
-    backfill_p.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
-    backfill_p.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    backfill_p.add_argument("--start", default=None, help="Start date YYYY-MM-DD (default: 7 days ago)")
+    backfill_p.add_argument("--end", default=None, help="End date YYYY-MM-DD (default: yesterday)")
     backfill_p.add_argument("--sources", default="configs/sources.yaml", help="Path to sources.yaml")
     backfill_p.add_argument("--force", action="store_true", help="Overwrite existing outputs")
     backfill_p.add_argument("--stages", help="Comma-separated list of stages to run (optional)")
@@ -219,8 +219,8 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_p.add_argument("--manual-root", help="Override manual data root path")
     backfill_p.add_argument(
         "--window",
-        choices=["nightly"],
-        help="Override start/end with a built-in window (nightly = last 7 days ending yesterday)",
+        choices=["nightly", "yesterday"],
+        help="Override start/end with a built-in window (nightly = last 7 days ending yesterday, yesterday = yesterday only)",
     )
     backfill_p.add_argument(
         "--leagues",
@@ -239,6 +239,17 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_p.add_argument("--http-retries", type=int, help="HTTP retry count")
     backfill_p.add_argument("--http-backoff", type=float, help="HTTP backoff base")
     backfill_p.add_argument("--http-min-interval", type=float, help="HTTP min interval seconds")
+
+    sub.add_parser("purge-stale", help="Delete gold tables with stale nested delta logs so next run starts clean").add_argument("--gold-root", help="Override gold root path")
+
+    cd_p = sub.add_parser("check-data", help="Report row counts on key gold tables for a given date")
+    cd_p.add_argument("--dt", default=None, help="Date to check (YYYY-MM-DD), defaults to yesterday")
+    cd_p.add_argument("--gold-root", help="Override gold root path")
+    cd_p.add_argument("--storage-format", choices=["parquet", "delta"], default="delta")
+
+    tw_p = sub.add_parser("test-write", help="Smoke-test Delta write path against a throwaway volume table")
+    tw_p.add_argument("--gold-root", help="Override gold root path")
+    tw_p.add_argument("--storage-format", choices=["parquet", "delta"], default="delta")
 
     uc_p = sub.add_parser("register-uc", help="Register bronze/silver/gold tables in Unity Catalog")
     uc_p.add_argument("--catalog", required=False, help="UC catalog name (e.g., gbdp)")
@@ -304,7 +315,7 @@ def main() -> None:
         _set_uc(args)
         _set_http(args)
         stages = args.stages.split(",") if args.stages else None
-        leagues = args.leagues.split(",") if args.leagues else None
+        leagues = args.leagues.split(",") if args.leagues and args.leagues != "all" else None
         start, end = _resolve_window(args.start, args.end, args.window)
         run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay, args.chunk, leagues)
     if args.cmd == "backfill":
@@ -312,10 +323,30 @@ def main() -> None:
         _set_roots(args)
         _set_uc(args)
         _set_http(args)
-        stages = args.stages.split(",") if args.stages else None
-        leagues = args.leagues.split(",") if args.leagues else None
-        start, end = _resolve_window(args.start, args.end, args.window)
+        raw_stages = args.stages or os.getenv("stages") or os.getenv("GBDP_BACKFILL_STAGES")
+        stages = raw_stages.split(",") if raw_stages else None
+        from datetime import timedelta
+        from gbdp.utils.time import utc_now
+        yesterday = (utc_now().date() - timedelta(days=1)).isoformat()
+        week_ago = (utc_now().date() - timedelta(days=7)).isoformat()
+        # Job params are injected as env vars on serverless: os.getenv("start_date") etc.
+        raw_start = args.start or os.getenv("start_date") or os.getenv("GBDP_BACKFILL_START") or week_ago
+        raw_end = args.end or os.getenv("end_date") or os.getenv("GBDP_BACKFILL_END") or yesterday
+        raw_leagues = args.leagues or os.getenv("leagues") or os.getenv("GBDP_BACKFILL_LEAGUES") or "all"
+        leagues = raw_leagues.split(",") if raw_leagues and raw_leagues != "all" else None
+        start, end = _resolve_window(raw_start, raw_end, args.window)
         run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay, args.chunk, leagues)
+    if args.cmd == "purge-stale":
+        _set_roots(args)
+        _purge_stale()
+    if args.cmd == "check-data":
+        _set_storage_format(args)
+        _set_roots(args)
+        _check_data(args.dt)
+    if args.cmd == "test-write":
+        _set_storage_format(args)
+        _set_roots(args)
+        _test_write()
     if args.cmd == "register-uc":
         _set_storage_format(args)
         _set_roots(args)
@@ -335,6 +366,100 @@ def main() -> None:
             register_uc_tables_from_env()
 
 
+def _purge_stale() -> None:
+    from pyspark.sql import SparkSession
+    from pyspark.dbutils import DBUtils
+    from gbdp.utils.io import gold_root, spark_path, list_dir, path_exists
+
+    spark = SparkSession.builder.getOrCreate()
+    dbutils = DBUtils(spark)
+    root = gold_root()
+
+    purged = 0
+    for table_dir in list_dir(root, dirs_only=True):
+        for part_dir in list_dir(table_dir, dirs_only=True):
+            if not part_dir.name.startswith("dt="):
+                continue
+            nested_log = part_dir / "_delta_log"
+            if path_exists(nested_log):
+                target = spark_path(table_dir)
+                logger.info("purge-stale: removing %s (nested delta log found)", target)
+                dbutils.fs.rm(target, True)
+                purged += 1
+                break  # whole table removed, move on
+    logger.info("purge-stale: removed %d table(s)", purged)
+
+
+def _check_data(dt: str | None) -> None:
+    from datetime import timedelta
+    from pyspark.sql import SparkSession
+    from gbdp.utils.io import gold_root, spark_path, list_dir, path_exists
+    from gbdp.utils.time import utc_now
+
+    if not dt:
+        dt = (utc_now().date() - timedelta(days=1)).isoformat()
+
+    spark = SparkSession.builder.getOrCreate()
+    root = gold_root()
+    tables = [
+        "fact_pitch", "fact_plate_appearance", "fact_game",
+        "fact_roster", "fact_boxscore_batting", "fact_boxscore_pitching",
+        "fact_standings", "dim_player", "dim_team", "bridge_source_ids",
+    ]
+    logger.info("=== Gold table row counts for dt=%s ===", dt)
+    for table in tables:
+        base = root / table
+        if not path_exists(base):
+            logger.info("  %-35s NOT FOUND", table)
+            continue
+        try:
+            count = (
+                spark.read.format("delta")
+                .load(spark_path(base))
+                .where(f"dt = '{dt}'")
+                .count()
+            )
+            logger.info("  %-35s %d rows", table, count)
+        except Exception as e:
+            logger.info("  %-35s ERROR: %s", table, str(e)[:80])
+
+
+def _test_write() -> None:
+    from pyspark.sql import SparkSession
+    from gbdp.utils.io import gold_root, spark_path
+
+    spark = SparkSession.builder.getOrCreate()
+    table_root = spark_path(gold_root() / "_test_write")
+
+    try:
+        from pyspark.dbutils import DBUtils
+        DBUtils(spark).fs.rm(table_root, True)
+    except Exception:
+        pass
+
+    rows1 = [{"entity_type": "player", "source": "mlb", "source_id": "123", "dt": "2026-05-22"}]
+    df = spark.createDataFrame(rows1)
+    df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").partitionBy("dt").save(table_root)
+    logger.info("test-write [1/3] fresh partitioned write OK")
+
+    rows2 = [{"entity_type": "player", "source": "mlb", "source_id": "456", "dt": "2026-05-22"}]
+    df2 = spark.createDataFrame(rows2)
+    df2.write.format("delta").mode("overwrite").option("mergeSchema", "true").option("replaceWhere", "dt = '2026-05-22'").save(table_root)
+    logger.info("test-write [2/3] replaceWhere OK")
+
+    count = spark.read.format("delta").load(table_root).count()
+    assert count == 1, f"expected 1 row, got {count}"
+    logger.info("test-write [3/3] read-back OK — %d row(s)", count)
+
+    try:
+        from pyspark.dbutils import DBUtils
+        DBUtils(spark).fs.rm(table_root, True)
+    except Exception:
+        pass
+
+    logger.info("test-write PASSED")
+
+
 def _run_pipeline(args: argparse.Namespace) -> None:
     raise RuntimeError("Legacy runner removed. Use `gbdp run` with --stages if needed.")
 
@@ -349,6 +474,9 @@ def _resolve_window(start: str, end: str, window: str | None) -> tuple[str, str]
         yesterday = (utc_now().date() - timedelta(days=1))
         start_dt = (yesterday - timedelta(days=6))
         return start_dt.isoformat(), yesterday.isoformat()
+    if window == "yesterday":
+        yesterday = (utc_now().date() - timedelta(days=1)).isoformat()
+        return yesterday, yesterday
     return start, end
 
 

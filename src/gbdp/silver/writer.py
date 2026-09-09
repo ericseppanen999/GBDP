@@ -110,6 +110,15 @@ def _delta_exists(spark, table_root: str) -> bool:
         return False
 
 
+def _add_missing_columns(spark, table_root: str, df) -> None:
+    existing = {f.name for f in spark.read.format("delta").load(table_root).schema.fields}
+    new_fields = [f for f in df.schema.fields if f.name not in existing]
+    if not new_fields:
+        return
+    ddl = ", ".join(f"`{f.name}` {f.dataType.simpleString()}" for f in new_fields)
+    spark.sql(f"ALTER TABLE delta.`{table_root}` ADD COLUMNS ({ddl})")
+
+
 def _table_root_and_dt(out_dir: Path) -> tuple[Path, Optional[str]]:
     """
     If out_dir is .../<dataset>/dt=YYYY-MM-DD -> treat <dataset> as table root and dt as partition key.
@@ -191,7 +200,15 @@ def _write_delta(rows: List[Dict[str, Any]], out_dir: Path, force: bool = False)
         if "DELTA_MISSING_TRANSACTION_LOG" in msg or "Incompatible format detected" in msg:
             df.write.mode("overwrite").parquet(spark_path(out_dir))
             return
-        # This is the exact failure you're seeing if a column changed type across runs.
+        if "DELTA_FAILED_TO_MERGE_FIELDS" in msg or "delta_failed_to_merge_fields" in msg.lower():
+            # Widen the table's schema additively (ADD COLUMNS never touches existing
+            # rows or other partitions), then retry the same partition-scoped write.
+            # Do NOT fall back to mode("overwrite") without replaceWhere here -- that
+            # replaces the ENTIRE table with just this partition's rows, silently
+            # destroying every other date ever written to it.
+            _add_missing_columns(spark, table_root, df)
+            w.save(table_root)
+            return
         raise RuntimeError(
             f"Delta write failed (likely schema/type conflict). "
             f"If you recently changed how a field is represented (e.g., status struct -> string), "

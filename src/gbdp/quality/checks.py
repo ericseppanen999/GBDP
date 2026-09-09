@@ -51,23 +51,32 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
         con = duckdb.connect()
     results: List[Dict[str, object]] = []
 
+    dt_str = dt.isoformat()
+
+    def _exists_for_check(table: str) -> bool:
+        # Delta tables are one table per entity partitioned by dt, not a
+        # standalone delta table per dt= folder -- existence has to be
+        # checked at the table root, or a real table with (correctly) zero
+        # rows for this date reads as "doesn't exist".
+        return path_exists(root / table) if fmt != "parquet" else path_exists(root / table / f"dt={dt_str}")
+
     # Uniqueness checks
     for rule in cfg.get("uniqueness", []):
         table = rule["table"].split(".")[-1]
         cols = rule["columns"]
-        path = root / table / f"dt={dt.isoformat()}"
-        if not path_exists(path):
+        if not _exists_for_check(table):
             continue
         cols_sql = ", ".join(cols)
         if fmt == "parquet":
+            path = root / table / f"dt={dt_str}"
             con.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet('{path}/*.parquet')")
             dupes = con.execute(
                 f"SELECT COUNT(*) FROM (SELECT {cols_sql}, COUNT(*) c FROM t GROUP BY {cols_sql} HAVING c>1)"
             ).fetchone()[0]
         else:
-            dupes = _spark_uniqueness(path, cols)
+            dupes = _spark_uniqueness(root / table, dt_str, cols)
         results.append(
-            {"check": "uniqueness", "table": table, "columns": cols_sql, "dupes": dupes, "dt": dt.isoformat()}
+            {"check": "uniqueness", "table": table, "columns": cols_sql, "dupes": dupes, "dt": dt_str}
         )
 
     # Referential integrity
@@ -75,18 +84,18 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
         child = rule["child"].split(".")[-1]
         parent = rule["parent"].split(".")[-1]
         key = rule["key"]
-        child_path = root / child / f"dt={dt.isoformat()}"
-        parent_path = root / parent / f"dt={dt.isoformat()}"
-        if not path_exists(child_path) or not path_exists(parent_path):
+        if not _exists_for_check(child) or not _exists_for_check(parent):
             continue
         if fmt == "parquet":
+            child_path = root / child / f"dt={dt_str}"
+            parent_path = root / parent / f"dt={dt_str}"
             con.execute(f"CREATE OR REPLACE VIEW c AS SELECT * FROM read_parquet('{child_path}/*.parquet')")
             con.execute(f"CREATE OR REPLACE VIEW p AS SELECT * FROM read_parquet('{parent_path}/*.parquet')")
             missing = con.execute(
                 f"SELECT COUNT(*) FROM c LEFT JOIN p ON c.{key}=p.{key} WHERE c.{key} IS NOT NULL AND p.{key} IS NULL"
             ).fetchone()[0]
         else:
-            missing = _spark_ref_integrity(child_path, parent_path, key)
+            missing = _spark_ref_integrity(root / child, root / parent, dt_str, key)
         results.append(
             {
                 "check": "referential_integrity",
@@ -94,7 +103,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                 "parent": parent,
                 "key": key,
                 "missing": missing,
-                "dt": dt.isoformat(),
+                "dt": dt_str,
             }
         )
 
@@ -102,14 +111,14 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
     for rule in cfg.get("row_count_min", []):
         table = rule["table"].split(".")[-1]
         min_count = int(rule.get("min_count", 0))
-        path = root / table / f"dt={dt.isoformat()}"
-        if not path_exists(path):
+        if not _exists_for_check(table):
             continue
         if fmt == "parquet":
+            path = root / table / f"dt={dt_str}"
             con.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet('{path}/*.parquet')")
             count = con.execute("SELECT COUNT(*) FROM t").fetchone()[0]
         else:
-            count = _spark_count(path)
+            count = _spark_count(root / table, dt_str)
         results.append(
             {
                 "check": "row_count_min",
@@ -117,31 +126,31 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                 "count": count,
                 "min_count": min_count,
                 "ok": count >= min_count,
-                "dt": dt.isoformat(),
+                "dt": dt_str,
             }
         )
 
     # Completeness thresholds (coverage of games)
     thresholds = cfg.get("thresholds", {})
     if thresholds:
-        game_path = root / "fact_game" / f"dt={dt.isoformat()}"
-        if path_exists(game_path):
+        game_path = root / "fact_game" / f"dt={dt_str}"
+        if _exists_for_check("fact_game"):
             if fmt == "parquet":
                 con.execute(
                     f"CREATE OR REPLACE VIEW games AS SELECT DISTINCT game_id FROM read_parquet('{game_path}/*.parquet')"
                 )
                 total_games = con.execute("SELECT COUNT(*) FROM games").fetchone()[0]
             else:
-                total_games = _spark_distinct_count(game_path, "game_id")
-            pitch_path = root / "fact_pitch" / f"dt={dt.isoformat()}"
-            if path_exists(pitch_path) and total_games > 0:
+                total_games = _spark_distinct_count(root / "fact_game", dt_str, "game_id")
+            if _exists_for_check("fact_pitch") and total_games > 0:
+                pitch_path = root / "fact_pitch" / f"dt={dt_str}"
                 if fmt == "parquet":
                     con.execute(
                         f"CREATE OR REPLACE VIEW pitches AS SELECT DISTINCT game_id FROM read_parquet('{pitch_path}/*.parquet')"
                     )
                     with_pitch = con.execute("SELECT COUNT(*) FROM pitches").fetchone()[0]
                 else:
-                    with_pitch = _spark_distinct_count(pitch_path, "game_id")
+                    with_pitch = _spark_distinct_count(root / "fact_pitch", dt_str, "game_id")
                 pct = with_pitch / total_games
                 results.append(
                     {
@@ -149,12 +158,12 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                         "pct": pct,
                         "threshold": float(thresholds.get("mlb_pitch_coverage_pct", 0)),
                         "ok": pct >= float(thresholds.get("mlb_pitch_coverage_pct", 0)),
-                        "dt": dt.isoformat(),
+                        "dt": dt_str,
                     }
                 )
             # NPB PBP coverage
-            pa_path = root / "gold" / "fact_plate_appearance" / f"dt={dt.isoformat()}"
-            if path_exists(pa_path) and thresholds.get("npb_pbp_coverage_pct") is not None:
+            if _exists_for_check("fact_plate_appearance") and thresholds.get("npb_pbp_coverage_pct") is not None:
+                pa_path = root / "fact_plate_appearance" / f"dt={dt_str}"
                 if fmt == "parquet":
                     con.execute(
                         f"CREATE OR REPLACE VIEW games_npb AS SELECT DISTINCT game_id FROM read_parquet('{game_path}/*.parquet') WHERE source='npb_spaia'"
@@ -166,12 +175,17 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                     with_pbp = con.execute("SELECT COUNT(*) FROM pa_npb").fetchone()[0]
                 else:
                     from pyspark.sql import SparkSession
-                    from pyspark.sql import functions as F
 
                     spark = SparkSession.builder.getOrCreate()
-                    games_df = spark.read.format("delta").load(spark_path(game_path)).where("source = 'npb_spaia'")
+                    games_df = (
+                        spark.read.format("delta").load(spark_path(root / "fact_game"))
+                        .where(f"dt = '{dt_str}' AND source = 'npb_spaia'")
+                    )
                     total_npb = games_df.select("game_id").distinct().count()
-                    pa_df = spark.read.format("delta").load(spark_path(pa_path)).where("source = 'npb_spaia'")
+                    pa_df = (
+                        spark.read.format("delta").load(spark_path(root / "fact_plate_appearance"))
+                        .where(f"dt = '{dt_str}' AND source = 'npb_spaia'")
+                    )
                     with_pbp = pa_df.select("game_id").distinct().count()
                 pct_npb = (with_pbp / total_npb) if total_npb else 0
                 results.append(
@@ -180,14 +194,14 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                         "pct": pct_npb,
                         "threshold": float(thresholds.get("npb_pbp_coverage_pct", 0)),
                         "ok": pct_npb >= float(thresholds.get("npb_pbp_coverage_pct", 0)),
-                        "dt": dt.isoformat(),
+                        "dt": dt_str,
                     }
                 )
 
     # Base/out validity checks
-    pa_path = root / "fact_plate_appearance" / f"dt={dt.isoformat()}"
-    if path_exists(pa_path):
+    if _exists_for_check("fact_plate_appearance"):
         if fmt == "parquet":
+            pa_path = root / "fact_plate_appearance" / f"dt={dt_str}"
             con.execute(f"CREATE OR REPLACE VIEW pa AS SELECT * FROM read_parquet('{pa_path}/*.parquet')")
             invalid_base = con.execute(
                 "SELECT COUNT(*) FROM pa WHERE (base_state_before IS NOT NULL AND (base_state_before < 0 OR base_state_before > 7)) "
@@ -198,23 +212,24 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                 "OR (outs_after IS NOT NULL AND (outs_after < 0 OR outs_after > 3))"
             ).fetchone()[0]
         else:
-            invalid_base = _spark_invalid_range(pa_path, "base_state_before", 0, 7) + _spark_invalid_range(
-                pa_path, "base_state_after", 0, 7
+            pa_root = root / "fact_plate_appearance"
+            invalid_base = _spark_invalid_range(pa_root, dt_str, "base_state_before", 0, 7) + _spark_invalid_range(
+                pa_root, dt_str, "base_state_after", 0, 7
             )
-            invalid_outs = _spark_invalid_range(pa_path, "outs_before", 0, 3) + _spark_invalid_range(
-                pa_path, "outs_after", 0, 3
+            invalid_outs = _spark_invalid_range(pa_root, dt_str, "outs_before", 0, 3) + _spark_invalid_range(
+                pa_root, dt_str, "outs_after", 0, 3
             )
         results.append(
-            {"check": "base_state_range", "invalid": invalid_base, "dt": dt.isoformat(), "ok": invalid_base == 0}
+            {"check": "base_state_range", "invalid": invalid_base, "dt": dt_str, "ok": invalid_base == 0}
         )
         results.append(
-            {"check": "outs_range", "invalid": invalid_outs, "dt": dt.isoformat(), "ok": invalid_outs == 0}
+            {"check": "outs_range", "invalid": invalid_outs, "dt": dt_str, "ok": invalid_outs == 0}
         )
 
     # Schema drift detection for bronze parsed
     results.extend(_schema_drift_checks(root, dt))
 
-    out_dir = root / "audit_quality" / f"dt={dt.isoformat()}"
+    out_dir = root / "audit_quality" / f"dt={dt_str}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
     if path_exists(out_path) and not force:
@@ -310,55 +325,47 @@ def _schema_drift_checks(root: Path, dt: date) -> List[Dict[str, object]]:
     return results
 
 
-def _spark_count(path: Path) -> int:
+def _spark_load_dt(table_root: Path, dt_str: str):
     from pyspark.sql import SparkSession
 
     spark = SparkSession.builder.getOrCreate()
-    df = spark.read.format("delta").load(spark_path(path))
-    return df.count()
+    return spark.read.format("delta").load(spark_path(table_root)).where(f"dt = '{dt_str}'")
 
 
-def _spark_distinct_count(path: Path, col: str) -> int:
-    from pyspark.sql import SparkSession
+def _spark_count(table_root: Path, dt_str: str) -> int:
+    return _spark_load_dt(table_root, dt_str).count()
 
-    spark = SparkSession.builder.getOrCreate()
-    df = spark.read.format("delta").load(spark_path(path))
+
+def _spark_distinct_count(table_root: Path, dt_str: str, col: str) -> int:
+    df = _spark_load_dt(table_root, dt_str)
     if col not in df.columns:
         return 0
     return df.select(col).distinct().count()
 
 
-def _spark_uniqueness(path: Path, cols: List[str]) -> int:
-    from pyspark.sql import SparkSession
+def _spark_uniqueness(table_root: Path, dt_str: str, cols: List[str]) -> int:
     from pyspark.sql import functions as F
 
-    spark = SparkSession.builder.getOrCreate()
-    df = spark.read.format("delta").load(spark_path(path))
+    df = _spark_load_dt(table_root, dt_str)
     if any(c not in df.columns for c in cols):
         return 0
     dupes = df.groupBy(cols).count().where(F.col("count") > 1).count()
     return dupes
 
 
-def _spark_ref_integrity(child: Path, parent: Path, key: str) -> int:
-    from pyspark.sql import SparkSession
-    from pyspark.sql import functions as F
-
-    spark = SparkSession.builder.getOrCreate()
-    c = spark.read.format("delta").load(spark_path(child))
-    p = spark.read.format("delta").load(spark_path(parent))
+def _spark_ref_integrity(child_root: Path, parent_root: Path, dt_str: str, key: str) -> int:
+    c = _spark_load_dt(child_root, dt_str)
+    p = _spark_load_dt(parent_root, dt_str)
     if key not in c.columns or key not in p.columns:
         return 0
     missing = c.join(p, c[key] == p[key], "left").where(c[key].isNotNull() & p[key].isNull()).count()
     return missing
 
 
-def _spark_invalid_range(path: Path, col: str, min_val: int, max_val: int) -> int:
-    from pyspark.sql import SparkSession
+def _spark_invalid_range(table_root: Path, dt_str: str, col: str, min_val: int, max_val: int) -> int:
     from pyspark.sql import functions as F
 
-    spark = SparkSession.builder.getOrCreate()
-    df = spark.read.format("delta").load(spark_path(path))
+    df = _spark_load_dt(table_root, dt_str)
     if col not in df.columns:
         return 0
     return (
