@@ -7,17 +7,25 @@ dependencies = [
   "requests>=2.31.0",
   "pyarrow>=14.0.0",
   "python-dateutil>=2.8.2",
-  "pydantic>=2.5.0",
   "PyYAML>=6.0.1",
   "duckdb>=0.10.0",
   # mcp pulls in a starlette version too new for fastapi<0.135 (confirmed:
   # FastAPI() constructor itself fails at import time with fastapi 0.115.6 +
   # the starlette mcp installs) -- floor bumped specifically to stay
-  # compatible with mcp's starlette requirement.
-  "fastapi>=0.135.0",
-  "uvicorn>=0.27.0",
+  # compatible with mcp's starlette requirement. Exact-pinned (not just a
+  # floor) because these are fast-moving packages with no lockfile in this
+  # repo -- CI failed twice on a fresh `pip install -e .` resolving these
+  # right after they were introduced, unreproducible locally in 3 separate
+  # environments including a from-scratch Docker container; pinning removes
+  # "which exact version did the resolver pick this time" as a variable
+  # entirely, whatever the real cause turns out to be.
+  "fastapi==0.141.1",
+  "starlette==1.6.0",
+  "uvicorn==0.52.4",
+  "anyio==4.15.1",
+  "pydantic==2.13.5",
   "pytest>=8.0.0",
-  "mcp>=1.0.0,<2.0.0",
+  "mcp==1.30.0",
 ]
 
 [project.scripts]

@@ -20,9 +20,26 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e .
+          pip list > pip-freeze.txt
 
+      # -v --tb=long (not the default -q) and captured to a file: two commits
+      # in a row failed here with no captured traceback recoverable afterward
+      # (GitHub blocks job-log downloads without repo admin rights, which
+      # this token doesn't have) and were unreproducible in 3 separate local
+      # repros including a from-scratch Docker container. If it fails again,
+      # the artifact below is the only way to actually see why.
       - name: Run unit tests
-        run: pytest tests/ -q
+        run: pytest tests/ -v --tb=long 2>&1 | tee pytest-output.txt
+
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-diagnostics
+          path: |
+            pip-freeze.txt
+            pytest-output.txt
+          retention-days: 7
 
       # Real end-to-end run against live MLB Stats API / Statcast for a fixed
       # historical date (already verified clean in manual testing). Bundle
