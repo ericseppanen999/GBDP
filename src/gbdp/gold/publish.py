@@ -310,6 +310,13 @@ def _read_gold_bridge(root: Path, dt: date) -> Dict[tuple, str]:
 
 
 def _read_silver(root: Path, source: str, entity: str, dt: date) -> List[Dict[str, Any]]:
+    # _write_parquet-style writers emit a single {"empty": True} sentinel row
+    # instead of an empty file. Callers iterate this list expecting real
+    # records, so filter the sentinel out here rather than at every call site.
+    return [r for r in _read_silver_raw(root, source, entity, dt) if not r.get("empty")]
+
+
+def _read_silver_raw(root: Path, source: str, entity: str, dt: date) -> List[Dict[str, Any]]:
     """
     Parquet mode: reads .../dt=YYYY-MM-DD folder.
     Delta mode: reads ONE delta table at .../<source>/<entity> and filters dt.

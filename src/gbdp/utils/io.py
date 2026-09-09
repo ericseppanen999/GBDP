@@ -455,7 +455,7 @@ def read_parquet_rows(path: Path) -> List[Dict[str, Any]]:
         else:
             schema = None
         dataset = ds.dataset(files, format="parquet", schema=schema)
-        return dataset.to_table().to_pylist()
+        return _drop_empty_sentinel(dataset.to_table().to_pylist())
     # Serverless-safe path: use Spark to read DBFS/Volumes parquet
     if not has_files_with_suffix(path, ".parquet"):
         return []
@@ -465,4 +465,11 @@ def read_parquet_rows(path: Path) -> List[Dict[str, Any]]:
         return []
     spark = SparkSession.builder.getOrCreate()
     df = spark.read.format("parquet").load(spark_path(path))
-    return [row.asDict() for row in df.collect()]
+    return _drop_empty_sentinel([row.asDict() for row in df.collect()])
+
+
+def _drop_empty_sentinel(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # Writers emit a single {"empty": True} row instead of a zero-row file
+    # (some formats/backends can't represent that cleanly). Callers expect
+    # real records, so filter the sentinel out at the read boundary.
+    return [r for r in rows if not r.get("empty")]

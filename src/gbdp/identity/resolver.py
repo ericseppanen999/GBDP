@@ -314,13 +314,17 @@ def _read_silver(root: Path, source: str, entity: str, dt: date) -> List[Dict[st
         try:
             from pyspark.sql import SparkSession
             spark = SparkSession.builder.getOrCreate()
-            return spark.read.format("delta").load(spark_path(path)).toPandas().to_dict(orient="records")
+            rows = spark.read.format("delta").load(spark_path(path)).toPandas().to_dict(orient="records")
         except Exception:
             return []
-    try:
-        return read_parquet_rows(path)
-    except Exception:
-        return []
+    else:
+        try:
+            rows = read_parquet_rows(path)
+        except Exception:
+            return []
+    # Writers emit a single {"empty": True} sentinel row instead of an empty
+    # file; callers here expect real records, so drop the sentinel.
+    return [r for r in rows if not r.get("empty")]
 
 
 def _write_output(rows: List[Dict[str, Any]], out_dir: Path, out_path: Path) -> None:
