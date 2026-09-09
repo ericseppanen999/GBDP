@@ -124,7 +124,7 @@ def _normalize_rosters(root: Path, dt: date, force: bool) -> Path:
                             p.get("player_id")
                             or p.get("playerId")
                             or p.get("person_info_id")
-                            or p.get("PersonInfoId")
+                            or p.get("PersonInfoID")
                             or p.get("id")
                         ),
                         "player_name": p.get("name")

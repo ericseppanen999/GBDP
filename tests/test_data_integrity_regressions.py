@@ -257,3 +257,63 @@ def test_no_unscoped_full_table_overwrite_in_schema_mismatch_fallback(path):
         f"{path}: schema-mismatch handler reintroduced overwriteSchema -- this is the exact "
         f"pattern that silently wiped most history out of several production tables"
     )
+
+
+# --- Bug 8: NPB SPAIA's /directory endpoint returns one entry PER PLAYER ---
+# (confirmed live: 1459 entries), not one per team. _get_team_ids() never
+# deduplicated, so every per-team fetch (rosters, batter_list, pitcher_list,
+# staff_list) looped ~1459 times instead of ~12 real teams -- almost
+# certainly the actual cause of NPB fetches taking over an hour earlier this
+# session, and it also produced a roster table bloated ~110x (161,173 rows
+# for what should be ~1,449).
+def test_npb_get_team_ids_deduplicates():
+    from gbdp.connectors.npb_spaia import NpbSpaiaConnector
+    import json
+
+    # Simulates /directory: one entry per player, TeamID repeats heavily.
+    directory = [{"TeamID": str(team_id)} for team_id in [1, 2, 1, 1, 2, 3, 2, 1]]
+
+    class FakeConnector(NpbSpaiaConnector):
+        def http_get(self, url, params=None):
+            return _payload(body_text=json.dumps(directory))
+
+    connector = FakeConnector(writer=None, cache=None, base_url="https://spaia.jp/baseball/npb/api")
+    ids = connector._get_team_ids()
+
+    assert ids == [1, 2, 3], f"expected 3 deduplicated teams in first-seen order, got {ids}"
+
+
+# --- Bug 9: silver/npb.py's roster normalizer (and npb_spaia's own player- -
+# id lookup) checked p.get("PersonInfoId") but the real API field is
+# "PersonInfoID" (capital D). Confirmed live: every roster row's player_id
+# came back None despite PersonInfoID being present and correct in the same
+# record's raw_json.
+def test_npb_roster_extracts_player_id_from_person_info_id():
+    from gbdp.silver.npb import _normalize_rosters
+
+    root = None  # unused by this call path once we monkeypatch _read_bronze
+    import gbdp.silver.npb as npb_module
+
+    fake_bronze_row = {
+        "teams": [
+            {
+                "team_id": "5",
+                "body_text": (
+                    '[{"PersonInfoID": "1750802", "PlayerName": "Test Player", "TeamID": "5"}]'
+                ),
+            }
+        ]
+    }
+
+    original = npb_module._read_bronze
+    npb_module._read_bronze = lambda entity, dt, root: [fake_bronze_row]
+    try:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = npb_module._normalize_rosters(Path(tmp), date(2023, 10, 18), force=True)
+            rows = pq.ParquetFile(str(out_path)).read().to_pylist()
+    finally:
+        npb_module._read_bronze = original
+
+    assert len(rows) == 1
+    assert rows[0]["player_id"] == "1750802", f"player_id not extracted: {rows[0]}"

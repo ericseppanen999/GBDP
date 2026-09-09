@@ -322,6 +322,13 @@ class NpbSpaiaConnector(BaseConnector):
         )
 
     def _get_team_ids(self) -> List[int]:
+        # /directory returns one entry per PLAYER (confirmed: ~1459 items),
+        # not one per team -- each entry just happens to carry the team it
+        # belongs to. Without deduplicating, every downstream per-team fetch
+        # (rosters, batter_list, pitcher_list, staff_list) loops ~1459 times
+        # instead of ~12, each iteration mostly refetching the same team's
+        # data. This was almost certainly the real cause of NPB fetches
+        # taking over an hour.
         url = f"{self.base_url}/directory"
         raw = self.http_get(url, {})
         try:
@@ -331,11 +338,13 @@ class NpbSpaiaConnector(BaseConnector):
         teams = data.get("teams") if isinstance(data, dict) else []
         if not teams:
             teams = data if isinstance(data, list) else []
-        ids = []
+        ids: List[int] = []
+        seen = set()
         for t in teams:
             if isinstance(t, dict):
                 tid = t.get("TeamID") or t.get("team_id") or t.get("id")
-                if tid is not None:
+                if tid is not None and int(tid) not in seen:
+                    seen.add(int(tid))
                     ids.append(int(tid))
         return ids
 
@@ -426,7 +435,7 @@ class NpbSpaiaConnector(BaseConnector):
                 pid = (
                     p.get("player_id")
                     or p.get("playerId")
-                    or p.get("PersonInfoId")
+                    or p.get("PersonInfoID")
                     or p.get("person_info_id")
                     or p.get("id")
                 )
