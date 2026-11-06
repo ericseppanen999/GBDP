@@ -455,6 +455,79 @@ def test_npb_kana_fills_alternate_names():
     assert _player_row({"player_id": "1"}, "MLB", {}, "mlb_statsapi")["alternate_names"] is None
 
 
+def _pitch(at_bat, number, inning, half, outs, events="", on_1b=None, score=(0, 0)):
+    import json
+
+    return {
+        "game_pk": "1", "at_bat_number": at_bat, "pitch_number": number, "inning": inning, "inning_topbot": half,
+        "outs_when_up": outs, "events": events, "on_1b": on_1b, "batter_id": "b", "pitcher_id": "p",
+        "raw_json": json.dumps({"bat_score": str(score[0]), "post_bat_score": str(score[1])}),
+    }
+
+
+# --- Bug 19: Statcast PAs reused outs_when_up for outs_on_play and outs_after -
+# and left runs and base_state_after null.
+def test_statcast_pa_state_comes_from_the_next_pa():
+    from gbdp.gold.publish import _statcast_plate_appearances
+
+    rows = _statcast_plate_appearances(
+        [
+            _pitch(1, 1, 1, "Top", 0),
+            _pitch(1, 2, 1, "Top", 0, "single"),
+            _pitch(2, 1, 1, "Top", 0, on_1b="x"),
+            _pitch(2, 2, 1, "Top", 0, "home_run", on_1b="x", score=(0, 2)),
+            _pitch(3, 1, 1, "Top", 2, "field_out"),
+            _pitch(4, 1, 1, "Bot", 0, "walk"),
+        ],
+        date(2025, 4, 1),
+        {},
+    )
+    single, homer, third_out, walk = rows
+
+    assert (single["event_type"], single["base_state_before"], single["base_state_after"]) == ("1B", 0, 1)
+    assert (single["outs_on_play"], single["runs_scored_on_play"]) == (0, 0)
+    assert (homer["runs_scored_on_play"], homer["outs_after"], homer["outs_on_play"]) == (2, 2, 2)
+    assert (third_out["outs_after"], third_out["outs_on_play"], third_out["base_state_after"]) == (3, 1, 0)
+    # Game-ending PA that isn't an out: no third out, and the next state is unknown.
+    assert (walk["outs_after"], walk["base_state_after"]) == (0, None)
+
+
+def test_fact_pitch_rows_reference_their_pa_even_with_a_pinch_hitter():
+    from gbdp.gold.publish import _statcast_pa_id, _statcast_plate_appearances
+
+    first, second = _pitch(1, 1, 1, "Top", 0), _pitch(1, 2, 1, "Top", 0, "walk")
+    second["batter_id"] = "pinch_hitter"
+    rows = _statcast_plate_appearances([first, second], date(2025, 4, 1), {})
+    assert [r["pa_id"] for r in rows] == [_statcast_pa_id("1", 1)]
+
+
+# --- Bug 20: bronze files are named by checksum, so a refetch with new content
+# adds a file beside the old one, and silver read both: every record twice.
+def test_read_bronze_rows_uses_only_the_latest_fetch(tmp_path):
+    import pyarrow as pa
+
+    from gbdp.utils.io import read_bronze_rows
+
+    part = tmp_path / "dt=2025-04-01"
+    part.mkdir()
+    old = [{"game": "1", "status": "In Progress", "response_checksum": "a", "ingested_at_utc": "2025-04-02T04:00:00"}]
+    new = [{"game": "1", "status": "Final", "response_checksum": "b", "ingested_at_utc": "2025-04-03T04:00:00"}]
+    empty = [{"empty": True, "response_checksum": "c", "ingested_at_utc": "2025-04-04T04:00:00"}]
+    for name, rows in [("a", old), ("b", new), ("c", empty)]:
+        pq.write_table(pa.Table.from_pylist(rows), part / f"{name}.parquet")
+
+    assert [r["status"] for r in read_bronze_rows(part)] == ["Final"]
+
+
+# --- Bug 21: row_count_min was a hard check on every date, so the nightly job
+# would fail all winter on dates with no games.
+def test_row_count_min_only_applies_in_season():
+    from gbdp.quality.checks import _in_season
+
+    assert _in_season(date(2026, 7, 1))
+    assert not _in_season(date(2026, 12, 1))
+
+
 # --- Bug 16: the backfill task never passed its job parameters to the CLI, so -
 # every run silently used the default last-7-days window and all stages, with
 # --force. Went unnoticed because one real request happened to equal the default.

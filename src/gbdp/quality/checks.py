@@ -126,7 +126,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                 "table": table,
                 "count": count,
                 "min_count": min_count,
-                "ok": count >= min_count,
+                "ok": count >= min_count or not _in_season(dt),
                 "dt": dt_str,
             }
         )
@@ -257,6 +257,16 @@ def _enforce(results: List[Dict[str, object]], dt_str: str) -> None:
     if hard_failures:
         summary = "; ".join(f"{r.get('check')}:{r.get('table') or r.get('child') or ''}" for r in hard_failures)
         raise RuntimeError(f"quality_checks dt={dt_str} failed hard invariant(s): {summary}")
+
+
+def _in_season(dt: date) -> bool:
+    # A date with no games is normal once every league's season is over.
+    path = Path("configs/leagues.yaml")
+    if not path_exists(path):
+        return True
+    with path.open("r", encoding="utf-8") as f:
+        leagues = yaml.safe_load(f).get("leagues", {})
+    return any(m["season_start_month"] <= dt.month <= m["season_end_month"] for m in leagues.values())
 
 
 def _load_quality_config() -> Dict:

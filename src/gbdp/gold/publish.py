@@ -775,8 +775,7 @@ def _write_fact_pitch(root: Path, dt: date, bridge: Dict[tuple, str], force: boo
     rows: List[Dict[str, Any]] = []
     for r in _read_silver(root, "mlb_statcast", "pitches", dt):
         game_pk = r.get("game_pk")
-        pa_key = f"pa:mlb_statcast:{game_pk}:{r.get('at_bat_number') or ''}:{r.get('batter_id')}"
-        pa_id = ulid_from_key(pa_key)
+        pa_id = _statcast_pa_id(game_pk, r.get("at_bat_number"))
         rows.append(
             {
                 "pitch_id": ulid_from_key(f"pitch:mlb_statcast:{game_pk}:{r.get('at_bat_number')}:{r.get('pitch_number')}"),
@@ -799,37 +798,90 @@ def _write_fact_pitch(root: Path, dt: date, bridge: Dict[tuple, str], force: boo
     return _write_gold_table(root, "fact_pitch", dt, rows, force)
 
 
+def _statcast_pa_id(game_pk: Any, at_bat_number: Any) -> str:
+    # at_bat_number is unique within a game, and fact_pitch must derive the same
+    # ID. The batter stays out of the key: a pinch hitter can take over mid-PA.
+    return ulid_from_key(f"pa:mlb_statcast:{game_pk}:{at_bat_number}")
+
+
+def _statcast_runs_on_play(pitch: Dict[str, Any]) -> int | None:
+    # The score fields live only in raw_json. Summing this per game reproduced
+    # the real final score in 13 of 13 games on 2025-04-01.
+    try:
+        raw = json.loads(pitch.get("raw_json") or "{}")
+    except (TypeError, ValueError):
+        return None
+    before = _coerce_known_type(raw.get("bat_score"), "long")
+    after = _coerce_known_type(raw.get("post_bat_score"), "long")
+    if before is None or after is None:
+        return None
+    return after - before
+
+
+# Only used for a game's final PA, which has no next PA to read the outs from.
+_EVENT_OUTS = {"OUT": 1, "K": 1, "SAC": 1, "DP": 2, "TP": 3}
+
+
+def _statcast_plate_appearances(pitches: List[Dict[str, Any]], dt: date, bridge: Dict[tuple, str]) -> List[Dict[str, Any]]:
+    """
+    One row per plate appearance. Statcast gives only the state before each
+    pitch, so the state after a PA comes from the first pitch of the next one.
+    """
+    by_game: Dict[Any, Dict[int, List[Dict[str, Any]]]] = {}
+    for r in pitches:
+        if r.get("at_bat_number") is None:
+            continue
+        by_game.setdefault(r.get("game_pk"), {}).setdefault(r["at_bat_number"], []).append(r)
+
+    out: List[Dict[str, Any]] = []
+    for game_pk, plate_appearances in by_game.items():
+        ordered = [
+            sorted(plate_appearances[n], key=lambda x: x.get("pitch_number") or 0)
+            for n in sorted(plate_appearances)
+        ]
+        for i, pa_pitches in enumerate(ordered):
+            first, last = pa_pitches[0], pa_pitches[-1]
+            event_type = _map_event_type(last.get("events"))
+            outs_before = first.get("outs_when_up")
+            next_first = ordered[i + 1][0] if i + 1 < len(ordered) else None
+            if next_first is None:
+                # Last PA of the game. Usually the third out, but a walk-off isn't.
+                outs_after = min(3, (outs_before or 0) + _EVENT_OUTS.get(event_type, 0))
+                base_after = 0 if outs_after == 3 else None
+            elif (next_first.get("inning"), next_first.get("inning_topbot")) == (first.get("inning"), first.get("inning_topbot")):
+                outs_after = next_first.get("outs_when_up")
+                base_after = _base_state_from_statcast(next_first)
+            else:
+                outs_after = 3
+                base_after = 0
+            out.append(
+                {
+                    "pa_id": _statcast_pa_id(game_pk, first.get("at_bat_number")),
+                    "game_id": ulid_from_key(f"game:mlb_statsapi:{game_pk}"),
+                    "inning": first.get("inning"),
+                    "is_top_inning": first.get("inning_topbot") == "Top",
+                    "batting_team_id": None,
+                    "fielding_team_id": None,
+                    "batter_id": bridge.get(("player", "mlb_statsapi", str(last.get("batter_id")))),
+                    "pitcher_id": bridge.get(("player", "mlb_statsapi", str(last.get("pitcher_id")))),
+                    "event_type": event_type,
+                    "rbi": None,
+                    "runs_scored_on_play": _statcast_runs_on_play(last),
+                    "outs_on_play": None if outs_before is None or outs_after is None else outs_after - outs_before,
+                    "base_state_before": _base_state_from_statcast(first),
+                    "outs_before": outs_before,
+                    "base_state_after": base_after,
+                    "outs_after": outs_after,
+                    "dt": dt.isoformat(),
+                    "source": "mlb_statcast",
+                }
+            )
+    return out
+
+
 def _write_fact_plate_appearance(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
-    # MLB from statcast (dedup by pa_id)
-    pa_map: Dict[str, Dict[str, Any]] = {}
-    for r in _read_silver(root, "mlb_statcast", "pitches", dt):
-        game_pk = r.get("game_pk")
-        pa_key = f"pa:mlb_statcast:{game_pk}:{r.get('at_bat_number') or ''}:{r.get('batter_id')}"
-        pa_id = ulid_from_key(pa_key)
-        event_type = _map_event_type(r.get("events") or r.get("description"))
-        if pa_id not in pa_map or event_type != "UNKNOWN":
-            pa_map[pa_id] = {
-                "pa_id": pa_id,
-                "game_id": ulid_from_key(f"game:mlb_statsapi:{game_pk}"),
-                "inning": r.get("inning"),
-                "is_top_inning": r.get("inning_topbot") == "Top",
-                "batting_team_id": None,
-                "fielding_team_id": None,
-                "batter_id": bridge.get(("player", "mlb_statsapi", str(r.get("batter_id")))),
-                "pitcher_id": bridge.get(("player", "mlb_statsapi", str(r.get("pitcher_id")))),
-                "event_type": event_type,
-                "rbi": None,
-                "runs_scored_on_play": None,
-                "outs_on_play": r.get("outs_when_up"),
-                "base_state_before": _base_state_from_statcast(r),
-                "outs_before": r.get("outs_when_up"),
-                "base_state_after": None,
-                "outs_after": r.get("outs_when_up"),
-                "dt": dt.isoformat(),
-                "source": "mlb_statcast",
-            }
-    rows.extend(pa_map.values())
+    rows.extend(_statcast_plate_appearances(_read_silver(root, "mlb_statcast", "pitches", dt), dt, bridge))
     # NPB from PBP (minimal)
     npb_rows = _read_silver(root, "npb_spaia", "game_pbp", dt)
     rows.extend(_reconstruct_npb_pa(npb_rows, dt, bridge))
@@ -1316,7 +1368,7 @@ def _map_event_type(value: Any) -> str:
         return "K"
     if "WALK" in v or v == "BB":
         return "BB"
-    if "HBP" in v:
+    if "HBP" in v or "HIT_BY_PITCH" in v:
         return "HBP"
     if "HOME_RUN" in v or v == "HR":
         return "HR"
@@ -1326,6 +1378,14 @@ def _map_event_type(value: Any) -> str:
         return "2B"
     if v in {"TRIPLE", "3B"}:
         return "3B"
+    if "TRIPLE_PLAY" in v:
+        return "TP"
+    if "DOUBLE_PLAY" in v:
+        return "DP"
+    if v.startswith("SAC"):
+        return "SAC"
+    if "FIELDERS_CHOICE" in v:
+        return "FC"
     if "ERROR" in v:
         return "ERROR"
     if "OUT" in v:

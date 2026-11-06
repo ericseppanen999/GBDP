@@ -112,7 +112,12 @@ tables:
       event_type: Canonical outcome (e.g. HR, 1B, BB, K, OUT) -- mapped from source-specific vocab.
       base_state_before / base_state_after: Integer-encoded baserunner state (0-7, bitmask of 1B/2B/3B occupied).
       outs_before / outs_after: 0-3.
-      runs_scored_on_play: Used to derive run_expectancy.
+      runs_scored_on_play: Runs on this play. Null for NPB.
+      outs_on_play: outs_after minus outs_before, so it includes outs on the bases between PAs.
+    caveats: >
+      For Statcast rows, the state after a PA is read from the next PA, so a
+      stolen base or pickoff between PAs counts toward the earlier one.
+      base_state_after is null on a game-ending PA with fewer than 3 outs.
 
   fact_boxscore_batting:
     description: >
@@ -157,9 +162,9 @@ tables:
 
   run_expectancy:
     description: >
-      Simple run-expectancy matrix: average runs scored on the rest of the
-      inning, by (base_state, outs), computed fresh from that day's
-      fact_plate_appearance data only (not a rolling/historical model).
+      Average runs scored on the play itself, by (base_state, outs), computed
+      fresh from that day's fact_plate_appearance data only. This is NOT true
+      run expectancy, which counts runs through the end of the inning.
     grain: one row per (base_state, outs) per dt
     caveats: Based on a single day's plate appearances -- small sample, noisy. Not a real historical RE24-style matrix.
 

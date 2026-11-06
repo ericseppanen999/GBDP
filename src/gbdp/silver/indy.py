@@ -11,7 +11,7 @@ from gbdp.utils.io import (
     ensure_dir,
     include_partition_cols_silver,
     path_exists,
-    read_parquet_rows,
+    read_bronze_rows,
 )
 from gbdp.utils.time import daterange, parse_date
 
@@ -33,7 +33,7 @@ def _normalize_generic(root: Path, entity: str, dt: date, force: bool) -> Path:
     path = bronze_root() / "parsed" / "indy_local" / entity / f"dt={dt.isoformat()}"
     rows: List[Dict[str, Any]] = []
     if path_exists(path):
-        rows = read_parquet_rows(path)
+        rows = read_bronze_rows(path)
     if not include_partition_cols_silver():
         for r in rows:
             r.pop("dt", None)

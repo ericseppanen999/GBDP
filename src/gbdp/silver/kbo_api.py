@@ -11,7 +11,7 @@ from gbdp.utils.io import (
     ensure_dir,
     include_partition_cols_silver,
     path_exists,
-    read_parquet_rows,
+    read_bronze_rows,
     silver_root,
     stable_json_dumps,
 )
@@ -45,7 +45,7 @@ def _read_bronze(entity: str, dt: date) -> List[Dict[str, Any]]:
     path = _bronze_path(entity, dt)
     if not path_exists(path):
         return []
-    return read_parquet_rows(path)
+    return read_bronze_rows(path)
 
 
 def _as_str(v: Any) -> Any:

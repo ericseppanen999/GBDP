@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from gbdp.silver.writer import write_parquet
-from gbdp.utils.io import bronze_root, ensure_dir, include_partition_cols_silver, path_exists, read_parquet_rows, silver_root
+from gbdp.utils.io import bronze_root, ensure_dir, include_partition_cols_silver, path_exists, read_bronze_rows, silver_root
 from gbdp.utils.time import daterange, parse_date
 
 
@@ -23,7 +23,7 @@ def _normalize_generic(root: Path, source: str, entity: str, dt: date, force: bo
     path = bronze_root() / "parsed" / source / entity / f"dt={dt.isoformat()}"
     rows: List[Dict[str, Any]] = []
     if path_exists(path):
-        rows = read_parquet_rows(path)
+        rows = read_bronze_rows(path)
     if not include_partition_cols_silver():
         for r in rows:
             r.pop("dt", None)

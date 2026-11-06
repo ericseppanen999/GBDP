@@ -468,6 +468,19 @@ def read_parquet_rows(path: Path) -> List[Dict[str, Any]]:
     return _drop_empty_sentinel([row.asDict() for row in df.collect()])
 
 
+def read_bronze_rows(path: Path) -> List[Dict[str, Any]]:
+    # Bronze files are named by checksum, so refetching a date whose content
+    # changed adds a second file beside the first. Reading both would duplicate
+    # every record (a game as both "In Progress" and "Final"), so only the most
+    # recent fetch counts. Empty fetches are already dropped, and can't win.
+    rows = read_parquet_rows(path)
+    stamped = [r for r in rows if r.get("response_checksum")]
+    if not stamped:
+        return rows
+    latest = max(stamped, key=lambda r: r.get("ingested_at_utc") or "")["response_checksum"]
+    return [r for r in rows if r.get("response_checksum") == latest]
+
+
 def _drop_empty_sentinel(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # Writers emit a single {"empty": True} row instead of a zero-row file
     # (some formats/backends can't represent that cleanly). Callers expect

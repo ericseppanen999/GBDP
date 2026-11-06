@@ -12,7 +12,7 @@ from gbdp.utils.io import (
     ensure_dir,
     include_partition_cols_silver,
     path_exists,
-    read_parquet_rows,
+    read_bronze_rows,
     stable_json_dumps,
 )
 from gbdp.utils.time import daterange, parse_date
@@ -65,7 +65,7 @@ def _read_bronze(entity: str, dt: date, root: Path) -> List[Dict[str, Any]]:
     path = _bronze_path(root, entity, dt)
     if not path_exists(path):
         return []
-    return read_parquet_rows(path)
+    return read_bronze_rows(path)
 
 
 def _normalize_games(root: Path, dt: date, force: bool) -> Path:
