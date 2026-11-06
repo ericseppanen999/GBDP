@@ -233,9 +233,10 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
     out_dir = root / "audit_quality" / f"dt={dt_str}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
-    if path_exists(out_path) and not force:
-        return out_path
-    _write_parquet(results, out_path)
+    if force or not path_exists(out_path):
+        _write_parquet(results, out_path)
+    # Always enforce: skipping this when the file exists let a stage retry pass
+    # a hard failure, because the failed attempt had just written that file.
     _enforce(results, dt_str)
     return out_path
 

@@ -256,6 +256,10 @@ def _stage_fetch_boxscores(start, end, cfg, writer, cache, force, leagues=None):
 def _stage_fetch_npb_stats(start, end, cfg, writer, cache, force, leagues=None):
     if not _allowed(leagues, "npb"):
         return
+    # These are season-to-date stats and take ~12 minutes per date, so the
+    # nightly correction window only needs today's copy.
+    if os.getenv("GBDP_NPB_STATS_LATEST_ONLY", "false").lower() in ("1", "true", "yes"):
+        start = end
     npb = NpbSpaiaConnector(writer, cache, cfg["npb_spaia"]["base_url"])
     entities = [
         "standings",

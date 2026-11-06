@@ -83,11 +83,12 @@ resources:
             parameters:
               - run
               - --start
-              - "1970-01-01"   # placeholder; --window yesterday overrides this
+              - "1970-01-01"   # placeholder; --window nightly overrides this
               - --end
-              - "1970-01-01"   # placeholder; --window yesterday overrides this
+              - "1970-01-01"   # placeholder; --window nightly overrides this
               - --window
-              - yesterday
+              - nightly
+              - --force        # the correction window has to replace earlier fetches
               - --sources
               - ${workspace.file_path}/configs/sources.yaml
               - --storage-format

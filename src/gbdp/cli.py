@@ -168,7 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
     quality_p.add_argument("--gold-root", help="Override gold root path")
 
     serve_p = sub.add_parser("serve", help="Run FastAPI server (local)")
-    serve_p.add_argument("--host", default="0.0.0.0")
+    serve_p.add_argument("--host", default="127.0.0.1")
     serve_p.add_argument("--port", default=8000, type=int)
 
     run_p = sub.add_parser("run", help="Run nightly pipeline stages")
@@ -324,6 +324,8 @@ def main() -> None:
         stages = args.stages.split(",") if args.stages else None
         leagues = args.leagues.split(",") if args.leagues and args.leagues != "all" else None
         start, end = _resolve_window(args.start, args.end, args.window)
+        if args.window == "nightly":
+            os.environ.setdefault("GBDP_NPB_STATS_LATEST_ONLY", "true")
         run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay, args.chunk, leagues)
     if args.cmd == "backfill":
         _set_storage_format(args)

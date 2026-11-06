@@ -528,6 +528,54 @@ def test_row_count_min_only_applies_in_season():
     assert not _in_season(date(2026, 12, 1))
 
 
+# --- Bug 22: the first attempt wrote audit_quality and then raised, so a stage
+# retry found the file, returned early, and passed the hard failure.
+def test_quality_retry_cannot_pass_a_hard_failure(gold_env, monkeypatch):
+    import pyarrow as pa
+    from gbdp.quality import checks
+
+    _, gold = gold_env
+    day = date(2025, 4, 1)
+    part = gold / "fact_game" / f"dt={day}"
+    part.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist([{"game_id": "dup"}, {"game_id": "dup"}]), part / "part-00001.parquet")
+    cfg = {"uniqueness": [{"table": "gbdp_gold.fact_game", "columns": ["game_id"]}]}
+
+    for _attempt in range(2):
+        with pytest.raises(RuntimeError, match="hard invariant"):
+            checks._run_for_date(gold, day, cfg, force=False)
+
+
+# --- Appendix A: the nightly job has to cover a 7-day correction window, and --
+# needs --force, or refetched dates can't replace what was stored the first time.
+def test_nightly_job_runs_the_correction_window_with_force():
+    import yaml
+
+    config = yaml.safe_load(Path("databricks.yml").read_text(encoding="utf-8"))
+    params = config["resources"]["jobs"]["gbdp_nightly"]["tasks"][0]["spark_python_task"]["parameters"]
+    assert params[params.index("--window") + 1] == "nightly"
+    assert "--force" in params
+
+
+def test_nightly_fetches_npb_season_stats_for_the_latest_date_only(monkeypatch):
+    import gbdp.pipeline.runner as runner
+
+    seen = []
+
+    class FakeNpb:
+        def __init__(self, *a):
+            pass
+
+        def list_partitions(self, start, end, entity):
+            seen.append((start, end))
+            return []
+
+    monkeypatch.setattr(runner, "NpbSpaiaConnector", FakeNpb)
+    monkeypatch.setenv("GBDP_NPB_STATS_LATEST_ONLY", "true")
+    runner._stage_fetch_npb_stats("2025-04-01", "2025-04-07", {"npb_spaia": {"base_url": "x"}}, None, None, False)
+    assert set(seen) == {("2025-04-07", "2025-04-07")}
+
+
 # --- Bug 16: the backfill task never passed its job parameters to the CLI, so -
 # every run silently used the default last-7-days window and all stages, with
 # --force. Went unnoticed because one real request happened to equal the default.
