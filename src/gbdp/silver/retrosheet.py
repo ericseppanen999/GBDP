@@ -102,7 +102,7 @@ def _normalize_entity(root: Path, entity: str, dt: date, force: bool) -> Path:
                 "game_id": r.get("gid"),
                 "player_id": r.get("id"),
                 "team_id": r.get("team"),
-                "ip": _as_int(r.get("p_ipouts")),
+                "ip": _outs_to_ip(r.get("p_ipouts")),
                 "h": _as_int(r.get("p_h")),
                 "r": _as_int(r.get("p_r")),
                 "er": _as_int(r.get("p_er")),
@@ -186,6 +186,14 @@ def _to_date(value: Any) -> str | None:
     if len(s) == 8 and s.isdigit():
         return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
     return value
+
+
+def _outs_to_ip(value: Any) -> str | None:
+    # Retrosheet counts outs; every other source reports innings as "6.1".
+    outs = _as_int(value)
+    if outs is None:
+        return None
+    return f"{outs // 3}.{outs % 3}"
 
 
 def _as_int(value: Any) -> int | None:

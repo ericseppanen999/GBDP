@@ -25,8 +25,11 @@ def publish_uc_managed(start: str, end: str, catalog: str, bronze_schema: str, s
     _ensure_schema(spark, catalog, bronze_schema)
     _ensure_schema(spark, catalog, silver_schema)
     _ensure_schema(spark, catalog, gold_schema)
-    for d in daterange(parse_date(start), parse_date(end)):
+    days = list(daterange(parse_date(start), parse_date(end)))
+    # All gold first: an error in a lower layer must not hold back later gold dates.
+    for d in days:
         _publish_gold(spark, d, catalog, gold_schema)
+    for d in days:
         _publish_silver(spark, d, catalog, silver_schema)
         _publish_bronze_parsed(spark, d, catalog, bronze_schema)
         _publish_bronze_requests(spark, d, catalog, bronze_schema)

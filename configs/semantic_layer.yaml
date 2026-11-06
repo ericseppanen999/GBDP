@@ -6,21 +6,23 @@
 # columns, join keys, and known caveats/limitations -- including honest notes
 # about tables that are thinner than their name implies.
 #
-# All ID columns (player_id, team_id, game_id, league_id, season_id) are
-# ULIDs assigned by identity resolution, NOT the raw per-source IDs (an MLB
-# Stats API player_id and an NPB SPAIA player_id for the same real person
-# resolve to the SAME canonical player_id here once matched). source_* /
-# source_id columns, where present, hold the original per-source ID.
+# All ID columns (player_id, team_id, game_id, season_id) are ULID-shaped IDs
+# derived from the source and its raw ID, NOT the raw per-source IDs. They are
+# stable across dates, so they join across dt partitions. There is no
+# cross-source matching yet: the same real person in MLB Stats API and NPB
+# SPAIA has two different player_ids unless linked by a manual override.
+# source_* / source_id columns, where present, hold the original per-source ID.
 
 tables:
   dim_player:
     description: >
       Canonical player dimension, one row per player per validity period
-      (SCD2 -- filter to is_current = true for the current view, or use
-      dt to see the dimension as of a specific date).
-    grain: one row per player_id per valid_from_dt
+      (SCD2). Each dt partition is a full snapshot of every version known as
+      of that date, so always filter to a single dt, plus is_current = true
+      for the current view.
+    grain: one row per player_id per valid_from_dt, within each dt snapshot
     columns:
-      player_id: Canonical ULID, stable across all sources for the same real player.
+      player_id: Canonical ULID, stable across dates for one source's player. Not matched across sources.
       primary_name: Display name.
       bats: Batting handedness (L/R/S/UNK).
       throws: Throwing handedness (L/R/UNK).
@@ -37,7 +39,7 @@ tables:
 
   dim_team:
     description: Canonical team dimension (SCD2, same pattern as dim_player).
-    grain: one row per team_id per valid_from_dt
+    grain: one row per team_id per valid_from_dt, within each dt snapshot
     columns:
       team_id: Canonical ULID.
       team_name: Display name (native-language for NPB/KBO; not translated).

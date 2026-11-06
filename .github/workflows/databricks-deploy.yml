@@ -22,14 +22,15 @@ jobs:
           pip install -e .
           pip list > pip-freeze.txt
 
-      # -v --tb=long (not the default -q) and captured to a file: two commits
-      # in a row failed here with no captured traceback recoverable afterward
-      # (GitHub blocks job-log downloads without repo admin rights, which
-      # this token doesn't have) and were unreproducible in 3 separate local
-      # repros including a from-scratch Docker container. If it fails again,
-      # the artifact below is the only way to actually see why.
+      # pipefail is required: without it the step's exit status is tee's, so a
+      # failing pytest still reports success and the deploy job runs anyway
+      # (this deployed d8c656e while its tests were failing). Output goes to a
+      # file because job logs can't be downloaded without repo admin rights;
+      # the artifact below is how to see a failure afterward.
       - name: Run unit tests
-        run: pytest tests/ -v --tb=long 2>&1 | tee pytest-output.txt
+        run: |
+          set -o pipefail
+          pytest tests/ -v --tb=long 2>&1 | tee pytest-output.txt
 
       - name: Upload test diagnostics
         if: always()

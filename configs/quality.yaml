@@ -10,6 +10,10 @@ quality:
   uniqueness:
     - table: "gbdp_gold.fact_game"
       columns: ["game_id"]
+    - table: "gbdp_gold.fact_pitch"
+      columns: ["pitch_id"]
+    - table: "gbdp_gold.fact_plate_appearance"
+      columns: ["pa_id"]
     - table: "gbdp_gold.fact_boxscore_batting"
       columns: ["game_id", "player_id", "dt"]
   referential_integrity:

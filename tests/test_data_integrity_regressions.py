@@ -358,3 +358,149 @@ def test_infer_type_pins_known_numeric_fields_even_when_all_null():
     # Unrecognized fields keep the original (safe) all-null-to-string
     # fallback -- this fix is a targeted pin, not a blanket type guess.
     assert _infer_type([None, None], field_name="some_unrelated_field") == "string"
+
+
+def test_infer_type_pin_wins_over_batch_values():
+    from gbdp.gold.publish import _infer_type
+
+    assert _infer_type(["7"], field_name="inning") == "long"
+    assert _infer_type([18, 21], field_name="ip") == "string"
+    assert _infer_type([0.5], field_name="pct") == "string"
+
+
+@pytest.mark.parametrize(
+    "value,type_name,expected",
+    [("7", "long", 7), (7.0, "long", 7), ("-", "long", None), ("", "double", None), (3, "double", 3.0), (0.5, "string", "0.5"), (None, "long", None)],
+)
+def test_coerce_known_type(value, type_name, expected):
+    from gbdp.gold.publish import _coerce_known_type
+
+    assert _coerce_known_type(value, type_name) == expected
+
+
+# --- Bug 14: gold's _write_delta retried a merge failure as an unscoped ------
+# overwrite, replacing the whole table with one date. Delta history shows this
+# erased every MLB row from fact_plate_appearance (versions 136, 142-144). Same
+# pattern as Bug 6; this is a static check for the same reason.
+def test_gold_write_delta_only_overwrites_schema_on_first_write():
+    text = Path("src/gbdp/gold/publish.py").read_text(encoding="utf-8")
+    body = text[text.index("def _write_delta("):text.index("# Public API")]
+    assert body.count("overwriteSchema") == 1
+    assert body.index("overwriteSchema") < body.index('option("mergeSchema"')
+
+
+# --- Bug 15: sorting NPB plays mixed int play_seq_no with string event_id, ---
+# crashing gold_publish ("'<' not supported between 'str' and 'int'", 2026-09-10).
+def test_npb_pa_reconstruction_handles_mixed_sequence_types():
+    from gbdp.gold.publish import _reconstruct_npb_pa
+
+    rows = [
+        {"game_id": "1", "inning": 1, "top_bottom": "1", "play_seq_no": 2, "event_id": "20"},
+        {"game_id": "1", "inning": 1, "top_bottom": "1", "play_seq_no": None, "event_id": "1"},
+    ]
+    assert [r["inning"] for r in _reconstruct_npb_pa(rows, date(2025, 4, 1), {})] == [1, 1]
+
+
+def test_retrosheet_ip_uses_innings_notation_not_raw_outs():
+    from gbdp.silver.retrosheet import _outs_to_ip
+
+    assert _outs_to_ip("19") == "6.1"
+    assert _outs_to_ip("18") == "6.0"
+    assert _outs_to_ip("") is None
+
+
+def _write_silver(root, source, entity, dt, rows):
+    import pyarrow as pa
+
+    part = root / source / entity / f"dt={dt}"
+    part.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(rows), part / "part-00001.parquet")
+
+
+@pytest.fixture
+def gold_env(tmp_path, monkeypatch):
+    silver, gold = tmp_path / "silver", tmp_path / "gold"
+    gold.mkdir()
+    monkeypatch.setenv("GBDP_SILVER_ROOT", str(silver))
+    monkeypatch.setenv("GBDP_GOLD_ROOT", str(gold))
+    monkeypatch.setenv("GBDP_STORAGE_FORMAT", "parquet")
+    return silver, gold
+
+
+# --- Bug 11: ulid_from_key hashed dt into every ID, so canonical IDs changed -
+# every day. Confirmed in production: 0 of 2,369 entities present on both
+# 2026-09-11 and 09-12 kept their ID, leaving the "rolling 30d" feature at one
+# game per row and growing dim_player by a full roster per day.
+def test_identity_bridge_ids_are_stable_across_dates(gold_env):
+    from gbdp.identity.resolver import resolve_identity
+
+    silver, gold = gold_env
+    days = ["2025-04-01", "2025-04-02"]
+    for day in days:
+        _write_silver(silver, "mlb_statsapi", "rosters", day, [{"player_id": "660271", "player_name": "X", "team_id": "119"}])
+        _write_silver(
+            silver, "mlb_statsapi", "games", day,
+            [{"home_team_id": "119", "home_team_name": "LAD", "away_team_id": "147", "away_team_name": "NYY"}],
+        )
+    resolve_identity(days[0], days[1], force=True)
+
+    bridges = [
+        {(r["entity_type"], r["source_id"]): r["canonical_id"] for r in read_parquet_rows(gold / "bridge_source_ids" / f"dt={day}")}
+        for day in days
+    ]
+    assert len(bridges[0]) == 3
+    assert bridges[0] == bridges[1]
+
+
+# The bridge and gold's no-bridge fallback derive IDs separately. If their keys
+# differ, one entity gets two IDs depending on whether the bridge covered it.
+def test_gold_fallback_ids_match_identity_bridge_ids():
+    from gbdp.gold.publish import _fact_roster_row
+    from gbdp.identity.rules import player_match_key, team_match_key
+    from gbdp.utils.ids import ulid_from_key
+
+    row = _fact_roster_row({"team_id": "119", "player_id": "660271"}, "mlb_statsapi", "MLB", {}, date(2025, 4, 1))
+
+    player = player_match_key({"source": "mlb_statsapi", "source_player_id": "660271"})
+    team = team_match_key({"source": "mlb_statsapi", "source_team_id": "119"})
+    assert row["player_id"] == ulid_from_key(player.canonical_key)
+    assert row["team_id"] == ulid_from_key(team.canonical_key)
+
+
+# --- Bug 12: box score writers keyed games as game:retrosheet / game:indy / --
+# game:kbo / game:lmb while fact_game used the full source name, so no box
+# score from those sources could ever join to its game.
+@pytest.mark.parametrize("source", ["mlb_statsapi", "kbo_api", "indy_local", "kbo_local", "lmb_local", "retrosheet_local"])
+def test_boxscore_game_ids_join_to_fact_game(gold_env, source):
+    from gbdp.gold.publish import _fact_game_from_silver, _write_fact_boxscore_batting, _write_fact_boxscore_pitching
+
+    silver, gold = gold_env
+    day = date(2025, 4, 1)
+    _write_silver(silver, source, "games", day, [{"game_id": "G1", "home_team_id": "A", "away_team_id": "B"}])
+    line = {"game_id": "G1", "player_id": "P1", "player_name": "P1", "team_id": "A", "ab": 4, "h": 1}
+    _write_silver(silver, source, "boxscore_batting", day, [line])
+    _write_silver(silver, source, "boxscore_pitching", day, [{**line, "ip": "6.0"}])
+
+    game_id = _fact_game_from_silver(gold, day, source, "MLB", {})[0]["game_id"]
+
+    for write, table in [(_write_fact_boxscore_batting, "fact_boxscore_batting"), (_write_fact_boxscore_pitching, "fact_boxscore_pitching")]:
+        write(gold, day, {}, True)
+        assert read_parquet_rows(gold / table / f"dt={day}")[0]["game_id"] == game_id
+
+
+# --- Bug 13: pitch_id hashed inning/outs/pitcher/batter/description but not --
+# the pitch's position, so two identical pitches in one at-bat (say, two fouls
+# with two strikes) shared an ID. Confirmed on ~28% of production fact_pitch
+# rows.
+def test_identical_pitches_in_one_at_bat_get_distinct_ids(gold_env):
+    from gbdp.gold.publish import _write_fact_pitch
+
+    silver, gold = gold_env
+    day = date(2025, 4, 1)
+    pitch = {"game_pk": "778492", "at_bat_number": 7, "inning": 3, "outs_when_up": 1, "pitcher_id": "1", "batter_id": "2", "description": "foul"}
+    _write_silver(silver, "mlb_statcast", "pitches", day, [{**pitch, "pitch_number": 4}, {**pitch, "pitch_number": 5}])
+
+    _write_fact_pitch(gold, day, {}, True)
+
+    rows = read_parquet_rows(gold / "fact_pitch" / f"dt={day}")
+    assert len({r["pitch_id"] for r in rows}) == 2

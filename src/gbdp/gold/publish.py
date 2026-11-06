@@ -40,36 +40,53 @@ logger = get_logger("gbdp.gold")
 # legitimately refuses to merge those ("Failed to merge fields 'x' and 'x'"
 # -- confirmed live on fact_boxscore_batting.2b during a real backfill: kbo
 # rows are always-null for it, and register_uc failed exactly this way).
-# Pin these known counting/measurement fields to their real type up front so
-# an all-null batch infers the SAME type a populated batch would, instead of
-# drifting to "string" and poisoning schema merge for every later write.
-_KNOWN_NUMERIC_FIELD_TYPES: Dict[str, str] = {
+# Pin these fields to one type on every write, whatever a given batch holds, so
+# an all-null or oddly-typed batch can't drift and poison schema merge for every
+# later write. ip/pct/gb are text ("6.1", ".500", "-"), not numbers.
+_KNOWN_FIELD_TYPES: Dict[str, str] = {
     # fact_boxscore_batting / fact_boxscore_pitching
     "ab": "long", "h": "long", "2b": "long", "3b": "long", "hr": "long",
     "bb": "long", "so": "long", "rbi": "long", "r": "long", "er": "long",
+    "ip": "string",
     # fact_pitch
     "pitch_number_in_pa": "long", "balls_before": "long", "strikes_before": "long",
     "release_speed": "double", "plate_x": "double", "plate_z": "double",
     # fact_plate_appearance
-    "outs_on_play": "long", "base_state_before": "long", "outs_before": "long",
+    "inning": "long", "outs_on_play": "long", "base_state_before": "long", "outs_before": "long",
     "base_state_after": "long", "outs_after": "long", "runs_scored_on_play": "long",
     # fact_game
     "home_score": "long", "away_score": "long",
     # fact_standings
-    "w": "long", "l": "long", "t": "long",
+    "w": "long", "l": "long", "t": "long", "pct": "string", "gb": "string",
 }
+
+
+def _coerce_known_type(value: Any, type_name: str) -> Any:
+    if value is None:
+        return None
+    if type_name == "string":
+        return str(value)
+    try:
+        number = float(value)
+        return int(number) if type_name == "long" else number
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _infer_type(values: List[Any], field_name: str | None = None) -> str:
     """
     Conservative type inference to avoid Spark conversion errors:
+    - known field_name -> its pinned type, whatever the values are
     - if any string-like appears -> string
     - else if any float -> double
     - else if any int -> long
     - else if any bool -> boolean
     - else if any bytes -> binary
-    - else -> known numeric type for field_name if any, else string (all null)
+    - else -> string (all null)
     """
+    if field_name in _KNOWN_FIELD_TYPES:
+        return _KNOWN_FIELD_TYPES[field_name]
+
     has_str = False
     has_float = False
     has_int = False
@@ -110,8 +127,6 @@ def _infer_type(values: List[Any], field_name: str | None = None) -> str:
         return "boolean"
     if has_bin:
         return "binary"
-    if field_name and field_name in _KNOWN_NUMERIC_FIELD_TYPES:
-        return _KNOWN_NUMERIC_FIELD_TYPES[field_name]
     return "string"
 
 
@@ -151,6 +166,8 @@ def _rows_to_df(spark, rows: List[Dict[str, Any]]):
         for k, v in r.items():
             if isinstance(v, (dict, list)):
                 nr[k] = json.dumps(v, separators=(",", ":"), ensure_ascii=False)
+            elif k in _KNOWN_FIELD_TYPES:
+                nr[k] = _coerce_known_type(v, _KNOWN_FIELD_TYPES[k])
             else:
                 nr[k] = v
         norm.append(nr)
@@ -223,15 +240,9 @@ def _write_delta(rows: List[Dict[str, Any]], table_root_dir: Path, dt_value: Opt
         if "DELTA_MISSING_TRANSACTION_LOG" in msg or "Incompatible format detected" in msg:
             df.write.mode("overwrite").parquet(spark_path(table_root_dir))
             return
-        if "DELTA_FAILED_TO_MERGE_FIELDS" in msg or "delta_failed_to_merge_fields" in msg.lower():
-            (
-                df.write.format("delta")
-                .mode("overwrite")
-                .option("overwriteSchema", "true")
-                .partitionBy("dt")
-                .save(table_root)
-            )
-            return
+        # Never retry a merge failure as an unscoped overwrite: that replaces the
+        # ENTIRE table with this one date. It erased all MLB rows from
+        # fact_plate_appearance in production (Delta versions 136, 142-144).
         raise
 
 
@@ -531,9 +542,7 @@ def _team_rows_from_game(row: Dict[str, Any], league_code: str, bridge: Dict[tup
     ]:
         if not team_id:
             continue
-        canonical = bridge.get(("team", source, str(team_id))) or ulid_from_key(
-            f"team:{source}:{team_id}", row.get("dt") or row.get("game_date") or ""
-        )
+        canonical = bridge.get(("team", source, str(team_id))) or ulid_from_key(f"team:source:{source}:{team_id}")
         out.append(
             {
                 "team_id": canonical,
@@ -575,9 +584,7 @@ def _write_dim_player(root: Path, dt: date, bridge: Dict[tuple, str], force: boo
 
 def _player_row(r: Dict[str, Any], league_code: str, bridge: Dict[tuple, str], source: str) -> Dict[str, Any]:
     source_id = r.get("player_id")
-    canonical = bridge.get(("player", source, str(source_id))) or ulid_from_key(
-        f"player:{source}:{source_id}", r.get("dt") or ""
-    )
+    canonical = bridge.get(("player", source, str(source_id))) or ulid_from_key(f"player:source:{source}:{source_id}")
     return {
         "player_id": canonical,
         "primary_name": r.get("player_name"),
@@ -603,7 +610,7 @@ def _write_dim_season(root: Path, dt: date, force: bool) -> Path:
     year = dt.year
     rows = [
         {
-            "season_id": ulid_from_key(f"season:MLB:{year}", dt.isoformat()),
+            "season_id": ulid_from_key(f"season:MLB:{year}"),
             "league_id": _league_id_for_code("MLB"),
             "season_year": year,
             "season_type": "regular",
@@ -612,7 +619,7 @@ def _write_dim_season(root: Path, dt: date, force: bool) -> Path:
             "dt": dt.isoformat(),
         },
         {
-            "season_id": ulid_from_key(f"season:NPB:{year}", dt.isoformat()),
+            "season_id": ulid_from_key(f"season:NPB:{year}"),
             "league_id": _league_id_for_code("NPB"),
             "season_year": year,
             "season_type": "regular",
@@ -621,7 +628,7 @@ def _write_dim_season(root: Path, dt: date, force: bool) -> Path:
             "dt": dt.isoformat(),
         },
         {
-            "season_id": ulid_from_key(f"season:INDY:{year}", dt.isoformat()),
+            "season_id": ulid_from_key(f"season:INDY:{year}"),
             "league_id": _league_id_for_code("INDY"),
             "season_year": year,
             "season_type": "regular",
@@ -630,7 +637,7 @@ def _write_dim_season(root: Path, dt: date, force: bool) -> Path:
             "dt": dt.isoformat(),
         },
         {
-            "season_id": ulid_from_key(f"season:KBO:{year}", dt.isoformat()),
+            "season_id": ulid_from_key(f"season:KBO:{year}"),
             "league_id": _league_id_for_code("KBO"),
             "season_year": year,
             "season_type": "regular",
@@ -639,7 +646,7 @@ def _write_dim_season(root: Path, dt: date, force: bool) -> Path:
             "dt": dt.isoformat(),
         },
         {
-            "season_id": ulid_from_key(f"season:LMB:{year}", dt.isoformat()),
+            "season_id": ulid_from_key(f"season:LMB:{year}"),
             "league_id": _league_id_for_code("LMB"),
             "season_year": year,
             "season_type": "regular",
@@ -670,16 +677,16 @@ def _write_fact_game(root: Path, dt: date, bridge: Dict[tuple, str], force: bool
 def _fact_game_from_silver(root: Path, dt: date, source: str, league_code: str, bridge: Dict[tuple, str]):
     rows = []
     for r in _read_silver(root, source, "games", dt):
-        game_id = ulid_from_key(f"game:{source}:{r.get('game_id')}", dt.isoformat())
+        game_id = ulid_from_key(f"game:{source}:{r.get('game_id')}")
         home_src = str(r.get("home_team_id")) if r.get("home_team_id") is not None else None
         away_src = str(r.get("away_team_id")) if r.get("away_team_id") is not None else None
-        home_team = (bridge.get(("team", source, home_src)) if home_src else None) or (ulid_from_key(f"team:{source}:{home_src}", dt.isoformat()) if home_src else None)
-        away_team = (bridge.get(("team", source, away_src)) if away_src else None) or (ulid_from_key(f"team:{source}:{away_src}", dt.isoformat()) if away_src else None)
+        home_team = (bridge.get(("team", source, home_src)) if home_src else None) or (ulid_from_key(f"team:source:{source}:{home_src}") if home_src else None)
+        away_team = (bridge.get(("team", source, away_src)) if away_src else None) or (ulid_from_key(f"team:source:{source}:{away_src}") if away_src else None)
         rows.append(
             {
                 "game_id": game_id,
                 "league_id": _league_id_for_code(league_code),
-                "season_id": ulid_from_key(f"season:{league_code}:{dt.year}", dt.isoformat()),
+                "season_id": ulid_from_key(f"season:{league_code}:{dt.year}"),
                 "game_date": r.get("game_date") or dt.isoformat(),
                 "game_start_ts_utc": r.get("game_date"),
                 "home_team_id": home_team,
@@ -716,12 +723,12 @@ def _write_fact_roster(root: Path, dt: date, bridge: Dict[tuple, str], force: bo
 def _fact_roster_row(r: Dict[str, Any], source: str, league_code: str, bridge: Dict[tuple, str], dt: date):
     team_src = str(r.get("team_id")) if r.get("team_id") is not None else None
     player_src = str(r.get("player_id")) if r.get("player_id") is not None else None
-    team = (bridge.get(("team", source, team_src)) if team_src else None) or (ulid_from_key(f"team:{source}:{team_src}", dt.isoformat()) if team_src else None)
-    player = (bridge.get(("player", source, player_src)) if player_src else None) or (ulid_from_key(f"player:{source}:{player_src}", dt.isoformat()) if player_src else None)
+    team = (bridge.get(("team", source, team_src)) if team_src else None) or (ulid_from_key(f"team:source:{source}:{team_src}") if team_src else None)
+    player = (bridge.get(("player", source, player_src)) if player_src else None) or (ulid_from_key(f"player:source:{source}:{player_src}") if player_src else None)
     return {
         "team_id": team,
         "player_id": player,
-        "season_id": ulid_from_key(f"season:{league_code}:{dt.year}", dt.isoformat()),
+        "season_id": ulid_from_key(f"season:{league_code}:{dt.year}"),
         "role": "player",
         "start_dt": dt.isoformat(),
         "end_dt": None,
@@ -735,7 +742,7 @@ def _write_fact_transaction(root: Path, dt: date, bridge: Dict[tuple, str], forc
     for r in _read_silver(root, "mlb_statsapi", "transactions", dt):
         rows.append(
             {
-                "transaction_id": ulid_from_key(f"txn:{r.get('transaction_id')}", dt.isoformat()),
+                "transaction_id": ulid_from_key(f"txn:{r.get('transaction_id')}"),
                 "league_id": _league_id_for_code("MLB"),
                 "team_id": bridge.get(("team", "mlb_statsapi", str(r.get("team_id")))),
                 "player_id": bridge.get(("player", "mlb_statsapi", str(r.get("player_id")))),
@@ -754,14 +761,11 @@ def _write_fact_pitch(root: Path, dt: date, bridge: Dict[tuple, str], force: boo
     for r in _read_silver(root, "mlb_statcast", "pitches", dt):
         game_pk = r.get("game_pk")
         pa_key = f"pa:mlb_statcast:{game_pk}:{r.get('at_bat_number') or ''}:{r.get('batter_id')}"
-        pa_id = ulid_from_key(pa_key, dt.isoformat())
+        pa_id = ulid_from_key(pa_key)
         rows.append(
             {
-                "pitch_id": ulid_from_key(
-                    f"pitch:{game_pk}:{r.get('inning')}:{r.get('outs_when_up')}:{r.get('pitcher_id')}:{r.get('batter_id')}:{r.get('description')}",
-                    dt.isoformat(),
-                ),
-                "game_id": ulid_from_key(f"game:mlb_statsapi:{game_pk}", dt.isoformat()),
+                "pitch_id": ulid_from_key(f"pitch:mlb_statcast:{game_pk}:{r.get('at_bat_number')}:{r.get('pitch_number')}"),
+                "game_id": ulid_from_key(f"game:mlb_statsapi:{game_pk}"),
                 "pa_id": pa_id,
                 "pitch_number_in_pa": r.get("pitch_number"),
                 "pitcher_id": bridge.get(("player", "mlb_statsapi", str(r.get("pitcher_id")))),
@@ -787,12 +791,12 @@ def _write_fact_plate_appearance(root: Path, dt: date, bridge: Dict[tuple, str],
     for r in _read_silver(root, "mlb_statcast", "pitches", dt):
         game_pk = r.get("game_pk")
         pa_key = f"pa:mlb_statcast:{game_pk}:{r.get('at_bat_number') or ''}:{r.get('batter_id')}"
-        pa_id = ulid_from_key(pa_key, dt.isoformat())
+        pa_id = ulid_from_key(pa_key)
         event_type = _map_event_type(r.get("events") or r.get("description"))
         if pa_id not in pa_map or event_type != "UNKNOWN":
             pa_map[pa_id] = {
                 "pa_id": pa_id,
-                "game_id": ulid_from_key(f"game:mlb_statsapi:{game_pk}", dt.isoformat()),
+                "game_id": ulid_from_key(f"game:mlb_statsapi:{game_pk}"),
                 "inning": r.get("inning"),
                 "is_top_inning": r.get("inning_topbot") == "Top",
                 "batting_team_id": None,
@@ -826,8 +830,8 @@ def _write_fact_plate_appearance(root: Path, dt: date, bridge: Dict[tuple, str],
             outs_on_play = outs_after - outs_before
         rows.append(
             {
-                "pa_id": ulid_from_key(f"pa:retrosheet:{r.get('game_id')}:{r.get('event_id') or r.get('pn') or ''}", dt.isoformat()),
-                "game_id": ulid_from_key(f"game:retrosheet_local:{r.get('game_id')}", dt.isoformat()),
+                "pa_id": ulid_from_key(f"pa:retrosheet:{r.get('game_id')}:{r.get('event_id') or r.get('pn') or ''}"),
+                "game_id": ulid_from_key(f"game:retrosheet_local:{r.get('game_id')}"),
                 "inning": r.get("inning"),
                 "is_top_inning": str(r.get("top_bottom")) in {"0", "Top", "top"},
                 "batting_team_id": bridge.get(("team", "retrosheet_local", str(r.get("batting_team_id")))),
@@ -855,7 +859,7 @@ def _write_fact_standings(root: Path, dt: date, bridge: Dict[tuple, str], force:
         rows.append(
             {
                 "league_id": _league_id_for_code("NPB"),
-                "season_id": ulid_from_key(f"season:NPB:{dt.year}", dt.isoformat()),
+                "season_id": ulid_from_key(f"season:NPB:{dt.year}"),
                 "team_id": bridge.get(("team", "npb_spaia", str(r.get("team_id")))),
                 "w": r.get("w"),
                 "l": r.get("l"),
@@ -874,7 +878,7 @@ def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str],
     for r in _read_silver(root, "mlb_statsapi", "boxscore_batting", dt):
         rows.append(
             {
-                "game_id": ulid_from_key(f"game:mlb_statsapi:{r.get('game_id')}", dt.isoformat()),
+                "game_id": ulid_from_key(f"game:mlb_statsapi:{r.get('game_id')}"),
                 "team_id": bridge.get(("team", "mlb_statsapi", str(r.get("team_id")))),
                 "player_id": bridge.get(("player", "mlb_statsapi", str(r.get("player_id")))),
                 "ab": r.get("ab"),
@@ -893,7 +897,7 @@ def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str],
     for r in _read_silver(root, "kbo_api", "boxscore_batting", dt):
         rows.append(
             {
-                "game_id": ulid_from_key(f"game:kbo_api:{r.get('game_id')}", dt.isoformat()),
+                "game_id": ulid_from_key(f"game:kbo_api:{r.get('game_id')}"),
                 "team_id": bridge.get(("team", "kbo_api", str(r.get("team_id")))),
                 # kbo_api exposes no numeric player ID anywhere -- player_name
                 # is the only available bridge key for this source.
@@ -914,7 +918,7 @@ def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str],
     for r in _read_silver(root, "indy_local", "boxscore_batting", dt):
         rows.append(
             {
-                "game_id": ulid_from_key(f"game:indy:{r.get('game_id')}", dt.isoformat()),
+                "game_id": ulid_from_key(f"game:indy_local:{r.get('game_id')}"),
                 "team_id": bridge.get(("team", "indy_local", str(r.get("team_id")))),
                 "player_id": bridge.get(("player", "indy_local", str(r.get("player_id")))),
                 "ab": r.get("ab"),
@@ -933,7 +937,7 @@ def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str],
     for r in _read_silver(root, "kbo_local", "boxscore_batting", dt):
         rows.append(
             {
-                "game_id": ulid_from_key(f"game:kbo:{r.get('game_id')}", dt.isoformat()),
+                "game_id": ulid_from_key(f"game:kbo_local:{r.get('game_id')}"),
                 "team_id": bridge.get(("team", "kbo_local", str(r.get("team_id")))),
                 "player_id": bridge.get(("player", "kbo_local", str(r.get("player_id")))),
                 "ab": r.get("ab"),
@@ -952,7 +956,7 @@ def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str],
     for r in _read_silver(root, "lmb_local", "boxscore_batting", dt):
         rows.append(
             {
-                "game_id": ulid_from_key(f"game:lmb:{r.get('game_id')}", dt.isoformat()),
+                "game_id": ulid_from_key(f"game:lmb_local:{r.get('game_id')}"),
                 "team_id": bridge.get(("team", "lmb_local", str(r.get("team_id")))),
                 "player_id": bridge.get(("player", "lmb_local", str(r.get("player_id")))),
                 "ab": r.get("ab"),
@@ -971,7 +975,7 @@ def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str],
     for r in _read_silver(root, "retrosheet_local", "boxscore_batting", dt):
         rows.append(
             {
-                "game_id": ulid_from_key(f"game:retrosheet:{r.get('game_id')}", dt.isoformat()),
+                "game_id": ulid_from_key(f"game:retrosheet_local:{r.get('game_id')}"),
                 "team_id": bridge.get(("team", "retrosheet_local", str(r.get("team_id")))),
                 "player_id": bridge.get(("player", "retrosheet_local", str(r.get("player_id")))),
                 "ab": r.get("ab"),
@@ -995,7 +999,7 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
     for r in _read_silver(root, "mlb_statsapi", "boxscore_pitching", dt):
         rows.append(
             {
-                "game_id": ulid_from_key(f"game:mlb_statsapi:{r.get('game_id')}", dt.isoformat()),
+                "game_id": ulid_from_key(f"game:mlb_statsapi:{r.get('game_id')}"),
                 "team_id": bridge.get(("team", "mlb_statsapi", str(r.get("team_id")))),
                 "player_id": bridge.get(("player", "mlb_statsapi", str(r.get("player_id")))),
                 "ip": r.get("ip"),
@@ -1012,7 +1016,7 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
     for r in _read_silver(root, "kbo_api", "boxscore_pitching", dt):
         rows.append(
             {
-                "game_id": ulid_from_key(f"game:kbo_api:{r.get('game_id')}", dt.isoformat()),
+                "game_id": ulid_from_key(f"game:kbo_api:{r.get('game_id')}"),
                 "team_id": bridge.get(("team", "kbo_api", str(r.get("team_id")))),
                 "player_id": bridge.get(("player", "kbo_api", str(r.get("player_name")))),
                 "ip": r.get("ip"),
@@ -1029,7 +1033,7 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
     for r in _read_silver(root, "indy_local", "boxscore_pitching", dt):
         rows.append(
             {
-                "game_id": ulid_from_key(f"game:indy:{r.get('game_id')}", dt.isoformat()),
+                "game_id": ulid_from_key(f"game:indy_local:{r.get('game_id')}"),
                 "team_id": bridge.get(("team", "indy_local", str(r.get("team_id")))),
                 "player_id": bridge.get(("player", "indy_local", str(r.get("player_id")))),
                 "ip": r.get("ip"),
@@ -1046,7 +1050,7 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
     for r in _read_silver(root, "kbo_local", "boxscore_pitching", dt):
         rows.append(
             {
-                "game_id": ulid_from_key(f"game:kbo:{r.get('game_id')}", dt.isoformat()),
+                "game_id": ulid_from_key(f"game:kbo_local:{r.get('game_id')}"),
                 "team_id": bridge.get(("team", "kbo_local", str(r.get("team_id")))),
                 "player_id": bridge.get(("player", "kbo_local", str(r.get("player_id")))),
                 "ip": r.get("ip"),
@@ -1063,7 +1067,7 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
     for r in _read_silver(root, "lmb_local", "boxscore_pitching", dt):
         rows.append(
             {
-                "game_id": ulid_from_key(f"game:lmb:{r.get('game_id')}", dt.isoformat()),
+                "game_id": ulid_from_key(f"game:lmb_local:{r.get('game_id')}"),
                 "team_id": bridge.get(("team", "lmb_local", str(r.get("team_id")))),
                 "player_id": bridge.get(("player", "lmb_local", str(r.get("player_id")))),
                 "ip": r.get("ip"),
@@ -1080,7 +1084,7 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
     for r in _read_silver(root, "retrosheet_local", "boxscore_pitching", dt):
         rows.append(
             {
-                "game_id": ulid_from_key(f"game:retrosheet:{r.get('game_id')}", dt.isoformat()),
+                "game_id": ulid_from_key(f"game:retrosheet_local:{r.get('game_id')}"),
                 "team_id": bridge.get(("team", "retrosheet_local", str(r.get("team_id")))),
                 "player_id": bridge.get(("player", "retrosheet_local", str(r.get("player_id")))),
                 "ip": r.get("ip"),
@@ -1361,7 +1365,7 @@ def _reconstruct_npb_pa(rows: List[Dict[str, Any]], dt: date, bridge: Dict[tuple
         by_game.setdefault(gid, []).append(r)
     out: List[Dict[str, Any]] = []
     for gid, items in by_game.items():
-        items.sort(key=lambda x: (x.get("inning") or 0, x.get("play_seq_no") or x.get("event_id") or 0))
+        items.sort(key=lambda x: (x.get("inning") or 0, _npb_event_order(x)))
         bases = [0, 0, 0]
         outs = 0
         last_inning = None
@@ -1383,8 +1387,8 @@ def _reconstruct_npb_pa(rows: List[Dict[str, Any]], dt: date, bridge: Dict[tuple
             bases = bases_after
             out.append(
                 {
-                    "pa_id": ulid_from_key(f"pa:npb:{gid}:{r.get('event_id') or r.get('play_seq_no')}", dt.isoformat()),
-                    "game_id": ulid_from_key(f"game:npb_spaia:{gid}", dt.isoformat()),
+                    "pa_id": ulid_from_key(f"pa:npb:{gid}:{r.get('event_id') or r.get('play_seq_no')}"),
+                    "game_id": ulid_from_key(f"game:npb_spaia:{gid}"),
                     "inning": inning,
                     "is_top_inning": str(top) == "1",
                     "batting_team_id": None,
@@ -1404,6 +1408,13 @@ def _reconstruct_npb_pa(rows: List[Dict[str, Any]], dt: date, bridge: Dict[tuple
                 }
             )
     return out
+
+
+def _npb_event_order(row: Dict[str, Any]) -> int:
+    # play_seq_no is an int but the event_id fallback is a string; comparing the
+    # two crashed gold_publish on real data.
+    value = _coerce_known_type(row.get("play_seq_no") or row.get("event_id"), "long")
+    return value or 0
 
 
 def _npb_infer_event(text: str, bases: List[int]) -> tuple[str, int, List[int]]:
@@ -1510,8 +1521,18 @@ def _scd2_merge(
     dt: date,
     prev_dt: date,
 ) -> List[Dict[str, Any]]:
-    prev_by_key: Dict[str, Dict[str, Any]] = {str(r.get(key_field)): r for r in prev_rows if r.get(key_field)}
+    # Each dt partition is a full snapshot, so prev_rows holds closed history as
+    # well as the open version of each key. History is immutable: carry it over
+    # untouched and only compare new rows against the open version.
+    prev_by_key: Dict[str, Dict[str, Any]] = {}
     out_rows: List[Dict[str, Any]] = []
+    for r in prev_rows:
+        if not r.get(key_field):
+            continue
+        if r.get("is_current") is False:
+            out_rows.append(dict(r))
+        else:
+            prev_by_key[str(r.get(key_field))] = r
     seen_keys = set()
     prev_dt_str = prev_dt.isoformat()
     for r in new_rows:
@@ -1538,13 +1559,11 @@ def _scd2_merge(
             r["valid_to_dt"] = None
             r["is_current"] = True
             out_rows.append(r)
+    # Dims are built from one day's games/rosters, so a key missing today just
+    # didn't appear (a team with an off day), not an entity that ended.
     for key, prev in prev_by_key.items():
-        if key in seen_keys:
-            continue
-        prev_closed = dict(prev)
-        prev_closed["valid_to_dt"] = (dt - timedelta(days=1)).isoformat()
-        prev_closed["is_current"] = False
-        out_rows.append(prev_closed)
+        if key not in seen_keys:
+            out_rows.append(dict(prev))
     return out_rows
 
 

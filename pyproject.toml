@@ -14,11 +14,7 @@ dependencies = [
   # the starlette mcp installs) -- floor bumped specifically to stay
   # compatible with mcp's starlette requirement. Exact-pinned (not just a
   # floor) because these are fast-moving packages with no lockfile in this
-  # repo -- CI failed twice on a fresh `pip install -e .` resolving these
-  # right after they were introduced, unreproducible locally in 3 separate
-  # environments including a from-scratch Docker container; pinning removes
-  # "which exact version did the resolver pick this time" as a variable
-  # entirely, whatever the real cause turns out to be.
+  # repo.
   "fastapi==0.141.1",
   "starlette==1.6.0",
   "uvicorn==0.52.4",

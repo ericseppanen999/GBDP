@@ -71,7 +71,7 @@ def _resolve_for_date(root: Path, dt: date, overrides: Dict[tuple, str], force: 
                 }
             )
         canonical_key = match.canonical_key if match else f"{entity_type}:{source}:{source_id}"
-        canonical_id = override or ulid_from_key(canonical_key, dt.isoformat())
+        canonical_id = override or ulid_from_key(canonical_key)
         bridge_rows.append(
             {
                 "entity_type": entity_type,
