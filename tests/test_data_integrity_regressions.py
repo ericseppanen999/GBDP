@@ -401,6 +401,22 @@ def test_npb_pa_reconstruction_handles_mixed_sequence_types():
     assert [r["inning"] for r in _reconstruct_npb_pa(rows, date(2025, 4, 1), {})] == [1, 1]
 
 
+# --- Bug 16: the backfill task never passed its job parameters to the CLI, so -
+# every run silently used the default last-7-days window and all stages, with
+# --force. Went unnoticed because one real request happened to equal the default.
+def test_backfill_job_passes_its_parameters_to_the_cli():
+    import yaml
+
+    config = yaml.safe_load(Path("databricks.yml").read_text(encoding="utf-8"))
+    job = config["resources"]["jobs"]["gbdp_backfill"]
+    params = job["tasks"][0]["spark_python_task"]["parameters"]
+    flags = {"start_date": "--start", "end_date": "--end", "leagues": "--leagues", "stages": "--stages"}
+
+    assert {p["name"] for p in job["parameters"]} == set(flags)
+    for name, flag in flags.items():
+        assert params[params.index(flag) + 1] == f"{{{{job.parameters.{name}}}}}"
+
+
 def test_retrosheet_ip_uses_innings_notation_not_raw_outs():
     from gbdp.silver.retrosheet import _outs_to_ip
 

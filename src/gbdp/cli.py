@@ -329,16 +329,18 @@ def main() -> None:
         _set_roots(args)
         _set_uc(args)
         _set_http(args)
-        raw_stages = args.stages or os.getenv("stages") or os.getenv("GBDP_BACKFILL_STAGES")
+        raw_stages = args.stages or os.getenv("GBDP_BACKFILL_STAGES")
         stages = raw_stages.split(",") if raw_stages else None
         from datetime import timedelta
         from gbdp.utils.time import utc_now
         yesterday = (utc_now().date() - timedelta(days=1)).isoformat()
         week_ago = (utc_now().date() - timedelta(days=7)).isoformat()
-        # Job params are injected as env vars on serverless: os.getenv("start_date") etc.
-        raw_start = args.start or os.getenv("start_date") or os.getenv("GBDP_BACKFILL_START") or week_ago
-        raw_end = args.end or os.getenv("end_date") or os.getenv("GBDP_BACKFILL_END") or yesterday
-        raw_leagues = args.leagues or os.getenv("leagues") or os.getenv("GBDP_BACKFILL_LEAGUES") or "all"
+        # Job parameters are NOT injected as env vars; databricks.yml has to pass
+        # them as CLI args via {{job.parameters.*}}. Relying on env vars silently
+        # ran the default window instead of the requested dates.
+        raw_start = args.start or os.getenv("GBDP_BACKFILL_START") or week_ago
+        raw_end = args.end or os.getenv("GBDP_BACKFILL_END") or yesterday
+        raw_leagues = args.leagues or os.getenv("GBDP_BACKFILL_LEAGUES") or "all"
         leagues = raw_leagues.split(",") if raw_leagues and raw_leagues != "all" else None
         start, end = _resolve_window(raw_start, raw_end, args.window)
         run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay, args.chunk, leagues)

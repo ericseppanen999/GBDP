@@ -249,6 +249,14 @@ resources:
             python_file: ${workspace.file_path}/dbx_entry.py
             parameters:
               - backfill
+              - --start
+              - "{{job.parameters.start_date}}"
+              - --end
+              - "{{job.parameters.end_date}}"
+              - --leagues
+              - "{{job.parameters.leagues}}"
+              - --stages
+              - "{{job.parameters.stages}}"
               - --sources
               - ${workspace.file_path}/configs/sources.yaml
               - --force
