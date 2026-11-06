@@ -126,6 +126,7 @@ def _pipeline_stages() -> Dict[str, Callable]:
     return {
         "fetch_schedules": _stage_fetch_schedules,
         "fetch_rosters": _stage_fetch_rosters,
+        "fetch_player_bios": _stage_fetch_player_bios,
         "fetch_transactions": _stage_fetch_transactions,
         "fetch_games": _stage_fetch_games,
         "fetch_pbp": _stage_fetch_pbp,
@@ -133,6 +134,7 @@ def _pipeline_stages() -> Dict[str, Callable]:
         "fetch_boxscores": _stage_fetch_boxscores,
         "fetch_npb_stats": _stage_fetch_npb_stats,
         "silver_normalize": _stage_silver,
+        "silver_player_bios": _stage_silver_player_bios,
         "identity_resolve": _stage_identity,
         "gold_publish": _stage_gold,
         "quality_checks": _stage_quality,
@@ -185,6 +187,13 @@ def _stage_fetch_rosters(start, end, cfg, writer, cache, force, leagues=None):
     if "lmb_local" in cfg and _allowed(leagues, "lmb"):
         lmb = LmbLocalConnector(writer, cache)
         _run_partitions(lmb, lmb.list_partitions(start, end, "rosters"), force, "fetch_rosters:lmb_local:rosters")
+
+
+def _stage_fetch_player_bios(start, end, cfg, writer, cache, force, leagues=None):
+    if not _allowed(leagues, "mlb"):
+        return
+    mlb = MlbStatsApiConnector(writer, cache, cfg["mlb_statsapi"]["base_url"])
+    _run_partitions(mlb, mlb.list_partitions(start, end, "player_bios"), force, "fetch_player_bios:mlb_statsapi:player_bios")
 
 
 def _stage_fetch_transactions(start, end, cfg, writer, cache, force, leagues=None):
@@ -304,6 +313,12 @@ def _stage_silver(start, end, cfg, writer, cache, force, leagues=None):
     if "retrosheet_local" in cfg:
         for entity in ["allplayers", "gameinfo", "teamstats", "batting", "pitching", "fielding", "plays"]:
             _run_step(f"silver_normalize:retrosheet_local:{entity}", lambda entity=entity: normalize_retrosheet(entity, start, end, force=force))
+
+
+def _stage_silver_player_bios(start, end, cfg, writer, cache, force, leagues=None):
+    # Its own stage so bios can be refreshed without re-normalizing every source.
+    if _allowed(leagues, "mlb"):
+        _run_step("silver_player_bios:mlb", lambda: normalize_mlb("player_bios", start, end, force=force))
 
 
 def _stage_identity(start, end, cfg, writer, cache, force, leagues=None):

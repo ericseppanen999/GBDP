@@ -417,6 +417,44 @@ def test_silver_pitches_drop_rows_without_game_pk(tmp_path, monkeypatch):
     assert [r["game_pk"] for r in written] == ["778492"]
 
 
+# --- Bug 18: dim_player bio columns were always null or UNK, because the -----
+# roster endpoint returns only a name and ID.
+@pytest.mark.parametrize("height,expected", [("6' 3\"", 190.5), ("5' 11\"", 180.3), ("", None), (None, None)])
+def test_height_to_cm(height, expected):
+    from gbdp.silver.mlb import _height_to_cm
+
+    assert _height_to_cm(height) == expected
+
+
+def test_player_bios_reach_dim_player(gold_env, monkeypatch):
+    import json
+
+    import gbdp.silver.mlb as mlb_module
+    from gbdp.gold.publish import _write_dim_player
+
+    silver, gold = gold_env
+    person = {"id": 660271, "birthDate": "1994-07-05", "height": "6' 3\"", "weight": 210,
+              "batSide": {"code": "L"}, "pitchHand": {"code": "R"}, "birthCountry": "Japan"}
+    monkeypatch.setattr(mlb_module, "_read_bronze", lambda source, entity, dt, root: [{"people": json.dumps([person])}])
+    day = date(2025, 4, 1)
+    mlb_module._normalize_player_bios(silver, day, force=True)
+    _write_silver(silver, "mlb_statsapi", "rosters", day, [{"player_id": "660271", "player_name": "X", "team_id": "119"}])
+
+    _write_dim_player(gold, day, {}, True)
+
+    row = read_parquet_rows(gold / "dim_player" / f"dt={day}")[0]
+    assert (row["dob"], row["bats"], row["throws"], row["nationality"]) == ("1994-07-05", "L", "R", "Japan")
+    assert (row["height_cm"], row["weight_kg"]) == (190.5, 95.3)
+
+
+def test_npb_kana_fills_alternate_names():
+    from gbdp.gold.publish import _player_row
+
+    row = _player_row({"player_id": "1", "raw_json": '{"PlayerNameK": "イケヤマ"}'}, "NPB", {}, "npb_spaia")
+    assert row["alternate_names"] == ["イケヤマ"]
+    assert _player_row({"player_id": "1"}, "MLB", {}, "mlb_statsapi")["alternate_names"] is None
+
+
 # --- Bug 16: the backfill task never passed its job parameters to the CLI, so -
 # every run silently used the default last-7-days window and all stages, with
 # --force. Went unnoticed because one real request happened to equal the default.

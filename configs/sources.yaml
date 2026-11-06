@@ -21,6 +21,9 @@ mlb_statsapi:
       required_params: ["sportId"]
       default_params:
         sportId: 1
+    player_bios:
+      path: "/sports/1/players"
+      required_params: ["season"]
 
 mlb_statcast:
   base_url: "https://baseballsavant.mlb.com/statcast_search/csv"

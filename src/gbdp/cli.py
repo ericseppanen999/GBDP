@@ -130,6 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
             "pitches",
             "boxscore_batting",
             "boxscore_pitching",
+            "player_bios",
             "gameinfo",
             "batting",
             "pitching",

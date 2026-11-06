@@ -56,6 +56,8 @@ _KNOWN_FIELD_TYPES: Dict[str, str] = {
     "base_state_after": "long", "outs_after": "long", "runs_scored_on_play": "long",
     # fact_game
     "home_score": "long", "away_score": "long",
+    # dim_player
+    "height_cm": "double", "weight_kg": "double",
     # fact_standings
     "w": "long", "l": "long", "t": "long", "pct": "string", "gb": "string",
 }
@@ -563,8 +565,9 @@ def _team_rows_from_game(row: Dict[str, Any], league_code: str, bridge: Dict[tup
 
 def _write_dim_player(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
+    bios = {str(b.get("player_id")): b for b in _read_silver(root, "mlb_statsapi", "player_bios", dt)}
     for r in _read_silver(root, "mlb_statsapi", "rosters", dt):
-        rows.append(_player_row(r, "MLB", bridge, "mlb_statsapi"))
+        rows.append(_player_row(r, "MLB", bridge, "mlb_statsapi", bios.get(str(r.get("player_id")))))
     for r in _read_silver(root, "npb_spaia", "rosters", dt):
         rows.append(_player_row(r, "NPB", bridge, "npb_spaia"))
     for r in _read_silver(root, "indy_local", "rosters", dt):
@@ -582,19 +585,31 @@ def _write_dim_player(root: Path, dt: date, bridge: Dict[tuple, str], force: boo
     return _write_gold_table(root, "dim_player", dt, scd_rows, force)
 
 
-def _player_row(r: Dict[str, Any], league_code: str, bridge: Dict[tuple, str], source: str) -> Dict[str, Any]:
+def _alternate_names(r: Dict[str, Any]) -> List[str] | None:
+    # NPB rosters carry a kana reading alongside the kanji name.
+    try:
+        kana = json.loads(r.get("raw_json") or "{}").get("PlayerNameK")
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return [kana] if kana else None
+
+
+def _player_row(
+    r: Dict[str, Any], league_code: str, bridge: Dict[tuple, str], source: str, bio: Dict[str, Any] | None = None
+) -> Dict[str, Any]:
+    bio = bio or {}
     source_id = r.get("player_id")
     canonical = bridge.get(("player", source, str(source_id))) or ulid_from_key(f"player:source:{source}:{source_id}")
     return {
         "player_id": canonical,
         "primary_name": r.get("player_name"),
-        "alternate_names": None,
-        "dob": r.get("dob"),
-        "bats": r.get("bats") or "UNK",
-        "throws": r.get("throws") or "UNK",
-        "height_cm": None,
-        "weight_kg": None,
-        "nationality": None,
+        "alternate_names": _alternate_names(r),
+        "dob": r.get("dob") or bio.get("dob"),
+        "bats": r.get("bats") or bio.get("bats") or "UNK",
+        "throws": r.get("throws") or bio.get("throws") or "UNK",
+        "height_cm": bio.get("height_cm"),
+        "weight_kg": bio.get("weight_kg"),
+        "nationality": bio.get("birth_country"),
         "primary_position": r.get("position"),
         "valid_from_dt": r.get("dt"),
         "valid_to_dt": None,

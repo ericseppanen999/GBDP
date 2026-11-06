@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
@@ -36,6 +37,8 @@ def normalize_mlb(
             outputs.append(_normalize_boxscore_batting(root, d, force))
         elif entity == "boxscore_pitching":
             outputs.append(_normalize_boxscore_pitching(root, d, force))
+        elif entity == "player_bios":
+            outputs.append(_normalize_player_bios(root, d, force))
         else:
             raise ValueError(f"Unsupported MLB silver entity: {entity}")
     return outputs
@@ -187,6 +190,46 @@ def _normalize_pitches(root: Path, dt: date, force: bool) -> Path:
             row["source"] = "mlb_statcast"
         normalized.append(row)
     out_dir = _silver_path(root, "mlb_statcast", "pitches", dt)
+    ensure_dir(out_dir)
+    return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
+
+
+def _height_to_cm(value: Any) -> float | None:
+    # The API reports height as text, e.g. 6' 3".
+    match = re.match(r"\s*(\d+)'\s*(\d+)", str(value or ""))
+    if not match:
+        return None
+    return round((int(match.group(1)) * 12 + int(match.group(2))) * 2.54, 1)
+
+
+def _pounds_to_kg(value: Any) -> float | None:
+    pounds = _as_float(value)
+    return round(pounds * 0.45359237, 1) if pounds else None
+
+
+def _normalize_player_bios(root: Path, dt: date, force: bool) -> Path:
+    rows = _read_bronze("mlb_statsapi", "player_bios", dt, root)
+    normalized: List[Dict[str, Any]] = []
+    include_partition_cols = include_partition_cols_silver()
+    for r in rows:
+        people = r.get("people") or []
+        if isinstance(people, str):
+            people = _parse_json_maybe(people) or []
+        for p in people:
+            row = {
+                    "player_id": _as_str(p.get("id")),
+                    "dob": p.get("birthDate"),
+                    "height_cm": _height_to_cm(p.get("height")),
+                    "weight_kg": _pounds_to_kg(p.get("weight")),
+                    "bats": (p.get("batSide") or {}).get("code"),
+                    "throws": (p.get("pitchHand") or {}).get("code"),
+                    "birth_country": p.get("birthCountry"),
+                }
+            if include_partition_cols:
+                row["dt"] = dt.isoformat()
+                row["source"] = "mlb_statsapi"
+            normalized.append(row)
+    out_dir = _silver_path(root, "mlb_statsapi", "player_bios", dt)
     ensure_dir(out_dir)
     return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 

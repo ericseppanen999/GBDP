@@ -27,12 +27,15 @@ tables:
       bats: Batting handedness (L/R/S/UNK).
       throws: Throwing handedness (L/R/UNK).
       primary_position: Roster position abbreviation, source-dependent format.
+      nationality: Birth country as reported by the source, which is not always citizenship.
+      alternate_names: JSON list of other spellings. NPB only (kana reading).
       league_id: FK to dim_league -- the league this player's most recent roster entry came from.
       is_current: True if this is the current/latest version of this player's attributes.
       source / source_player_id: The source system and raw ID that first established this row.
     caveats: >
-      height_cm/weight_kg/nationality/dob/alternate_names are schema
-      placeholders -- not populated by any connector yet, always null.
+      dob, height_cm, weight_kg, nationality, and bats/throws are populated
+      for MLB only (from the season player list) and are null or UNK for other
+      sources. bats/throws can also come from Retrosheet where it is loaded.
       For kbo_api specifically, source_player_id is the player's NAME (no
       numeric player ID exists anywhere in that source's API responses),
       so it is weaker than other sources' identity resolution.

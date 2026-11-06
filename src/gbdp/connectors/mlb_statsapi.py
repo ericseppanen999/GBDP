@@ -16,6 +16,7 @@ class MlbStatsApiConnector(BaseConnector):
         "rosters": ["teams"],
         "transactions": ["transactions"],
         "boxscore": ["games"],
+        "player_bios": ["people"],
     }
 
     def __init__(self, writer, cache, base_url: str) -> None:
@@ -83,6 +84,24 @@ class MlbStatsApiConnector(BaseConnector):
             return raw.__class__(
                 source=self.source,
                 entity="transactions",
+                dt=partition.dt,
+                url=raw.url,
+                params=params,
+                status_code=raw.status_code,
+                fetched_at_utc=raw.fetched_at_utc,
+                checksum=raw.checksum,
+                content_type=raw.content_type,
+                body_text=raw.body_text,
+            )
+        if partition.entity == "player_bios":
+            # One call returns every player in the season, with bio fields the
+            # roster endpoint leaves out.
+            params = {"season": date.fromisoformat(partition.dt).year}
+            url = f"{self.base_url}/sports/1/players"
+            raw = self.http_get(url, params)
+            return raw.__class__(
+                source=self.source,
+                entity="player_bios",
                 dt=partition.dt,
                 url=raw.url,
                 params=params,
