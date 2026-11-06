@@ -155,6 +155,10 @@ def _normalize_pitches(root: Path, dt: date, force: bool) -> Path:
     normalized: List[Dict[str, Any]] = []
     include_partition_cols = include_partition_cols_silver()
     for r in rows:
+        # Bronze from before the type=details fix holds leaderboard rows, not
+        # pitches. They have no game_pk and collapse onto a single pitch_id.
+        if not r.get("game_pk"):
+            continue
         row = {
                 "game_date": r.get("game_date"),
                 "game_pk": _as_str(r.get("game_pk")),

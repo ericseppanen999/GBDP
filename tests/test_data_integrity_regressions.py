@@ -401,6 +401,22 @@ def test_npb_pa_reconstruction_handles_mixed_sequence_types():
     assert [r["inning"] for r in _reconstruct_npb_pa(rows, date(2025, 4, 1), {})] == [1, 1]
 
 
+# --- Bug 17: bronze from before the type=details fix still holds leaderboard -
+# rows. With no game_pk they all hashed to one pitch_id, failing the uniqueness
+# check (118 rows on 2004-05-18 during the rebuild).
+def test_silver_pitches_drop_rows_without_game_pk(tmp_path, monkeypatch):
+    import gbdp.silver.mlb as mlb_module
+
+    rows = [{"player_id": "123", "pitch_percent": "10.5"}, {"game_pk": "778492", "batter": "1", "pitcher": "2", "pitch_number": "1"}]
+    monkeypatch.setattr(mlb_module, "_read_bronze", lambda source, entity, dt, root: rows)
+    monkeypatch.setenv("GBDP_STORAGE_FORMAT", "parquet")
+
+    out_path = mlb_module._normalize_pitches(tmp_path, date(2025, 4, 1), force=True)
+
+    written = pq.ParquetFile(str(out_path)).read().to_pylist()
+    assert [r["game_pk"] for r in written] == ["778492"]
+
+
 # --- Bug 16: the backfill task never passed its job parameters to the CLI, so -
 # every run silently used the default last-7-days window and all stages, with
 # --force. Went unnoticed because one real request happened to equal the default.
