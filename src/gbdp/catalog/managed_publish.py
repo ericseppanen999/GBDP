@@ -15,6 +15,7 @@ from gbdp.utils.io import (
     storage_format,
     has_files_with_suffix,
 )
+from gbdp.pipeline.errors import PermanentStageError
 from gbdp.utils.time import daterange, parse_date
 
 

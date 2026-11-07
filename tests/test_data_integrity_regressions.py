@@ -616,6 +616,27 @@ def test_a_schema_clash_fails_one_table_not_the_whole_publish(monkeypatch):
     assert len(errors) == 1 and errors[0].startswith("bad dt=2026-05-20")
 
 
+def test_publish_raises_a_permanent_error_after_all_tables(monkeypatch):
+    from gbdp.catalog import managed_publish as mp
+    from gbdp.pipeline.errors import PermanentStageError
+
+    published = []
+
+    def gold(spark, dt, catalog, schema, errors):
+        errors.append(f"bad dt={dt}")
+        published.append("gold")
+
+    monkeypatch.setattr(mp, "_spark_session", lambda: object())
+    monkeypatch.setattr(mp, "_ensure_schema", lambda *a: None)
+    monkeypatch.setattr(mp, "_publish_gold", gold)
+    for name in ("_publish_silver", "_publish_bronze_parsed", "_publish_bronze_requests"):
+        monkeypatch.setattr(mp, name, lambda *a, n=name: published.append(n))
+
+    with pytest.raises(PermanentStageError, match="1 UC table write"):
+        mp.publish_uc_managed("2026-05-20", "2026-05-20", "c", "b", "s", "g")
+    assert published == ["gold", "_publish_silver", "_publish_bronze_parsed", "_publish_bronze_requests"]
+
+
 def test_other_publish_errors_still_raise(monkeypatch):
     from gbdp.catalog import managed_publish as mp
 
