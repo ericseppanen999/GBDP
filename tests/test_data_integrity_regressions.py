@@ -625,6 +625,29 @@ def test_npb_silver_rosters_are_one_row_per_team_and_player(monkeypatch, tmp_pat
     assert sorted(r["player_id"] for r in rows) == ["8", "9"]
 
 
+# --- Statcast and NPB plate appearances carried no batting/fielding team.
+def test_plate_appearances_get_teams_from_the_game(gold_env):
+    from gbdp.gold.publish import _write_fact_game, _write_fact_plate_appearance
+
+    silver, gold = gold_env
+    day = date(2025, 4, 1)
+    _write_silver(silver, "mlb_statsapi", "games", day, [{"game_id": "777", "home_team_id": "1", "away_team_id": "2"}])
+    pitch = {"game_pk": 777, "pitch_number": 1, "outs_when_up": 0, "events": "single", "batter_id": 5, "pitcher_id": 6, "raw_json": "{}"}
+    _write_silver(silver, "mlb_statcast", "pitches", day, [
+        {**pitch, "at_bat_number": 1, "inning": 1, "inning_topbot": "Top"},
+        {**pitch, "at_bat_number": 2, "inning": 1, "inning_topbot": "Bot"},
+    ])
+
+    _write_fact_game(gold, day, {}, True)
+    _write_fact_plate_appearance(gold, day, {}, True)
+
+    game, = read_parquet_rows(gold / "fact_game" / f"dt={day}")
+    pas = sorted(read_parquet_rows(gold / "fact_plate_appearance" / f"dt={day}"), key=lambda r: not r["is_top_inning"])
+    assert (pas[0]["batting_team_id"], pas[0]["fielding_team_id"]) == (game["away_team_id"], game["home_team_id"])
+    assert (pas[1]["batting_team_id"], pas[1]["fielding_team_id"]) == (game["home_team_id"], game["away_team_id"])
+    assert game["home_team_id"] is not None
+
+
 # --- Bug 23: May-June NPB bronze repeats each roster ~110 times (157,000 rows
 # for ~1,430 players), which bloated fact_roster to 4.7M rows.
 def test_fact_roster_is_one_row_per_team_and_player(gold_env):

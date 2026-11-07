@@ -920,7 +920,32 @@ def _write_fact_plate_appearance(root: Path, dt: date, bridge: Dict[tuple, str],
                 "source": "retrosheet_local",
             }
         )
+    _fill_pa_teams(rows, _game_teams(root, dt, bridge))
     return _write_gold_table(root, "fact_plate_appearance", dt, rows, force)
+
+
+def _game_teams(root: Path, dt: date, bridge: Dict[tuple, str]) -> Dict[str, tuple]:
+    """game_id -> (home_team_id, away_team_id), with the same IDs fact_game writes."""
+    teams: Dict[str, tuple] = {}
+    for source, league in (("mlb_statsapi", "MLB"), ("npb_spaia", "NPB"), ("retrosheet_local", "MLB")):
+        for g in _fact_game_from_silver(root, dt, source, league, bridge):
+            teams[g["game_id"]] = (g["home_team_id"], g["away_team_id"])
+    return teams
+
+
+def _fill_pa_teams(rows: List[Dict[str, Any]], game_teams: Dict[str, tuple]) -> None:
+    # The away team bats in the top of the inning. Only fills gaps, so a team a
+    # source states directly (Retrosheet) wins.
+    for r in rows:
+        teams = game_teams.get(r.get("game_id"))
+        if not teams or r.get("is_top_inning") is None:
+            continue
+        home, away = teams
+        batting, fielding = (away, home) if r["is_top_inning"] else (home, away)
+        if r.get("batting_team_id") is None:
+            r["batting_team_id"] = batting
+        if r.get("fielding_team_id") is None:
+            r["fielding_team_id"] = fielding
 
 
 def _write_fact_standings(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
@@ -1468,7 +1493,9 @@ def _reconstruct_npb_pa(rows: List[Dict[str, Any]], dt: date, bridge: Dict[tuple
                     "pa_id": ulid_from_key(f"pa:npb:{gid}:{r.get('event_id') or r.get('play_seq_no')}"),
                     "game_id": ulid_from_key(f"game:npb_spaia:{gid}"),
                     "inning": inning,
-                    "is_top_inning": str(top) == "1",
+                    # 1 = top, 2 = bottom (code 1 is in every 9th inning, 2 only
+                    # when the home team bats). 0 is a non-PA event: unknown.
+                    "is_top_inning": {"1": True, "2": False}.get(str(top)),
                     "batting_team_id": None,
                     "fielding_team_id": None,
                     "batter_id": bridge.get(("player", "npb_spaia", str(r.get("play_player_id")))),
