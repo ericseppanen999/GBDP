@@ -268,7 +268,7 @@ def _write_managed(spark, df, full_name: str, dt: date) -> None:
     # mergeSchema IS allowed with replaceWhere and is what actually lets new columns show up
     # going forward instead of being silently dropped to match whatever schema the table
     # happened to get on its first (possibly empty/narrow) write.
-    def _write_partition():
+    def _write_partition(df):
         (
             df.write.format("delta")
             .mode("overwrite")
@@ -278,7 +278,7 @@ def _write_managed(spark, df, full_name: str, dt: date) -> None:
         )
 
     try:
-        _write_partition()
+        _write_partition(df)
         return
     except Exception as e:
         msg = str(e).lower()
@@ -307,11 +307,51 @@ def _write_managed(spark, df, full_name: str, dt: date) -> None:
             or "unresolved_column" in msg
             or "cannot be resolved" in msg
         ):
+            # delta_failed_to_merge_fields is a TYPE clash, which ADD COLUMNS
+            # can't fix: confirmed live on silver npb_spaia_games, created from
+            # an all-STRING placeholder write and then fed real bigint scores.
+            df = _align_to_table_types(spark, full_name, df)
             _add_missing_columns(spark, full_name, df)
-            _write_partition()
+            _write_partition(df)
             return
 
         raise
+
+
+def _lossless_cast(target, incoming) -> bool:
+    """True when every value of type `incoming` survives a cast to `target`."""
+    from pyspark.sql.types import (
+        AtomicType, ByteType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType,
+    )
+
+    if isinstance(incoming, NullType):
+        return True
+    if isinstance(target, StringType):
+        return isinstance(incoming, AtomicType)
+    if isinstance(target, LongType):
+        return isinstance(incoming, (IntegerType, ShortType, ByteType))
+    if isinstance(target, DoubleType):
+        return isinstance(incoming, (FloatType, IntegerType, ShortType, ByteType))
+    return False
+
+
+def _align_to_table_types(spark, full_name: str, df):
+    """Cast incoming columns to the table's existing type wherever no value is lost.
+
+    Never rewrites the table, so other partitions are untouched; a clash that
+    can't be cast losslessly is left alone and the retry fails loudly.
+    """
+    from pyspark.sql import functions as F
+
+    target = {f.name: f.dataType for f in spark.table(full_name).schema.fields}
+    cols = []
+    for f in df.schema.fields:
+        t = target.get(f.name)
+        if t is not None and t != f.dataType and _lossless_cast(t, f.dataType):
+            cols.append(F.col(f"`{f.name}`").cast(t).alias(f.name))
+        else:
+            cols.append(F.col(f"`{f.name}`"))
+    return df.select(*cols)
 
 
 def _add_missing_columns(spark, full_name: str, df) -> None:

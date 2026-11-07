@@ -576,6 +576,52 @@ def test_nightly_fetches_npb_season_stats_for_the_latest_date_only(monkeypatch):
     assert set(seen) == {("2025-04-07", "2025-04-07")}
 
 
+# --- Bug 24: a UC table first created from an all-STRING placeholder write
+# (silver npb_spaia_games) rejected every later partition with real bigint
+# scores: DELTA_FAILED_TO_MERGE_FIELDS on away_score, so register_uc failed
+# for all of May-June.
+def test_type_clash_is_cast_to_the_table_type_not_raised():
+    text = Path("src/gbdp/catalog/managed_publish.py").read_text(encoding="utf-8")
+    handler_tail = text[text.rindex("except Exception"):]
+    assert "delta_failed_to_merge_fields" in handler_tail
+    assert "_align_to_table_types(spark, full_name, df)" in handler_tail
+    assert "_write_partition(df)" in handler_tail
+
+
+def test_only_lossless_casts_are_applied():
+    types = pytest.importorskip("pyspark.sql.types")
+    from gbdp.catalog.managed_publish import _lossless_cast
+
+    assert _lossless_cast(types.StringType(), types.LongType())
+    assert _lossless_cast(types.LongType(), types.IntegerType())
+    assert _lossless_cast(types.DoubleType(), types.NullType())
+    assert not _lossless_cast(types.LongType(), types.StringType())
+    assert not _lossless_cast(types.LongType(), types.DoubleType())
+
+
+# --- Bug 23: May-June NPB bronze repeats each roster ~110 times (157,000 rows
+# for ~1,430 players), which bloated fact_roster to 4.7M rows.
+def test_fact_roster_is_one_row_per_team_and_player(gold_env):
+    from gbdp.gold.publish import _write_fact_roster
+
+    silver, gold = gold_env
+    day = date(2025, 4, 1)
+    _write_silver(silver, "npb_spaia", "rosters", day, [{"team_id": "1", "player_id": "9"}] * 5 + [{"team_id": "1", "player_id": "8"}])
+
+    _write_fact_roster(gold, day, {}, True)
+
+    assert len(read_parquet_rows(gold / "fact_roster" / f"dt={day}")) == 2
+
+
+def test_league_lookup_does_not_reread_the_config_per_row(monkeypatch):
+    from gbdp.gold import publish
+
+    publish._league_id_for_code.cache_clear()
+    first = publish._league_id_for_code("NPB")
+    monkeypatch.setattr(publish, "path_exists", lambda path: pytest.fail("re-read leagues.yaml"))
+    assert publish._league_id_for_code("NPB") == first
+
+
 # --- Bug 16: the backfill task never passed its job parameters to the CLI, so -
 # every run silently used the default last-7-days window and all stages, with
 # --force. Went unnoticed because one real request happened to equal the default.

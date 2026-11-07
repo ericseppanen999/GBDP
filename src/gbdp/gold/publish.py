@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -732,7 +733,9 @@ def _write_fact_roster(root: Path, dt: date, bridge: Dict[tuple, str], force: bo
         rows.append(_fact_roster_row(r, "lmb_local", "LMB", bridge, dt))
     for r in _read_silver(root, "retrosheet_local", "rosters", dt):
         rows.append(_fact_roster_row(r, "retrosheet_local", "MLB", bridge, dt))
-    return _write_gold_table(root, "fact_roster", dt, rows, force)
+    # Bronze from before the NPB team-ID fix repeats each roster ~110 times.
+    unique = {(r["team_id"], r["player_id"], r["source"]): r for r in rows}
+    return _write_gold_table(root, "fact_roster", dt, list(unique.values()), force)
 
 
 def _fact_roster_row(r: Dict[str, Any], source: str, league_code: str, bridge: Dict[tuple, str], dt: date):
@@ -1666,6 +1669,9 @@ def _latest_dt_before(root: Path, table: str, dt: date) -> date | None:
 # League config
 # -----------------------------
 
+# Called once per row: re-reading the YAML each time cost ~8 minutes per date on
+# a 157,000-row roster.
+@lru_cache(maxsize=None)
 def _league_id_for_code(code: str) -> str | None:
     leagues_path = Path("configs/leagues.yaml")
     if not path_exists(leagues_path):
