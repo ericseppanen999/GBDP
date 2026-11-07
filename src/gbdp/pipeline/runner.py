@@ -29,6 +29,7 @@ from gbdp.silver.mlb import normalize_mlb
 from gbdp.silver.npb import normalize_npb
 from gbdp.silver.retrosheet import normalize_retrosheet
 from gbdp.gold.publish import publish_gold
+from gbdp.pipeline.errors import PermanentStageError
 from gbdp.utils.io import bronze_root, gold_root, ensure_dir, path_exists, write_parquet_table
 from gbdp.utils.logging import get_logger
 
@@ -88,7 +89,7 @@ def run_pipeline(
                     break
                 except Exception as exc:
                     attempt += 1
-                    if attempt > retries:
+                    if attempt > retries or isinstance(exc, PermanentStageError):
                         status = "error"
                         details = str(exc)
                         logger.error(

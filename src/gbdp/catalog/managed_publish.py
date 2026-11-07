@@ -26,13 +26,39 @@ def publish_uc_managed(start: str, end: str, catalog: str, bronze_schema: str, s
     _ensure_schema(spark, catalog, silver_schema)
     _ensure_schema(spark, catalog, gold_schema)
     days = list(daterange(parse_date(start), parse_date(end)))
+    errors: List[str] = []
     # All gold first: an error in a lower layer must not hold back later gold dates.
     for d in days:
-        _publish_gold(spark, d, catalog, gold_schema)
+        _publish_gold(spark, d, catalog, gold_schema, errors)
     for d in days:
-        _publish_silver(spark, d, catalog, silver_schema)
-        _publish_bronze_parsed(spark, d, catalog, bronze_schema)
-        _publish_bronze_requests(spark, d, catalog, bronze_schema)
+        _publish_silver(spark, d, catalog, silver_schema, errors)
+        _publish_bronze_parsed(spark, d, catalog, bronze_schema, errors)
+        _publish_bronze_requests(spark, d, catalog, bronze_schema, errors)
+    if errors:
+        # Schema clashes come out the same on every attempt; a retry would only
+        # re-publish the whole window again (~45 min each, confirmed live).
+        raise PermanentStageError(f"{len(errors)} UC table write(s) failed: " + " | ".join(errors[:10]))
+
+
+# Deterministic: the same partition hits the same clash on every attempt.
+_SCHEMA_CLASH_MARKERS = (
+    "delta_failed_to_merge_fields",
+    "schema mismatch",
+    "schema migration is not allowed",
+    "_legacy_error_temp_delta_0007",
+    "cannot_up_cast",
+)
+
+
+def _try_write(spark, df, full_name: str, dt: date, errors: List[str]) -> None:
+    """Write one table; a schema clash is recorded so the other tables still publish."""
+    try:
+        _write_managed(spark, df, full_name, dt)
+    except Exception as e:
+        msg = str(e)
+        if not any(m in msg.lower() for m in _SCHEMA_CLASH_MARKERS):
+            raise
+        errors.append(f"{full_name} dt={dt.isoformat()}: {msg.splitlines()[0][:200]}")
 
 
 def publish_uc_managed_from_env(start: str, end: str) -> None:
@@ -112,7 +138,7 @@ def _sanitize_for_uc(df):
     return df
 
 
-def _publish_gold(spark, dt: date, catalog: str, schema: str) -> None:
+def _publish_gold(spark, dt: date, catalog: str, schema: str, errors: List[str]) -> None:
     base = gold_root()
     if not path_exists(base):
         return
@@ -162,10 +188,10 @@ def _publish_gold(spark, dt: date, catalog: str, schema: str) -> None:
         if "dt" not in df.columns:
             df = df.withColumn("dt", F.lit(dt_str))
 
-        _write_managed(spark, df, full_name, dt)
+        _try_write(spark, df, full_name, dt, errors)
 
 
-def _publish_silver(spark, dt: date, catalog: str, schema: str) -> None:
+def _publish_silver(spark, dt: date, catalog: str, schema: str, errors: List[str]) -> None:
     base = silver_root()
     if not path_exists(base):
         return
@@ -202,10 +228,10 @@ def _publish_silver(spark, dt: date, catalog: str, schema: str) -> None:
             if "source" not in df.columns:
                 df = df.withColumn("source", F.lit(source))
 
-            _write_managed(spark, df, full_name, dt)
+            _try_write(spark, df, full_name, dt, errors)
 
 
-def _publish_bronze_parsed(spark, dt: date, catalog: str, schema: str) -> None:
+def _publish_bronze_parsed(spark, dt: date, catalog: str, schema: str, errors: List[str]) -> None:
     base = bronze_root() / "parsed"
     if not path_exists(base):
         return
@@ -228,10 +254,10 @@ def _publish_bronze_parsed(spark, dt: date, catalog: str, schema: str) -> None:
             if "entity" not in df.columns:
                 df = df.withColumn("entity", F.lit(entity))
             full_name = f"{catalog}.{schema}.{source}_{entity}"
-            _write_managed(spark, df, full_name, dt)
+            _try_write(spark, df, full_name, dt, errors)
 
 
-def _publish_bronze_requests(spark, dt: date, catalog: str, schema: str) -> None:
+def _publish_bronze_requests(spark, dt: date, catalog: str, schema: str, errors: List[str]) -> None:
     base = bronze_root() / "requests"
     if not path_exists(base):
         return
@@ -246,7 +272,7 @@ def _publish_bronze_requests(spark, dt: date, catalog: str, schema: str) -> None
     if "dt" not in df.columns:
         df = df.withColumn("dt", F.lit(dt_str))
     full_name = f"{catalog}.{schema}.requests"
-    _write_managed(spark, df, full_name, dt)
+    _try_write(spark, df, full_name, dt, errors)
 
 
 def _write_managed(spark, df, full_name: str, dt: date) -> None:
@@ -331,7 +357,9 @@ def _lossless_cast(target, incoming) -> bool:
     if isinstance(target, LongType):
         return isinstance(incoming, (IntegerType, ShortType, ByteType))
     if isinstance(target, DoubleType):
-        return isinstance(incoming, (FloatType, IntegerType, ShortType, ByteType))
+        # LongType is exact up to 2^53, far past any ID or count here. Confirmed
+        # live: kbo_api_games was born DOUBLE from a sparse fetch, later bigint.
+        return isinstance(incoming, (FloatType, IntegerType, LongType, ShortType, ByteType))
     return False
 
 

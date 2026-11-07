@@ -599,6 +599,53 @@ def test_type_clash_is_cast_to_the_table_type_not_raised():
     assert "_write_partition(df)" in handler_tail
 
 
+def test_a_schema_clash_fails_one_table_not_the_whole_publish(monkeypatch):
+    from gbdp.catalog import managed_publish as mp
+
+    def fake_write(spark, df, full_name, dt):
+        if full_name == "bad":
+            raise RuntimeError("[DELTA_FAILED_TO_MERGE_FIELDS] Failed to merge fields 'W_PIT_P_ID'")
+        written.append(full_name)
+
+    written, errors = [], []
+    monkeypatch.setattr(mp, "_write_managed", fake_write)
+    for name in ("bad", "good"):
+        mp._try_write(None, None, name, date(2026, 5, 20), errors)
+
+    assert written == ["good"]
+    assert len(errors) == 1 and errors[0].startswith("bad dt=2026-05-20")
+
+
+def test_other_publish_errors_still_raise(monkeypatch):
+    from gbdp.catalog import managed_publish as mp
+
+    def boom(*a):
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(mp, "_write_managed", boom)
+    with pytest.raises(RuntimeError, match="connection reset"):
+        mp._try_write(None, None, "t", date(2026, 5, 20), [])
+
+
+def test_permanent_stage_errors_are_not_retried(monkeypatch, tmp_path):
+    from gbdp.pipeline import runner
+    from gbdp.pipeline.errors import PermanentStageError
+
+    calls = []
+
+    def stage(*a):
+        calls.append(1)
+        raise PermanentStageError("schema clash")
+
+    monkeypatch.setenv("GBDP_DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner, "_pipeline_stages", lambda: {"register_uc": stage})
+    monkeypatch.setattr(runner, "_write_stage_audit", lambda *a: None)
+    with pytest.raises(Exception):
+        runner.run_pipeline("2026-05-20", "2026-05-20", "configs/sources.yaml", True,
+                            stages=["register_uc"], retries=2, retry_delay_s=0)
+    assert len(calls) == 1
+
+
 def test_only_lossless_casts_are_applied():
     types = pytest.importorskip("pyspark.sql.types")
     from gbdp.catalog.managed_publish import _lossless_cast
