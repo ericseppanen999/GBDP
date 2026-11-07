@@ -119,6 +119,15 @@ def check_pa_per_game(wh: Warehouse, rep: Report, start: str) -> None:
     rep.line(status, "MLB plate appearances per game", detail)
 
 
+def check_pa_teams(wh: Warehouse, rep: Report, start: str) -> None:
+    rows = wh.query(f"""
+        SELECT source, count(*), avg(CASE WHEN batting_team_id IS NOT NULL AND fielding_team_id IS NOT NULL THEN 1 ELSE 0 END)
+        FROM {GOLD}.fact_plate_appearance WHERE dt >= '{start}' GROUP BY source ORDER BY 1""")
+    for source, n, rate in rows:
+        rate = _f(rate)
+        rep.line("PASS" if rate >= 0.95 else "FAIL", f"PA teams filled ({source})", f"{rate:.1%} of {n} PAs")
+
+
 def check_uniqueness(wh: Warehouse, rep: Report, start: str) -> None:
     keys = {
         "fact_game": "game_id",
@@ -241,6 +250,7 @@ def main() -> int:
     checks = [
         lambda: check_daily_counts(wh, rep, args.start),
         lambda: check_pa_per_game(wh, rep, args.start),
+        lambda: check_pa_teams(wh, rep, args.start),
         lambda: check_uniqueness(wh, rep, args.start),
         lambda: check_dim_player_current(wh, rep),
         lambda: check_bio_fill(wh, rep),
