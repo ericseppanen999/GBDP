@@ -548,6 +548,17 @@ def test_quality_retry_cannot_pass_a_hard_failure(gold_env, monkeypatch):
 
 # --- Appendix A: the nightly job has to cover a 7-day correction window, and --
 # needs --force, or refetched dates can't replace what was stored the first time.
+def test_nightly_schedule_state_comes_from_a_bundle_variable():
+    # A hardcoded UNPAUSED re-enabled the nightly on every push, undoing a
+    # pause made through the API mid-backfill.
+    import yaml
+
+    config = yaml.safe_load(Path("databricks.yml").read_text(encoding="utf-8"))
+    schedule = config["resources"]["jobs"]["gbdp_nightly"]["schedule"]
+    assert schedule["pause_status"] == "${var.nightly_pause_status}"
+    assert config["variables"]["nightly_pause_status"]["default"] in ("PAUSED", "UNPAUSED")
+
+
 def test_nightly_job_runs_the_correction_window_with_force():
     import yaml
 

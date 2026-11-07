@@ -22,6 +22,12 @@ variables:
     description: UC schema for gold tables
     default: gold_gbdp
 
+  # Every deploy applies this to the nightly schedule, overriding a pause made
+  # in the UI or API. Change it here (and push) to turn the nightly on or off.
+  nightly_pause_status:
+    description: PAUSED or UNPAUSED for the gbdp-nightly schedule
+    default: PAUSED
+
 # Files synced to the workspace on every deploy (data/ excluded — too large).
 sync:
   exclude:
@@ -60,7 +66,7 @@ resources:
       schedule:
         quartz_cron_expression: "0 0 4 * * ?"
         timezone_id: UTC
-        pause_status: UNPAUSED
+        pause_status: ${var.nightly_pause_status}
 
       environments:
         - environment_key: default
