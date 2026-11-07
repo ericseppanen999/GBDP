@@ -107,6 +107,9 @@ def _normalize_rosters(root: Path, dt: date, force: bool) -> Path:
     rows = _read_bronze("rosters", dt, root)
     normalized: List[Dict[str, Any]] = []
     include_partition_cols = include_partition_cols_silver()
+    # Bronze from before the NPB team-ID fix repeats each roster ~110 times
+    # (4.7M silver rows for ~1,430 players); a roster is a set of (team, player).
+    seen: set = set()
     for r in rows:
         teams_raw = r.get("teams")
         teams = _parse_json_maybe(teams_raw)
@@ -137,6 +140,10 @@ def _normalize_rosters(root: Path, dt: date, force: bool) -> Path:
                         "throws": p.get("throws"),
                         "raw_json": stable_json_dumps(p),
                     }
+                key = (team_id, row["player_id"] or row["raw_json"])
+                if key in seen:
+                    continue
+                seen.add(key)
                 if include_partition_cols:
                     row["dt"] = dt.isoformat()
                     row["source"] = "npb_spaia"

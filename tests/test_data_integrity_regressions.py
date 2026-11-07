@@ -610,6 +610,21 @@ def test_only_lossless_casts_are_applied():
     assert not _lossless_cast(types.LongType(), types.DoubleType())
 
 
+def test_npb_silver_rosters_are_one_row_per_team_and_player(monkeypatch, tmp_path):
+    import json
+
+    from gbdp.silver import npb
+
+    team = {"team_id": "1", "body_text": json.dumps({"players": [{"player_id": "9"}, {"player_id": "8"}]})}
+    # The same roster payload repeated across bronze rows, as in May-June.
+    monkeypatch.setattr(npb, "_read_bronze", lambda entity, dt, root: [{"teams": json.dumps([team])}] * 3)
+
+    out = npb._normalize_rosters(tmp_path, date(2026, 5, 13), True)
+
+    rows = read_parquet_rows(Path(out).parent)
+    assert sorted(r["player_id"] for r in rows) == ["8", "9"]
+
+
 # --- Bug 23: May-June NPB bronze repeats each roster ~110 times (157,000 rows
 # for ~1,430 players), which bloated fact_roster to 4.7M rows.
 def test_fact_roster_is_one_row_per_team_and_player(gold_env):
