@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import date, timedelta
 from functools import lru_cache
@@ -592,7 +593,8 @@ def _write_dim_team(root: Path, dt: date, bridge: Dict[tuple, str], force: bool)
     missing = [r for r in dedup.values() if not r.get("team_abbrev") or not r.get("home_city")]
     if missing:
         prev_dt = _latest_dt_before(root, "dim_team", dt)
-        if prev_dt and prev_dt.year == dt.year:
+        fresh = os.getenv("GBDP_FRESH_DIMS_BEFORE")
+        if prev_dt and not (fresh and prev_dt < date.fromisoformat(fresh)):
             known = {t["team_id"]: t for t in _read_gold_snapshot(root, "dim_team", prev_dt) if t.get("is_current")}
             for r in missing:
                 k = known.get(r["team_id"]) or {}
@@ -1856,11 +1858,13 @@ def _apply_scd2(
     attr_fields: List[str],
 ) -> List[Dict[str, Any]]:
     prev_dt = _latest_dt_before(root, table, dt)
-    # A key missing from today's rows is carried forward as current, so a
-    # snapshot from another season would keep every entity of that season
-    # current forever: 2026-05-13 picked up the 2024-05-18 test-day snapshot.
-    # Each season's dims start from its own data (fixes CR-002).
-    if prev_dt and prev_dt.year != dt.year:
+    # A key missing from today's rows is carried forward as current (across
+    # seasons too), so a rebuild must say where history starts: with
+    # --fresh-dims-before D, snapshots dated before D are ignored. Without it
+    # 2026-05-13 inherited the 2024-05-18 test day's players as current
+    # forever (CR-002; explicit rather than a year rule, CR-017).
+    fresh = os.getenv("GBDP_FRESH_DIMS_BEFORE")
+    if prev_dt and fresh and prev_dt < date.fromisoformat(fresh):
         prev_dt = None
     if not prev_dt:
         for r in new_rows:

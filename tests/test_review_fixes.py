@@ -27,15 +27,24 @@ def _silver(root, source, entity, day, rows):
     pq.write_table(pa.Table.from_pylist(rows), part / "part-00001.parquet")
 
 
-def test_dims_do_not_carry_a_previous_seasons_snapshot(env):
-    silver, gold = env
+def _two_seasons(silver, gold):
     _silver(silver, "mlb_statsapi", "rosters", "2024-05-18", [{"team_id": "1", "player_id": "old", "player_name": "Old Guy"}])
     publish._write_dim_player(gold, date(2024, 5, 18), {}, True)
     _silver(silver, "mlb_statsapi", "rosters", "2026-05-13", [{"team_id": "1", "player_id": "new", "player_name": "New Guy"}])
     publish._write_dim_player(gold, date(2026, 5, 13), {}, True)
+    return {r["primary_name"] for r in read_parquet_rows(gold / "dim_player" / "dt=2026-05-13") if r["is_current"]}
 
-    current = {r["primary_name"] for r in read_parquet_rows(gold / "dim_player" / "dt=2026-05-13") if r["is_current"]}
-    assert current == {"New Guy"}
+
+def test_a_rebuild_with_fresh_dims_ignores_earlier_snapshots(env, monkeypatch):
+    # CR-002: the 2026 rebuild must not inherit the 2024 test day's players.
+    monkeypatch.setenv("GBDP_FRESH_DIMS_BEFORE", "2026-05-13")
+    assert _two_seasons(*env) == {"New Guy"}
+
+
+def test_without_the_flag_entities_carry_across_seasons(env, monkeypatch):
+    # CR-017: no silent season reset; last season's players keep their rows.
+    monkeypatch.delenv("GBDP_FRESH_DIMS_BEFORE", raising=False)
+    assert _two_seasons(*env) == {"Old Guy", "New Guy"}
 
 
 def test_a_day_without_the_team_list_keeps_abbreviation_and_city(env):

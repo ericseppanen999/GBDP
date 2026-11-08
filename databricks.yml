@@ -250,6 +250,9 @@ resources:
           default: all
         - name: stages
           default: ""
+        # Rebuild SCD2 dims from scratch from this date (e.g. a backfill's start).
+        - name: fresh_dims_before
+          default: ""
 
       environments:
         - environment_key: default
@@ -279,6 +282,8 @@ resources:
               - "{{job.parameters.leagues}}"
               - --stages
               - "{{job.parameters.stages}}"
+              - --fresh-dims-before
+              - "{{job.parameters.fresh_dims_before}}"
               - --sources
               - ${workspace.file_path}/configs/sources.yaml
               - --force

@@ -19,9 +19,10 @@ from pathlib import Path
 import requests
 
 HITS = {"1B", "2B", "3B", "HR"}
-# Games that were played to a result. "Completed Early" (rain-shortened) and
-# "Game Over" have real box scores too and were silently skipped (CR-012e).
-PLAYED = {"Final", "Game Over", "Completed Early"}
+# A game is reconciled when statsapi's abstractGameState is "Final": that
+# covers "Final", "Game Over", "Completed Early: Rain", "Final: Tied", ...
+# (an exact detailedState list missed variants, CR-012e).
+PLAYED = {"Final"}
 
 
 class Report:
@@ -55,7 +56,8 @@ def mlb_truth(day: str) -> dict:
         for g in d["games"]:
             ls = g.get("linescore", {}).get("teams", {})
             games[str(g["gamePk"])] = {
-                "status": g["status"]["detailedState"],
+                "status": g["status"].get("abstractGameState"),
+                "detail": g["status"].get("detailedState"),
                 "runs": (ls.get("home", {}).get("runs"), ls.get("away", {}).get("runs")),
                 "hits": (ls.get("home", {}).get("hits"), ls.get("away", {}).get("hits")),
             }
@@ -73,6 +75,10 @@ def reconcile_mlb(root: Path, day: str, rep: Report) -> None:
     truth = mlb_truth(day)
     final = {pk: g for pk, g in truth.items() if g["status"] in PLAYED}
     print(f"\nMLB {day}: source has {len(truth)} games, {len(final)} final")
+    # Suspended games resume another day; their partial PAs are listed, not hidden.
+    suspended = sorted(pk for pk, g in truth.items() if "Suspended" in str(g.get("detail")))
+    if suspended:
+        print(f"      suspended (not reconciled today): {suspended}")
 
     # Bronze: every entity fetched and parsed.
     for entity in ("schedule", "rosters", "boxscore", "player_bios"):
@@ -129,7 +135,7 @@ def npb_truth(root: Path, day: str) -> dict:
     embedded box line, the only place SPAIA gives them."""
     finals = {}
     for g in _rows(root, "silver", "npb_spaia", "games", f"dt={day}"):
-        if g.get("game_id") and "中止" not in str(g.get("game_state_name") or ""):
+        if g.get("game_id") and g.get("game_state_name") == "試合終了":
             finals[str(g["game_id"])] = {"runs": (g.get("home_score"), g.get("away_score")), "hits": None,
                                          "state": g.get("game_state_name")}
     for r in _rows(root, "silver", "npb_spaia", "game_pbp", f"dt={day}"):

@@ -754,7 +754,8 @@ def test_backfill_job_passes_its_parameters_to_the_cli():
     config = yaml.safe_load(Path("databricks.yml").read_text(encoding="utf-8"))
     job = config["resources"]["jobs"]["gbdp_backfill"]
     params = job["tasks"][0]["spark_python_task"]["parameters"]
-    flags = {"start_date": "--start", "end_date": "--end", "leagues": "--leagues", "stages": "--stages"}
+    flags = {"start_date": "--start", "end_date": "--end", "leagues": "--leagues", "stages": "--stages",
+             "fresh_dims_before": "--fresh-dims-before"}
 
     assert {p["name"] for p in job["parameters"]} == set(flags)
     for name, flag in flags.items():
