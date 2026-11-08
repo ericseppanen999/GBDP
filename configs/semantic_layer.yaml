@@ -621,26 +621,26 @@ views:
   # local DuckDB connection, so /query and SQL users can use them too. Each
   # metric view reads one of them.
   v_player_current:
-    description: Current version of every player, from the latest dim_player snapshot. One row per player_id.
+    description: Current version of every player, from the latest dim_player snapshot holding the player (each snapshot carries every known player forward, so that is the latest dt). One row per player_id.
     sql: |
       SELECT player_id, primary_name, bats, throws, primary_position, league_id
       FROM (
         SELECT p.player_id, p.primary_name, p.bats, p.throws, p.primary_position, p.league_id,
-               ROW_NUMBER() OVER (PARTITION BY p.player_id ORDER BY p.valid_from_dt DESC) AS rn
+               ROW_NUMBER() OVER (PARTITION BY p.player_id ORDER BY p.dt DESC, p.valid_from_dt DESC) AS rn
         FROM {{table:dim_player}} p
-        WHERE p.is_current AND p.dt = (SELECT MAX(dt) FROM {{table:dim_player}})
+        WHERE p.is_current
       ) ranked
       WHERE rn = 1
 
   v_team_current:
-    description: Current version of every team, from the latest dim_team snapshot. One row per team_id.
+    description: Current version of every team, from the latest dim_team snapshot holding the team (each snapshot carries every known team forward). One row per team_id.
     sql: |
       SELECT team_id, team_name, team_abbrev, home_city, league_id
       FROM (
         SELECT t.team_id, t.team_name, t.team_abbrev, t.home_city, t.league_id,
-               ROW_NUMBER() OVER (PARTITION BY t.team_id ORDER BY t.valid_from_dt DESC) AS rn
+               ROW_NUMBER() OVER (PARTITION BY t.team_id ORDER BY t.dt DESC, t.valid_from_dt DESC) AS rn
         FROM {{table:dim_team}} t
-        WHERE t.is_current AND t.dt = (SELECT MAX(dt) FROM {{table:dim_team}})
+        WHERE t.is_current
       ) ranked
       WHERE rn = 1
 

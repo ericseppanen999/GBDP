@@ -156,8 +156,11 @@ class SemanticLayer:
         return [v for v in self.views if v in needed]
 
     def base_tables(self, metric_view: str) -> List[str]:
+        """Gold tables a metric view reads: its source view's first, then its joins'."""
         mv = self.metric_views[metric_view]
-        views = self.view_dependencies([mv.source] + [j.source for j in mv.joins])
+        views: List[str] = []
+        for name in [mv.source] + [j.source for j in mv.joins]:
+            views += self.view_dependencies([name])
         return list(dict.fromkeys(t for v in views for t in self.views[v].tables))
 
     def metric_summary(self, name: str) -> Dict[str, Any]:

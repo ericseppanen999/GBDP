@@ -10,7 +10,7 @@ from __future__ import annotations
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from gbdp.mcp_server import derived_metrics, describe_table, list_tables, query
+from gbdp.mcp_server import describe_metric, describe_table, list_metrics, list_tables, query
 
 
 def test_list_tables_returns_known_tables_with_descriptions():
@@ -35,10 +35,17 @@ def test_describe_table_reports_unknown_table_instead_of_crashing():
     assert "known_tables" in detail
 
 
-def test_derived_metrics_includes_batting_average_formula():
-    metrics = derived_metrics()
-    assert "batting_average" in metrics
-    assert "ab" in metrics["batting_average"].lower()
+def test_list_metrics_includes_batting_average():
+    metrics = {m["name"]: m for m in list_metrics()}
+    assert "avg" in metrics and metrics["avg"]["metric_view"] == "mv_batting"
+    detail = describe_metric("avg")
+    assert "is_ab" in detail["expr"] and "fact_plate_appearance" in detail["base_tables"]
+    assert {"player", "team", "league", "season", "date"} <= {d["role"] for d in detail["dimensions"]}
+
+
+def test_describe_metric_reports_unknown_metric_instead_of_crashing():
+    detail = describe_metric("batting_average")
+    assert "error" in detail and "avg" in detail["known_metrics"]
 
 
 def test_query_tool_rejects_unsafe_sql_without_raising():

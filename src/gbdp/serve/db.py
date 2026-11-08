@@ -189,19 +189,23 @@ def _duckdb_connection():
     root = gold_root()
     con = duckdb.connect()
     gold_dir = os.path.abspath(str(root))
+    sl = semantic_layer()
     for table in _gold_tables():
         glob = os.path.join(gold_dir, table, "**", "*.parquet")
-        # hive_types_autocast=false keeps dt a string, as it is in the files and
-        # in Unity Catalog. Autocast makes it a DATE, which DuckDB 1.5 then
-        # mis-binds (an internal error) in YEAR(CAST(dt AS DATE)) and windows.
+        # dt stays the string the files hold, as in Unity Catalog. Taking it
+        # from the dt=... folder instead (hive partitioning) trips DuckDB 1.5
+        # internal errors ("Failed to bind column reference dt") once a view
+        # filters or windows on it. Every table gold/publish.py and identity
+        # write carries dt in the file (test_semantic_layer_schema checks);
+        # the audit tables may not, so they keep the folder's.
+        hive = "false" if table in sl.tables else "true"
         try:
             con.execute(
-                f"CREATE OR REPLACE VIEW \"{table}\" AS "
-                f"SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_types_autocast=false)"
+                f"CREATE OR REPLACE VIEW \"{table}\" AS SELECT * FROM read_parquet('{glob}', "
+                f"union_by_name=true, hive_partitioning={hive}, hive_types_autocast=false)"
             )
         except Exception:
             continue
-    sl = semantic_layer()
     target = duckdb_target()
     for name, view in sl.views.items():
         try:

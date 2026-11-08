@@ -3,12 +3,16 @@ from __future__ import annotations
 import hmac
 import os
 from datetime import date as Date
-from typing import List
+from typing import Any, List, Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from gbdp.serve.db import Filter, UnsafeSqlError, load_semantic_layer, query, run_sql
+from gbdp.semantic.compile import FILTER_OPS, Filter as MetricFilter, MetricRequest
+from gbdp.semantic.layer import SemanticLayerError
+from gbdp.serve.db import (
+    Filter, UnsafeSqlError, compute_metrics, load_semantic_layer, query, run_sql, semantic_layer,
+)
 
 app = FastAPI(title="GBDP API", version="0.1.0")
 
@@ -120,9 +124,82 @@ def breakout_candidates(league: str | None = None, season: int | None = None, as
 
 @app.get("/schema")
 def schema():
-    """Semantic layer: table descriptions, columns, caveats, derived-metric
-    formulas. Read this before writing a /query SQL string."""
+    """Semantic layer: table descriptions, columns, caveats, vocabularies,
+    views, metric views and metric definitions. Read this before writing a
+    /query SQL string."""
     return load_semantic_layer()
+
+
+@app.get("/metrics")
+def metrics():
+    """Every governed metric: name, description, metric view and format.
+    GET /metrics/{name} for its SQL, dimensions and caveats."""
+    sl = semantic_layer()
+    return [
+        {"name": m.name, "description": m.description, "metric_view": m.metric_view, "format": m.format}
+        for m in sl.metrics.values()
+    ]
+
+
+@app.get("/metrics/{name}")
+def metric(name: str):
+    try:
+        return semantic_layer().metric_summary(name)
+    except SemanticLayerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+class MetricFilterIn(BaseModel):
+    dimension: str
+    op: Literal[tuple(FILTER_OPS)] = "eq"  # type: ignore[valid-type]
+    value: Any = None
+
+
+class HavingIn(BaseModel):
+    metric: str
+    op: Literal["eq", "ne", "gt", "gte", "lt", "lte"]
+    value: float
+
+
+class OrderIn(BaseModel):
+    column: str
+    direction: Literal["asc", "desc"] = "desc"
+
+
+class MetricQuery(BaseModel):
+    metrics: List[str] = Field(min_length=1)
+    dimensions: List[str] = []
+    filters: List[MetricFilterIn] = []
+    start: Optional[Date] = None
+    end: Optional[Date] = None
+    having: List[HavingIn] = []
+    order_by: List[OrderIn] = []
+    limit: int = Field(1000, ge=1, le=100_000)
+
+
+@app.post("/metrics/query")
+def metric_query(req: MetricQuery):
+    """Compute metrics by dimensions, e.g. {"metrics": ["avg", "ops"],
+    "dimensions": ["batter_name"], "filters": [{"dimension": "league_code",
+    "value": "MLB"}], "start": "2026-05-01", "end": "2026-05-31"}. All
+    metrics must share a metric view. The SQL comes from the semantic layer;
+    values are bound, never pasted in. Returns rows and the SQL used."""
+    request = MetricRequest(
+        metrics=req.metrics,
+        dimensions=req.dimensions,
+        filters=[MetricFilter(f.dimension, f.op, f.value) for f in req.filters],
+        start=req.start.isoformat() if req.start else None,
+        end=req.end.isoformat() if req.end else None,
+        having=[(h.metric, h.op, h.value) for h in req.having],
+        order_by=[(o.column, o.direction) for o in req.order_by],
+        limit=req.limit,
+    )
+    try:
+        return compute_metrics(request)
+    except SemanticLayerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"metric query failed: {exc}")
 
 
 class QueryRequest(BaseModel):
