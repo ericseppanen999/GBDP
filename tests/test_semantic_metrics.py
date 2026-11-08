@@ -209,9 +209,11 @@ def test_season_phase_rules_cover_npb_league_games():
     got = {t: con.execute(f"SELECT {case} FROM (SELECT ? AS t, ? AS s)", [t, src]).fetchone()[0]
            for t, src in [("セ・リーグ公式戦", "npb_spaia"), ("パ・リーグ公式戦", "npb_spaia"), ("日本シリーズ", "npb_spaia"),
                           ("W", "mlb_statsapi"), ("F", "mlb_statsapi"), ("S", "mlb_statsapi"),
-                          ("R", "npb_spaia"), ("Z", "mlb_statsapi")]}
+                          ("SMBC日本シリーズ2026", "npb_spaia"), ("マイナビオールスターゲーム", "npb_spaia"),
+                          ("オープン戦", "npb_spaia"), ("R", "npb_spaia"), ("Z", "mlb_statsapi")]}
     assert got == {"セ・リーグ公式戦": "regular", "パ・リーグ公式戦": "regular", "日本シリーズ": "postseason",
-                   "W": "postseason", "F": "postseason", "S": "preseason", "R": "other", "Z": "other"}
+                   "W": "postseason", "F": "postseason", "S": "preseason", "R": "other", "Z": "other",
+                   "SMBC日本シリーズ2026": "postseason", "マイナビオールスターゲーム": "allstar", "オープン戦": "preseason"}
 
 
 # --- pitches ---------------------------------------------------------------------------

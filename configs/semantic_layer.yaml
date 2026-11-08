@@ -133,7 +133,10 @@ vocabularies:
       Which part of the season a game belongs to, mapped from
       fact_game.game_type per source. Rules are checked in order and the
       first match wins: values match exactly, suffixes match the end of the
-      text. A game_type no rule matches is other (kept, never dropped); a
+      text, contains matches anywhere (so a sponsor's prefix, as in
+      SMBC日本シリーズ, still maps). The NPB league names are confirmed from
+      silver; the NPB postseason, All-Star and preseason names are not yet,
+      hence contains. A game_type no rule matches is other (kept, never dropped); a
       null game_type (sources without one, and rows published before gold
       had the column) is unknown. Team records default to regular and
       unknown (see mv_team_games).
@@ -144,9 +147,9 @@ vocabularies:
       - {phase: preseason, source: mlb_statsapi, values: [S]}
       - {phase: exhibition, source: mlb_statsapi, values: [E]}
       - {phase: regular, source: npb_spaia, suffixes: [公式戦], values: [セ・パ交流戦]}
-      - {phase: postseason, source: npb_spaia, values: [クライマックスシリーズ, 日本シリーズ]}
-      - {phase: allstar, source: npb_spaia, values: [オールスターゲーム]}
-      - {phase: preseason, source: npb_spaia, values: [オープン戦]}
+      - {phase: postseason, source: npb_spaia, contains: [クライマックスシリーズ, 日本シリーズ]}
+      - {phase: allstar, source: npb_spaia, contains: [オールスター]}
+      - {phase: preseason, source: npb_spaia, contains: [オープン戦]}
     values: [regular, postseason, allstar, preseason, exhibition, other, unknown]
     groups:
       record_default: [regular, unknown]

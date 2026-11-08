@@ -40,8 +40,9 @@ def validate(catalog: str, schema: str, scratch: str, uc_mode: str, warehouse, o
     """Create every view and metric view in catalog.scratch over catalog.schema's
     tables, then SELECT every measure of every metric view. Returns failures."""
     from gbdp.semantic import uc
+    from gbdp.semantic.render import databricks_target, render
 
-    if scratch in {schema} | PROTECTED_SCHEMAS:
+    if scratch.lower() in {schema.lower()} | PROTECTED_SCHEMAS:
         raise SystemExit(f"--validate-in must be a scratch schema, not {scratch} "
                          f"(never {', '.join(sorted(PROTECTED_SCHEMAS | {schema}))})")
     sl = semantic.load(ROOT / "configs" / "semantic_layer.yaml")
@@ -68,6 +69,23 @@ def validate(catalog: str, schema: str, scratch: str, uc_mode: str, warehouse, o
             continue
         measures = ", ".join(f"MEASURE(`{m}`) AS `{m}`" for m, x in sl.metrics.items() if x.metric_view == name)
         run(f"query {name}", f"SELECT {measures} FROM {catalog}.{scratch}.{name}")
+    # Game types no season_phase rule knows: their games drop out of the
+    # regular-season default and of every phase but other.
+    case = render("{{season_phase:game_type:source}}", sl, databricks_target(catalog, schema, uc_mode))
+    try:
+        rows = warehouse.query(
+            f"SELECT source, game_type, count(*) FROM {catalog}.{schema}.fact_game "
+            f"WHERE source IN ('mlb_statsapi', 'npb_spaia') AND {case} = 'other' GROUP BY ALL ORDER BY 1, 2")
+        if rows:
+            failures += 1
+            out("FAIL  unmapped game types (add them to vocabularies.season_phase):")
+            for source, game_type, n in rows:
+                out(f"        {source} {game_type!r}: {n} row(s)")
+        else:
+            out("OK    every MLB and NPB game_type maps to a season phase")
+    except RuntimeError as exc:
+        failures += 1
+        out(f"FAIL  game type check: {str(exc)[:300]}")
     out(f"{failures} failure(s); drop the scratch schema with: DROP SCHEMA {catalog}.{scratch} CASCADE")
     return failures
 

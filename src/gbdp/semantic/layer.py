@@ -353,6 +353,13 @@ def validate(layer: SemanticLayer) -> None:
                     errors.append(f"{where}: {{{{season_phase:...}}}} needs vocabularies.season_phase.rules")
                 elif arg.count(":") != 1:
                     errors.append(f"{where}: write {{{{season_phase:GAME_TYPE_EXPR:SOURCE_EXPR}}}}")
+                for rule in (v.rules if v else ()):
+                    extra = set(rule) - {"phase", "source", "values", "suffixes", "contains"}
+                    if extra or not rule.get("phase") or not rule.get("source") or not (
+                            rule.get("values") or rule.get("suffixes") or rule.get("contains")):
+                        errors.append(f"season_phase rule {rule} needs phase, source and values/suffixes/contains")
+                    elif rule["phase"] not in v.values:
+                        errors.append(f"season_phase rule {rule}: phase {rule['phase']} is not in its values")
             elif kind not in ("table", "view", "list", "label", "final", "league_of", "col", "season_phase"):
                 errors.append(f"{where}: unknown placeholder {{{{{kind}:...}}}}")
 

@@ -121,6 +121,7 @@ def render(sql: str, layer: SemanticLayer, target: Target) -> str:
                 if rule.get("values"):
                     tests.append(f"{type_expr} IN {in_list(rule['values'], target)}")
                 tests += [f"{type_expr} LIKE {target.string('%' + sfx)}" for sfx in rule.get("suffixes") or ()]
+                tests += [f"{type_expr} LIKE {target.string('%' + part + '%')}" for part in rule.get("contains") or ()]
                 whens.append(f"WHEN {source_expr} = {target.string(rule['source'])} AND ({' OR '.join(tests)}) "
                              f"THEN {target.string(rule['phase'])}")
             return "CASE " + " ".join(whens) + " ELSE 'other' END"

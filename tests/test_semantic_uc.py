@@ -145,11 +145,15 @@ def test_validation_creates_only_in_the_scratch_schema():
             self.sql.append(sql)
             if "mv_run_expectancy" in sql and sql.startswith("CREATE"):
                 raise RuntimeError("TABLE_OR_VIEW_NOT_FOUND run_expectancy_daily")
+            if "= 'other'" in sql:
+                return [["npb_spaia", "ファーム", "3"]]
             return []
 
     wh, lines = _Warehouse(), []
     failures = mod.validate("gbdp", "gold_gbdp", "semantic_check", "managed", wh, out=lines.append)
-    assert failures == 1
+    assert failures == 2  # the metric view, and an unmapped game type
+    assert any("'ファーム': 3 row(s)" in line for line in lines)
+    assert any("FROM gbdp.gold_gbdp.fact_game" in s for s in wh.sql)
     writes = [s for s in wh.sql if not s.startswith("SELECT")]
     assert writes[0] == "CREATE SCHEMA IF NOT EXISTS gbdp.semantic_check"
     for s in writes[1:]:
@@ -158,12 +162,12 @@ def test_validation_creates_only_in_the_scratch_schema():
     # Views read the real tables and the scratch views.
     assert "FROM gbdp.gold_gbdp.fact_boxscore_batting" in "\n".join(writes)
     assert "source: gbdp.semantic_check.v_plate_appearance" in "\n".join(writes)
-    queries = [s for s in wh.sql if s.startswith("SELECT")]
+    queries = [s for s in wh.sql if s.startswith("SELECT") and "MEASURE(" in s]
     assert len(queries) == len(SL.metric_views) - 1 and "MEASURE(`avg`)" in queries[0]
     import pytest
 
     before = len(wh.sql)
-    for scratch in ("gold_gbdp", "silver_gbdp", "bronze_gbdp"):
+    for scratch in ("gold_gbdp", "silver_gbdp", "bronze_gbdp", "GOLD_GBDP"):
         with pytest.raises(SystemExit):
             mod.validate("gbdp", "other_gold", scratch, "managed", wh)
     with pytest.raises(SystemExit):
