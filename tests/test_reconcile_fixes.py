@@ -8,6 +8,28 @@ from gbdp.gold import publish
 from gbdp.utils.ids import ulid_from_key
 
 
+def test_mlb_rosters_are_fetched_as_of_the_partition_date():
+    from gbdp.bronze.writer import RawPayload
+    from gbdp.connectors.base import Partition
+    from gbdp.connectors.mlb_statsapi import MlbStatsApiConnector
+
+    calls = []
+
+    class Fake(MlbStatsApiConnector):
+        def http_get(self, url, params):
+            calls.append((url, dict(params)))
+            body = json.dumps({"teams": [{"id": 147}]}) if url.endswith("/teams") else json.dumps({"roster": []})
+            return RawPayload(source="mlb_statsapi", entity="x", dt="2026-06-10", url=url, params=params,
+                              status_code=200, fetched_at_utc="2026-11-07T00:00:00Z", checksum="c",
+                              content_type="application/json", body_text=body)
+
+    payload = Fake(None, None, "https://statsapi.mlb.com/api/v1").fetch_partition(
+        Partition(dt="2026-06-10", entity="rosters", keys={}))
+    roster_calls = [p for u, p in calls if u.endswith("/roster")]
+    assert roster_calls and all(p["date"] == "2026-06-10" for p in roster_calls)
+    assert payload.params["date"] == "2026-06-10"
+
+
 def test_a_bridge_miss_still_gets_the_deterministic_canonical_id():
     assert publish._canonical({}, "player", "mlb_statsapi", 665862) == ulid_from_key("player:source:mlb_statsapi:665862")
     assert publish._canonical({("player", "mlb_statsapi", "1"): "OVERRIDE"}, "player", "mlb_statsapi", 1) == "OVERRIDE"

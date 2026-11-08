@@ -87,6 +87,64 @@ def _f(x) -> float:
     return float(x) if x is not None else 0.0
 
 
+BRONZE_VOL = f"/Volumes/{CATALOG}/bronze_gbdp/bronze_vol/gbdp/bronze"
+# Entities every in-season day should have, and the smallest body that counts
+# as real data (an empty schedule or roster response is a few hundred bytes).
+BRONZE_ENTITIES = [
+    ("mlb_statsapi", "schedule", 2_000),
+    ("mlb_statsapi", "rosters", 50_000),
+    ("mlb_statsapi", "boxscore", 50_000),
+    ("mlb_statsapi", "player_bios", 100_000),
+    ("mlb_statcast", "pitches", 100_000),
+    ("npb_spaia", "games", 1_000),
+    ("npb_spaia", "rosters", 50_000),
+    ("npb_spaia", "game_pbp", 50_000),
+]
+
+
+def check_bronze(wh: Warehouse, rep: Report, start: str) -> None:
+    """Every raw payload records its HTTP status, so fetch health is auditable from bronze alone."""
+    off_days: dict = {}
+    loaded: dict = {}
+    for source, entity, min_bytes in BRONZE_ENTITIES:
+        path = f"{BRONZE_VOL}/raw/{source}/{entity}"
+        try:
+            rows = wh.query(f"""
+                WITH f AS (
+                  SELECT regexp_extract(_metadata.file_path, 'dt=([0-9-]+)', 1) AS dt,
+                         CAST(status_code AS INT) AS status, fetched_at_utc, length(body_text) AS bytes
+                  FROM read_files('{path}', format => 'json')
+                ), latest AS (
+                  SELECT dt, max_by(status, fetched_at_utc) AS status, max_by(bytes, fetched_at_utc) AS bytes,
+                         count(*) AS fetches
+                  FROM f WHERE dt >= '{start}' GROUP BY dt
+                )
+                SELECT dt, status, bytes, fetches FROM latest ORDER BY dt""")
+        except RuntimeError as e:
+            rep.line("FAIL", f"bronze {source}/{entity}", f"unreadable: {str(e)[:120]}")
+            continue
+        # The statement API returns every value as a string.
+        in_season = [r for r in rows if date.fromisoformat(r[0]).month in SEASON_MONTHS]
+        bad_status = [r[0] for r in rows if r[1] is not None and int(r[1]) != 200]
+        thin = [r[0] for r in in_season if int(r[2] or 0) < min_bytes and r[0] not in off_days.get(source, set())]
+        if entity == "games" and source == "npb_spaia":
+            # A small games payload is a day with no NPB games (Mondays, the
+            # All-Star break). Recorded so the other NPB entities skip them too.
+            off_days[source] = {r[0] for r in in_season if int(r[2] or 0) < min_bytes}
+            thin = []
+        # A league's schedule (MLB) / games (NPB) entity defines which dates were
+        # loaded; every other entity of that league should have the same dates.
+        dates = {r[0] for r in rows}
+        league = source.split("_")[0]
+        if entity in ("schedule", "games"):
+            loaded[league] = dates
+        missing = sorted(loaded.get(league, set()) - dates)
+        detail = (f"{len(rows)} dates; missing vs schedule: {missing[:4] or 'none'}"
+                  + (f" (+{len(missing) - 4})" if len(missing) > 4 else "")
+                  + f"; non-200: {bad_status[:5] or 'none'}; in-season under {min_bytes:,} bytes: {thin[:6] or 'none'}")
+        rep.line("FAIL" if bad_status or thin or missing else "PASS", f"bronze {source}/{entity}", detail)
+
+
 def check_daily_counts(wh: Warehouse, rep: Report, start: str) -> None:
     rows = wh.query(f"""
         WITH g AS (SELECT dt, count(*) n FROM {GOLD}.fact_game WHERE dt >= '{start}' GROUP BY dt),
@@ -248,6 +306,7 @@ def main() -> int:
     wh = Warehouse(args.warehouse, args.profile)
     rep = Report()
     checks = [
+        lambda: check_bronze(wh, rep, args.start),
         lambda: check_daily_counts(wh, rep, args.start),
         lambda: check_pa_per_game(wh, rep, args.start),
         lambda: check_pa_teams(wh, rep, args.start),

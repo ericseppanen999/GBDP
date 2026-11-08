@@ -53,8 +53,12 @@ class MlbStatsApiConnector(BaseConnector):
             season = date.fromisoformat(partition.dt).year
             teams = self._get_team_ids()
             all_records: Dict[str, Any] = {"teams": []}
+            # date= is required for a historical roster: without it the API
+            # returns today's, so a backfill stored November's roster on every
+            # past date (Yankees: 33 players "today" vs the real 26 on 2026-06-10).
+            roster_params = {"season": season, "rosterType": "active", "date": partition.dt}
             for team_id in teams:
-                params = {"season": season, "rosterType": "active"}
+                params = roster_params
                 url = f"{self.base_url}/teams/{team_id}/roster"
                 raw = self.http_get(url, params)
                 all_records["teams"].append(
@@ -71,7 +75,7 @@ class MlbStatsApiConnector(BaseConnector):
                 entity="rosters",
                 dt=partition.dt,
                 url=f"{self.base_url}/teams/{{teamId}}/roster",
-                params={"season": season, "rosterType": "active"},
+                params=roster_params,
                 status_code=200,
                 fetched_at_utc=raw.fetched_at_utc if teams else partition.dt + "T00:00:00Z",
                 checksum=checksum,
