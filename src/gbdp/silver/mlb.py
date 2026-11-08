@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import date
 from pathlib import Path
@@ -17,6 +18,8 @@ from gbdp.utils.io import (
     stable_json_dumps,
 )
 from gbdp.utils.time import daterange, parse_date
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_mlb(
@@ -159,11 +162,25 @@ def _normalize_pitches(root: Path, dt: date, force: bool) -> Path:
     rows = _read_bronze("mlb_statcast", "pitches", dt, root)
     normalized: List[Dict[str, Any]] = []
     include_partition_cols = include_partition_cols_silver()
+    # Savant's CSV can list the same pitch twice (seen Nov 2026: byte-identical
+    # lines for balls in play). One row per (game_pk, at_bat_number,
+    # pitch_number); exact repeats are dropped, conflicting ones are counted.
+    seen: Dict[tuple, str] = {}
+    exact_dupes = conflicting = 0
     for r in rows:
         # Bronze from before the type=details fix holds leaderboard rows, not
         # pitches. They have no game_pk and collapse onto a single pitch_id.
         if not r.get("game_pk"):
             continue
+        key = (_as_str(r.get("game_pk")), _as_int(r.get("at_bat_number")), _as_int(r.get("pitch_number")))
+        content = stable_json_dumps({k: v for k, v in r.items() if k != "ingested_at_utc"})
+        if key in seen:
+            if seen[key] == content:
+                exact_dupes += 1
+            else:
+                conflicting += 1
+            continue
+        seen[key] = content
         row = {
                 "game_date": r.get("game_date"),
                 "game_pk": _as_str(r.get("game_pk")),
@@ -191,6 +208,11 @@ def _normalize_pitches(root: Path, dt: date, force: bool) -> Path:
             row["dt"] = dt.isoformat()
             row["source"] = "mlb_statcast"
         normalized.append(row)
+    if exact_dupes or conflicting:
+        logger.warning(
+            "silver mlb_statcast/pitches dt=%s: dropped %d repeated pitch rows (%d identical, %d conflicting; first kept)",
+            dt.isoformat(), exact_dupes + conflicting, exact_dupes, conflicting,
+        )
     out_dir = _silver_path(root, "mlb_statcast", "pitches", dt)
     ensure_dir(out_dir)
     return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
