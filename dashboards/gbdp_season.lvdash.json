@@ -1,0 +1,1094 @@
+{
+  "datasets": [
+    {
+      "name": "totals",
+      "displayName": "Totals",
+      "queryLines": [
+        "SELECT\n",
+        "  (SELECT count(DISTINCT game_id) FROM gbdp.gold_gbdp.fact_game) AS games,\n",
+        "  (SELECT count(*) FROM gbdp.gold_gbdp.fact_plate_appearance) AS plate_appearances,\n",
+        "  (SELECT count(*) FROM gbdp.gold_gbdp.fact_pitch) AS pitches,\n",
+        "  (SELECT count(*) FROM gbdp.gold_gbdp.dim_player WHERE is_current AND dt = (SELECT max(dt) FROM gbdp.gold_gbdp.dim_player)) AS players,\n",
+        "  (SELECT count(DISTINCT dt) FROM gbdp.gold_gbdp.fact_game) AS days_loaded,\n",
+        "  (SELECT max(dt) FROM gbdp.gold_gbdp.fact_game) AS latest_day\n"
+      ]
+    },
+    {
+      "name": "daily_coverage",
+      "displayName": "Daily coverage",
+      "queryLines": [
+        "SELECT CAST(dt AS DATE) AS day,\n",
+        "       CASE source WHEN 'mlb_statcast' THEN 'MLB (Statcast)' WHEN 'npb_spaia' THEN 'NPB' ELSE source END AS feed,\n",
+        "       count(*) AS plate_appearances\n",
+        "FROM gbdp.gold_gbdp.fact_plate_appearance\n",
+        "WHERE dt >= '2026-01-01'\n",
+        "GROUP BY ALL\n"
+      ]
+    },
+    {
+      "name": "run_expectancy",
+      "displayName": "Run expectancy (MLB, season to date)",
+      "queryLines": [
+        "WITH latest AS (\n",
+        "  SELECT max(dt) AS d FROM gbdp.gold_gbdp.run_expectancy WHERE league_code = 'MLB' AND season_year = 2026\n",
+        ")\n",
+        "SELECT\n",
+        "  CASE base_state WHEN 0 THEN 'Bases empty' WHEN 1 THEN '1st' WHEN 2 THEN '2nd' WHEN 3 THEN '1st & 2nd'\n",
+        "                  WHEN 4 THEN '3rd' WHEN 5 THEN '1st & 3rd' WHEN 6 THEN '2nd & 3rd' ELSE 'Loaded' END AS runners,\n",
+        "  max(CASE WHEN outs = 0 THEN exp_runs END) AS outs_0,\n",
+        "  max(CASE WHEN outs = 1 THEN exp_runs END) AS outs_1,\n",
+        "  max(CASE WHEN outs = 2 THEN exp_runs END) AS outs_2,\n",
+        "  sum(pa_count) AS plate_appearances,\n",
+        "  base_state\n",
+        "FROM gbdp.gold_gbdp.run_expectancy, latest\n",
+        "WHERE league_code = 'MLB' AND season_year = 2026 AND dt = latest.d\n",
+        "GROUP BY base_state\n",
+        "ORDER BY base_state\n"
+      ]
+    },
+    {
+      "name": "pitch_mix",
+      "displayName": "Pitch mix and velocity (MLB)",
+      "queryLines": [
+        "SELECT CASE pitch_type WHEN 'FF' THEN '4-seam fastball' WHEN 'SI' THEN 'Sinker' WHEN 'FC' THEN 'Cutter'\n",
+        "         WHEN 'SL' THEN 'Slider' WHEN 'ST' THEN 'Sweeper' WHEN 'CU' THEN 'Curveball' WHEN 'KC' THEN 'Knuckle curve'\n",
+        "         WHEN 'CH' THEN 'Changeup' WHEN 'FS' THEN 'Splitter' WHEN 'SV' THEN 'Slurve' ELSE pitch_type END AS pitch,\n",
+        "       count(*) AS pitches,\n",
+        "       round(avg(release_speed), 1) AS avg_mph,\n",
+        "       round(max(release_speed), 1) AS max_mph\n",
+        "FROM gbdp.gold_gbdp.fact_pitch\n",
+        "WHERE pitch_type IS NOT NULL AND pitch_type <> '' AND release_speed IS NOT NULL\n",
+        "GROUP BY 1\n",
+        "HAVING count(*) >= 50\n",
+        "ORDER BY pitches DESC\n"
+      ]
+    },
+    {
+      "name": "hitters",
+      "displayName": "MLB hitters",
+      "queryLines": [
+        "WITH p AS (\n",
+        "  SELECT player_id, primary_name FROM gbdp.gold_gbdp.dim_player WHERE is_current AND dt = (SELECT max(dt) FROM gbdp.gold_gbdp.dim_player)\n",
+        ")\n",
+        "SELECT p.primary_name AS batter,\n",
+        "       count(*) AS pa,\n",
+        "       count_if(event_type = 'HR') AS hr,\n",
+        "       count_if(event_type IN ('1B', '2B', '3B', 'HR')) AS hits,\n",
+        "       count_if(event_type = 'BB') AS bb,\n",
+        "       count_if(event_type = 'K') AS k,\n",
+        "       round(count_if(event_type IN ('1B', '2B', '3B', 'HR'))\n",
+        "             / nullif(count_if(event_type NOT IN ('BB', 'HBP', 'SAC')), 0), 3) AS avg\n",
+        "FROM gbdp.gold_gbdp.fact_plate_appearance pa JOIN p ON p.player_id = pa.batter_id\n",
+        "WHERE pa.source = 'mlb_statcast'\n",
+        "GROUP BY p.primary_name\n",
+        "HAVING count(*) >= 20\n",
+        "ORDER BY hr DESC, pa DESC\n",
+        "LIMIT 25\n"
+      ]
+    },
+    {
+      "name": "standings",
+      "displayName": "MLB records from games",
+      "queryLines": [
+        "WITH g AS (\n",
+        "  SELECT DISTINCT game_id, home_team_id, away_team_id, home_score, away_score\n",
+        "  FROM gbdp.gold_gbdp.fact_game\n",
+        "  WHERE source = 'mlb_statsapi' AND home_score IS NOT NULL AND away_score IS NOT NULL\n",
+        "    AND home_score <> away_score AND lower(status) LIKE 'final%'\n",
+        "), r AS (\n",
+        "  SELECT home_team_id AS team_id, home_score > away_score AS won, home_score AS rs, away_score AS ra FROM g\n",
+        "  UNION ALL\n",
+        "  SELECT away_team_id, away_score > home_score, away_score, home_score FROM g\n",
+        "), t AS (\n",
+        "  SELECT team_id, team_name FROM gbdp.gold_gbdp.dim_team WHERE is_current AND dt = (SELECT max(dt) FROM gbdp.gold_gbdp.dim_team)\n",
+        ")\n",
+        "SELECT t.team_name AS team, count_if(won) AS w, count_if(NOT won) AS l,\n",
+        "       round(count_if(won) / count(*), 3) AS pct, sum(rs) - sum(ra) AS run_diff\n",
+        "FROM r JOIN t ON t.team_id = r.team_id\n",
+        "GROUP BY t.team_name\n",
+        "ORDER BY pct DESC, run_diff DESC\n"
+      ]
+    },
+    {
+      "name": "quality",
+      "displayName": "Quality check results",
+      "queryLines": [
+        "SELECT CAST(dt AS DATE) AS day, `check`, coalesce(`table`, '') AS table_name,\n",
+        "       CASE WHEN ok THEN 'pass' ELSE 'fail' END AS result\n",
+        "FROM gbdp.gold_gbdp.audit_quality\n",
+        "WHERE dt >= '2026-01-01'\n"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "season",
+      "displayName": "2026 season",
+      "layout": [
+        {
+          "widget": {
+            "name": "title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# Global Baseball Data Platform: 2026 season",
+                "MLB and NPB from public feeds, rebuilt nightly on Databricks (bronze \u2192 silver \u2192 gold, Delta + Unity Catalog)."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "c_games",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "totals",
+                  "fields": [
+                    {
+                      "name": "games",
+                      "expression": "`games`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "games",
+                  "displayName": "Games"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Games"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "c_pas",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "totals",
+                  "fields": [
+                    {
+                      "name": "plate_appearances",
+                      "expression": "`plate_appearances`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "plate_appearances",
+                  "displayName": "Plate appearances"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Plate appearances"
+              }
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "c_pitches",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "totals",
+                  "fields": [
+                    {
+                      "name": "pitches",
+                      "expression": "`pitches`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "pitches",
+                  "displayName": "Pitches"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Pitches"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "c_players",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "totals",
+                  "fields": [
+                    {
+                      "name": "players",
+                      "expression": "`players`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "players",
+                  "displayName": "Players"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Players"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "c_days",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "totals",
+                  "fields": [
+                    {
+                      "name": "days_loaded",
+                      "expression": "`days_loaded`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "days_loaded",
+                  "displayName": "Days loaded"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Days loaded"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "c_latest",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "totals",
+                  "fields": [
+                    {
+                      "name": "latest_day",
+                      "expression": "`latest_day`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "latest_day",
+                  "displayName": "Latest day"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Latest day"
+              }
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "re24",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "run_expectancy",
+                  "fields": [
+                    {
+                      "name": "runners",
+                      "expression": "`runners`"
+                    },
+                    {
+                      "name": "outs_0",
+                      "expression": "`outs_0`"
+                    },
+                    {
+                      "name": "outs_1",
+                      "expression": "`outs_1`"
+                    },
+                    {
+                      "name": "outs_2",
+                      "expression": "`outs_2`"
+                    },
+                    {
+                      "name": "plate_appearances",
+                      "expression": "`plate_appearances`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "runners",
+                    "displayName": "Runners",
+                    "title": "Runners",
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 100000,
+                    "alignContent": "left"
+                  },
+                  {
+                    "fieldName": "outs_0",
+                    "displayName": "0 outs",
+                    "title": "0 outs",
+                    "type": "float",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 100001,
+                    "alignContent": "right"
+                  },
+                  {
+                    "fieldName": "outs_1",
+                    "displayName": "1 out",
+                    "title": "1 out",
+                    "type": "float",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 100002,
+                    "alignContent": "right"
+                  },
+                  {
+                    "fieldName": "outs_2",
+                    "displayName": "2 outs",
+                    "title": "2 outs",
+                    "type": "float",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 100003,
+                    "alignContent": "right"
+                  },
+                  {
+                    "fieldName": "plate_appearances",
+                    "displayName": "PAs",
+                    "title": "PAs",
+                    "type": "integer",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 100004,
+                    "alignContent": "right"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Run expectancy (RE24), MLB 2026 season to date",
+                "showDescription": true,
+                "description": "Average runs scored from each base/out state to the end of the inning."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "standings",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "standings",
+                  "fields": [
+                    {
+                      "name": "team",
+                      "expression": "`team`"
+                    },
+                    {
+                      "name": "w",
+                      "expression": "`w`"
+                    },
+                    {
+                      "name": "l",
+                      "expression": "`l`"
+                    },
+                    {
+                      "name": "pct",
+                      "expression": "`pct`"
+                    },
+                    {
+                      "name": "run_diff",
+                      "expression": "`run_diff`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "team",
+                    "displayName": "Team",
+                    "title": "Team",
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 100000,
+                    "alignContent": "left"
+                  },
+                  {
+                    "fieldName": "w",
+                    "displayName": "W",
+                    "title": "W",
+                    "type": "integer",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 100001,
+                    "alignContent": "right"
+                  },
+                  {
+                    "fieldName": "l",
+                    "displayName": "L",
+                    "title": "L",
+                    "type": "integer",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 100002,
+                    "alignContent": "right"
+                  },
+                  {
+                    "fieldName": "pct",
+                    "displayName": "Pct",
+                    "title": "Pct",
+                    "type": "float",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 100003,
+                    "alignContent": "right"
+                  },
+                  {
+                    "fieldName": "run_diff",
+                    "displayName": "Run diff",
+                    "title": "Run diff",
+                    "type": "integer",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 100004,
+                    "alignContent": "right"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "MLB records, derived from game results"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 4,
+            "width": 3,
+            "height": 10
+          }
+        },
+        {
+          "widget": {
+            "name": "pitch_velo",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "pitch_mix",
+                  "fields": [
+                    {
+                      "name": "pitch",
+                      "expression": "`pitch`"
+                    },
+                    {
+                      "name": "avg(avg_mph)",
+                      "expression": "AVG(`avg_mph`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "pitch",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Pitch"
+                },
+                "y": {
+                  "fieldName": "avg(avg_mph)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Avg mph"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Average velocity by pitch type (MLB, Statcast)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "coverage",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "daily_coverage",
+                  "fields": [
+                    {
+                      "name": "day",
+                      "expression": "`day`"
+                    },
+                    {
+                      "name": "sum(plate_appearances)",
+                      "expression": "SUM(`plate_appearances`)"
+                    },
+                    {
+                      "name": "feed",
+                      "expression": "`feed`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "day",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "Day"
+                },
+                "y": {
+                  "fieldName": "sum(plate_appearances)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Plate appearances"
+                },
+                "color": {
+                  "fieldName": "feed",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "feed"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Plate appearances loaded per day",
+                "showDescription": true,
+                "description": "One line per feed; gaps are days the source had no games or were not loaded."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 16,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "hitters",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "hitters",
+                  "fields": [
+                    {
+                      "name": "batter",
+                      "expression": "`batter`"
+                    },
+                    {
+                      "name": "pa",
+                      "expression": "`pa`"
+                    },
+                    {
+                      "name": "hr",
+                      "expression": "`hr`"
+                    },
+                    {
+                      "name": "hits",
+                      "expression": "`hits`"
+                    },
+                    {
+                      "name": "bb",
+                      "expression": "`bb`"
+                    },
+                    {
+                      "name": "k",
+                      "expression": "`k`"
+                    },
+                    {
+                      "name": "avg",
+                      "expression": "`avg`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "batter",
+                    "displayName": "Batter",
+                    "title": "Batter",
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 100000,
+                    "alignContent": "left"
+                  },
+                  {
+                    "fieldName": "pa",
+                    "displayName": "PA",
+                    "title": "PA",
+                    "type": "integer",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 100001,
+                    "alignContent": "right"
+                  },
+                  {
+                    "fieldName": "hr",
+                    "displayName": "HR",
+                    "title": "HR",
+                    "type": "integer",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 100002,
+                    "alignContent": "right"
+                  },
+                  {
+                    "fieldName": "hits",
+                    "displayName": "H",
+                    "title": "H",
+                    "type": "integer",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 100003,
+                    "alignContent": "right"
+                  },
+                  {
+                    "fieldName": "bb",
+                    "displayName": "BB",
+                    "title": "BB",
+                    "type": "integer",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 100004,
+                    "alignContent": "right"
+                  },
+                  {
+                    "fieldName": "k",
+                    "displayName": "K",
+                    "title": "K",
+                    "type": "integer",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 100005,
+                    "alignContent": "right"
+                  },
+                  {
+                    "fieldName": "avg",
+                    "displayName": "AVG",
+                    "title": "AVG",
+                    "type": "float",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 100006,
+                    "alignContent": "right"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "MLB home run leaders (min 20 PA), from Statcast plate appearances"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 21,
+            "width": 6,
+            "height": 8
+          }
+        }
+      ]
+    },
+    {
+      "name": "quality",
+      "displayName": "Data quality",
+      "layout": [
+        {
+          "widget": {
+            "name": "q_title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# Data quality",
+                "Every gold publish runs these checks; hard failures fail the job. Results come from `gold_gbdp.audit_quality`."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "q_by_check",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "quality",
+                  "fields": [
+                    {
+                      "name": "check",
+                      "expression": "`check`"
+                    },
+                    {
+                      "name": "count(day)",
+                      "expression": "COUNT(`day`)"
+                    },
+                    {
+                      "name": "result",
+                      "expression": "`result`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "check",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Check"
+                },
+                "y": {
+                  "fieldName": "count(day)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Results"
+                },
+                "color": {
+                  "fieldName": "result",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "result"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Check results by check"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "q_by_day",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "quality",
+                  "fields": [
+                    {
+                      "name": "day",
+                      "expression": "`day`"
+                    },
+                    {
+                      "name": "count(check)",
+                      "expression": "COUNT(`check`)"
+                    },
+                    {
+                      "name": "result",
+                      "expression": "`result`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "day",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "Day"
+                },
+                "y": {
+                  "fieldName": "count(check)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Results"
+                },
+                "color": {
+                  "fieldName": "result",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "result"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Check results by day"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "q_table",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "quality",
+                  "fields": [
+                    {
+                      "name": "day",
+                      "expression": "`day`"
+                    },
+                    {
+                      "name": "check",
+                      "expression": "`check`"
+                    },
+                    {
+                      "name": "table_name",
+                      "expression": "`table_name`"
+                    },
+                    {
+                      "name": "result",
+                      "expression": "`result`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "day",
+                    "displayName": "Day",
+                    "title": "Day",
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 100000,
+                    "alignContent": "left"
+                  },
+                  {
+                    "fieldName": "check",
+                    "displayName": "Check",
+                    "title": "Check",
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 100001,
+                    "alignContent": "left"
+                  },
+                  {
+                    "fieldName": "table_name",
+                    "displayName": "Table",
+                    "title": "Table",
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 100002,
+                    "alignContent": "left"
+                  },
+                  {
+                    "fieldName": "result",
+                    "displayName": "Result",
+                    "title": "Result",
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 100003,
+                    "alignContent": "left"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "All check results"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 6,
+            "height": 8
+          }
+        }
+      ]
+    }
+  ]
+}

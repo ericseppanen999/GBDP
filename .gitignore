@@ -45,3 +45,6 @@ logs/
 # Repo-specific
 AGENTS.md
 notes/
+
+# Dashboards are deployed by the bundle, so they must be committed.
+!dashboards/*.lvdash.json
