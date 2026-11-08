@@ -1117,6 +1117,7 @@ metrics:
     expr: SUM(source.is_sf)
     format: count
     source_rationale: *pa_why
+    caveats: [Until the gold rebuild this includes sacrifice bunts written as SAC.]
   sac_bunts:
     metric_view: mv_batting
     description: Sacrifice bunts (SH).

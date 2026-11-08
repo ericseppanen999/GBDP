@@ -72,6 +72,7 @@ def validate(catalog: str, schema: str, scratch: str, uc_mode: str, warehouse, o
         measures = ", ".join(f"MEASURE(`{m}`) AS `{m}`" for m, x in sl.metrics.items() if x.metric_view == name)
         run(f"query {name}", f"SELECT {measures} FROM {catalog}.{scratch}.{name}")
     failures += check_game_types(sl, catalog, schema, uc_mode, warehouse, out)
+    failures += check_legacy_event_types(sl, catalog, schema, warehouse, out)
     out(f"{failures} failure(s); drop the scratch schema with: DROP SCHEMA {catalog}.{scratch} CASCADE")
     return failures
 
@@ -99,6 +100,33 @@ def check_game_types(sl, catalog: str, schema: str, uc_mode: str, warehouse, out
             + ", ".join(f"{r[0]} {r[2]!r}" for r in unmapped))
         return 1
     out("OK    every game_type maps to a season phase")
+    return 0
+
+
+def check_legacy_event_types(sl, catalog: str, schema: str, warehouse, out=print) -> int:
+    """Read-only: 1 while fact_plate_appearance still has rows with a legacy
+    event_type (SAC, from before the SF/SH split). Once the rebuild has
+    replaced them this fails no more, and the legacy codes should be dropped
+    from the YAML; until then it keeps that step from being forgotten."""
+    legacy = sorted(sl.vocabularies["event_type"].legacy)
+    if not legacy:
+        out("OK    no legacy event types in the semantic layer")
+        return 0
+    codes = ", ".join(f"'{c}'" for c in legacy)
+    try:
+        rows = warehouse.query(f"SELECT event_type, count(*) FROM {catalog}.{schema}.fact_plate_appearance "
+                               f"WHERE event_type IN ({codes}) GROUP BY ALL ORDER BY 1")
+    except RuntimeError as exc:
+        out(f"FAIL  legacy event type check: {str(exc)[:300]}")
+        return 1
+    if rows:
+        groups = sorted(g for g, members in sl.vocabularies["event_type"].groups.items() if set(members) & set(legacy))
+        out("FAIL  fact_plate_appearance still has legacy event types ("
+            + ", ".join(f"{c}: {n} row(s)" for c, n in rows)
+            + "); rebuild gold, then drop " + "/".join(legacy) + " from vocabularies.event_type.legacy and from the "
+            + ", ".join(groups) + " groups")
+        return 1
+    out(f"OK    no {'/'.join(legacy)} rows left: drop them from vocabularies.event_type.legacy and its groups")
     return 0
 
 

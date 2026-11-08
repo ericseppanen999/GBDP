@@ -145,13 +145,17 @@ def test_validation_creates_only_in_the_scratch_schema():
             self.sql.append(sql)
             if "mv_run_expectancy" in sql and sql.startswith("CREATE"):
                 raise RuntimeError("TABLE_OR_VIEW_NOT_FOUND run_expectancy_daily")
+            if "event_type IN ('SAC')" in sql:
+                return [["SAC", "15"]]
             if "AS season_phase" in sql:
                 return [["mlb_statsapi", "regular", "R", "10"], ["npb_spaia", "other", "ファーム", "3"]]
             return []
 
     wh, lines = _Warehouse(), []
     failures = mod.validate("gbdp", "gold_gbdp", "semantic_check", "managed", wh, out=lines.append)
-    assert failures == 2  # the metric view, and an unmapped game type
+    assert failures == 3  # the metric view, an unmapped game type, and legacy SAC rows
+    assert any("still has legacy event types (SAC: 15 row(s))" in line
+               and "sac_fly, sacrifice groups" in line for line in lines)
     assert any("FAIL  unmapped game types" in line and "npb_spaia 'ファーム'" in line for line in lines)
     assert any("mlb_statsapi regular: 'R'" in line for line in lines)
     assert any("FROM gbdp.gold_gbdp.fact_game" in s for s in wh.sql)
@@ -191,3 +195,16 @@ def test_game_type_check_is_read_only_and_covers_every_source():
     assert all(s.startswith("SELECT") for s in _Warehouse.sql)
     assert "WHERE source IN" not in _Warehouse.sql[0]  # every source, not only MLB/NPB
     assert any("kbo_local '정규'" in line for line in lines)
+
+
+def test_legacy_sac_check_passes_once_the_rebuild_replaced_it():
+    mod = _builder()
+
+    class _Warehouse:
+        def query(self, sql):
+            assert sql.startswith("SELECT") and "event_type IN ('SAC')" in sql
+            return []
+
+    lines = []
+    assert mod.check_legacy_event_types(SL, "gbdp", "gold_gbdp", _Warehouse(), out=lines.append) == 0
+    assert "drop them from vocabularies.event_type.legacy" in lines[-1]

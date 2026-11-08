@@ -716,7 +716,7 @@ measures:
   comment: Strikeouts.
 - name: sac_flies
   expr: SUM(source.is_sf)
-  comment: Sacrifice flies (SF; legacy SAC rows count here until the gold rebuild).
+  comment: 'Sacrifice flies (SF; legacy SAC rows count here until the gold rebuild). Caveats: Until the gold rebuild this includes sacrifice bunts written as SAC.'
 - name: sac_bunts
   expr: SUM(source.is_sh)
   comment: 'Sacrifice bunts (SH). Caveats: Until the gold rebuild sacrifice bunts written before the SF/SH split are SAC and count as sac_flies instead.'

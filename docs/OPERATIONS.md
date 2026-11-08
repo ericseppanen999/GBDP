@@ -153,6 +153,9 @@ the gold rebuild adds `run_expectancy_daily`, `runs_to_end_of_inning` and
    `python scripts/build_semantic_layer.py --game-types` lists fact_game's
    game types per source and season phase and fails on any that map to
    `other` (those games drop out of the regular-season default record).
+   It also fails while fact_plate_appearance still has legacy `SAC` rows:
+   after the rebuild replaces them with SF/SH, drop SAC from
+   `vocabularies.event_type.legacy` and the `sac_fly` / `sacrifice` groups.
 3. `databricks bundle run gbdp_semantic_layer --target prod` (or
    `python dbx_entry.py semantic-layer --catalog gbdp --schema gold_gbdp` on a
    cluster). Comments on tables/columns that don't exist yet are skipped; any
