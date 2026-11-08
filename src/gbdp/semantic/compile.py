@@ -22,6 +22,7 @@ from gbdp.semantic.render import Target, render
 FILTER_OPS = {"eq": "=", "ne": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<=", "in": "IN", "not_in": "NOT IN",
               "is_null": "IS NULL", "not_null": "IS NOT NULL"}
 MAX_LIMIT = 100_000
+MAX_IN_VALUES = 1_000
 
 
 @dataclass(frozen=True)
@@ -150,6 +151,8 @@ def compile_request(layer: SemanticLayer, req: MetricRequest, target: Target, pa
             values = f.value if isinstance(f.value, (list, tuple)) else [f.value]
             if not values:
                 raise SemanticLayerError(f"filter {f.dimension} {f.op} needs at least one value")
+            if len(values) > MAX_IN_VALUES:
+                raise SemanticLayerError(f"filter {f.dimension} {f.op} has {len(values)} values; the limit is {MAX_IN_VALUES}")
             marks = ", ".join(params.add(_coerce(dim, v)) for v in values)
             where.append(f"{expr} {FILTER_OPS[f.op]} ({marks})")
         else:

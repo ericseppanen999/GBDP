@@ -14,6 +14,9 @@ from gbdp.serve.db import (
     Filter, UnsafeSqlError, compute_metrics, load_semantic_layer, query, run_sql, semantic_layer,
 )
 
+from gbdp.utils.logging import get_logger  # noqa: E402
+
+logger = get_logger("gbdp.api")
 app = FastAPI(title="GBDP API", version="0.1.0")
 
 
@@ -177,13 +180,14 @@ class MetricQuery(BaseModel):
     limit: int = Field(1000, ge=1, le=100_000)
 
 
-@app.post("/metrics/query")
+@app.post("/metrics/query", dependencies=[Depends(_require_token)])
 def metric_query(req: MetricQuery):
     """Compute metrics by dimensions, e.g. {"metrics": ["avg", "ops"],
     "dimensions": ["batter_name"], "filters": [{"dimension": "league_code",
     "value": "MLB"}], "start": "2026-05-01", "end": "2026-05-31"}. All
     metrics must share a metric view. The SQL comes from the semantic layer;
-    values are bound, never pasted in. Returns rows and the SQL used."""
+    values are bound, never pasted in. Returns rows and the SQL used.
+    Takes the same bearer token as /query when GBDP_API_TOKEN is set."""
     request = MetricRequest(
         metrics=req.metrics,
         dimensions=req.dimensions,
@@ -198,8 +202,11 @@ def metric_query(req: MetricQuery):
         return compute_metrics(request)
     except SemanticLayerError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"metric query failed: {exc}")
+    except Exception:
+        # A request the layer accepted that then failed is our problem, not
+        # the caller's; the engine's message can carry file paths.
+        logger.exception("metric query failed: %s", req.model_dump())
+        raise HTTPException(status_code=500, detail="metric query failed; see the server log")
 
 
 class QueryRequest(BaseModel):

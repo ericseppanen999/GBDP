@@ -274,6 +274,29 @@ def test_api_lists_describes_and_computes_metrics(semantic_gold):
     assert rows == [{"n": 8}]
 
 
+def test_metric_query_takes_the_api_token_and_hides_internal_errors(semantic_gold, monkeypatch):
+    from gbdp.serve import api
+    from gbdp.serve.api import app
+
+    client = TestClient(app)
+    body = {"metrics": ["pa"]}
+    monkeypatch.setenv("GBDP_API_TOKEN", "s3cret")
+    assert client.post("/metrics/query", json=body).status_code == 401
+    assert client.post("/metrics/query", json=body, headers={"Authorization": "Bearer s3cret"}).status_code == 200
+    monkeypatch.delenv("GBDP_API_TOKEN")
+    too_many = {"metrics": ["pa"],
+                "filters": [{"dimension": "batter_id", "op": "in", "value": [str(i) for i in range(1001)]}]}
+    r = client.post("/metrics/query", json=too_many)
+    assert r.status_code == 400 and "limit is 1000" in r.json()["detail"]
+
+    def boom(request):
+        raise RuntimeError("IO Error: C:/secret/path/gold not found")
+
+    monkeypatch.setattr(api, "compute_metrics", boom)
+    r = client.post("/metrics/query", json=body)
+    assert r.status_code == 500 and "secret" not in r.text
+
+
 def test_mcp_compute_metric(semantic_gold):
     from gbdp.mcp_server import compute_metric
 
