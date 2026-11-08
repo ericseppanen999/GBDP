@@ -41,6 +41,28 @@ def test_a_rebuild_with_fresh_dims_ignores_earlier_snapshots(env, monkeypatch):
     assert _two_seasons(*env) == {"New Guy"}
 
 
+def test_fresh_dims_must_equal_the_runs_start(monkeypatch):
+    import sys
+
+    from gbdp import cli
+
+    # cli.main sets this in os.environ; register it so monkeypatch restores it.
+    monkeypatch.setenv("GBDP_FRESH_DIMS_BEFORE", "")
+    monkeypatch.setattr(sys, "argv", ["gbdp", "backfill", "--start", "2026-06-01", "--end", "2026-06-30",
+                                      "--fresh-dims-before", "2026-05-13", "--stages", "gold_publish"])
+    with pytest.raises(SystemExit) as e:
+        cli.main()
+    assert e.value.code == 2
+
+    # Matching the start is accepted (the run itself is stubbed out).
+    ran = []
+    monkeypatch.setattr(cli, "run_pipeline", lambda *a, **k: ran.append(a))
+    monkeypatch.setattr(sys, "argv", ["gbdp", "backfill", "--start", "2026-05-13", "--end", "2026-05-13",
+                                      "--fresh-dims-before", "2026-05-13", "--stages", "gold_publish"])
+    cli.main()
+    assert ran
+
+
 def test_without_the_flag_entities_carry_across_seasons(env, monkeypatch):
     # CR-017: no silent season reset; last season's players keep their rows.
     monkeypatch.delenv("GBDP_FRESH_DIMS_BEFORE", raising=False)

@@ -319,6 +319,12 @@ def main() -> None:
 
         uvicorn.run("gbdp.serve.api:app", host=args.host, port=args.port, reload=False)
     if args.cmd in ("run", "backfill") and args.fresh_dims_before:
+        # Only the run that STARTS the rebuild may start dims fresh: a later
+        # chunk passing its own start would erase the history before it, so
+        # it must drop the flag and carry forward instead (CR-002).
+        if args.start and args.fresh_dims_before != args.start:
+            parser.error(f"--fresh-dims-before {args.fresh_dims_before} must equal --start {args.start}: "
+                         "only the first run of a rebuild starts dims fresh")
         # Read by gold _apply_scd2 in this same process.
         os.environ["GBDP_FRESH_DIMS_BEFORE"] = args.fresh_dims_before
     if args.cmd == "run":
