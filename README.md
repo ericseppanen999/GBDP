@@ -98,7 +98,7 @@ curl -X POST localhost:8000/query -H 'Content-Type: application/json' \
   -d '{"sql": "SELECT event_type, count(*) n FROM fact_plate_appearance GROUP BY 1 ORDER BY 2 DESC"}'
 ```
 
-`/query` runs read-only SQL over gold (DuckDB, confined to the gold directory). Set `GBDP_API_TOKEN` to require `Authorization: Bearer <token>` on it before exposing the API beyond localhost.
+`/query` runs read-only SQL over gold (DuckDB, confined to the gold directory). Set `GBDP_API_TOKEN` to require `Authorization: Bearer <token>` on it and on `/metrics/query` before exposing the API beyond localhost.
 
 ### API
 
@@ -109,9 +109,31 @@ curl -X POST localhost:8000/query -H 'Content-Type: application/json' \
 | `GET /players/{id}/stats?window=rolling_30d` | box score lines or 30-day rollups |
 | `GET /run-expectancy?league=&season=` | RE24 table |
 | `GET /breakout-candidates` | derived player list |
-| `POST /query` | ad-hoc SQL over gold |
+| `GET /schema` | the semantic layer: tables, columns, caveats, vocabularies, views, metrics |
+| `GET /metrics`, `/metrics/{name}` | governed metric definitions |
+| `POST /metrics/query` | compute metrics by dimensions (bearer token like `/query`) |
+| `POST /query` | ad-hoc SQL over gold and the `v_*` views |
 
 Every read endpoint takes `as_of=YYYY-MM-DD` to read the data as it stood on that day.
+
+### Semantic layer
+
+[`configs/semantic_layer.yaml`](configs/semantic_layer.yaml) is the one definition of what gold means and how every metric is computed: each table's grain, keys, columns and caveats, the code lists (event types, base states, season phases), plain views (`v_plate_appearance`, `v_team_game`, ...) and 50 metrics in six metric views (batting from plate appearances, batting and pitching from box scores, team results, Statcast pitches, run expectancy). Everything reads it:
+
+- the API (`/metrics`) and MCP server (`list_metrics`, `describe_metric`, `compute_metric`) compile requests to SQL on local gold;
+- Unity Catalog gets table and column comments, the views and `CREATE VIEW ... WITH METRICS` metric views (`mv_batting`, `mv_pitching`, `mv_team_games`, ...) for Genie and SQL users, from `gbdp semantic-layer` (bundle job `gbdp-semantic-layer`; the SQL is in [docs/semantic_layer_uc.sql](docs/semantic_layer_uc.sql));
+- the dashboard's metric datasets are compiled from it by `scripts/build_dashboard.py`.
+
+```bash
+curl -X POST localhost:8000/metrics/query -H 'Content-Type: application/json' -d '{
+  "metrics": ["pa", "avg", "obp", "slg", "re24"], "dimensions": ["batter_name"],
+  "filters": [{"dimension": "league_code", "value": "MLB"}], "start": "2025-04-01", "end": "2025-04-30",
+  "order_by": [{"column": "pa", "direction": "desc"}], "limit": 10}'
+python scripts/build_semantic_layer.py                               # regenerate the UC SQL after a YAML edit
+python scripts/build_semantic_layer.py --validate-in semantic_check  # try the views in a scratch schema
+```
+
+Tests run the real identity and gold code on fixture silver and check the YAML against what it writes (every table and column, both ways), and every metric against hand-worked values.
 
 ## Production (Databricks)
 
@@ -122,6 +144,7 @@ Every read endpoint takes `as_of=YYYY-MM-DD` to read the data as it stood on tha
 | `gbdp-nightly` | 04:00 UTC: yesterday plus the 7-day correction window, all leagues. Its on/off state is the `nightly_pause_status` bundle variable, so a deploy never silently re-enables it. |
 | `gbdp-backfill` | any `start_date`..`end_date`, `leagues` and `stages` |
 | `gbdp-check-data` | gold row counts for a date |
+| `gbdp-semantic-layer` | table/column comments, `v_*` views and `mv_*` metric views from the semantic layer; run after a gold rebuild or a YAML change |
 
 Storage is Unity Catalog Volumes per layer (`/Volumes/gbdp/{bronze,silver,gold}_gbdp/...`). Gold is Delta, and every layer is also registered as managed UC tables in `gbdp.{bronze,silver,gold}_gbdp`. See [docs/OPERATIONS.md](docs/OPERATIONS.md) for runbooks and [docs/E2E.md](docs/E2E.md) for the end-to-end walkthrough.
 

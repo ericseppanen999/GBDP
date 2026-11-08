@@ -132,12 +132,32 @@ python src/gbdp/cli.py register-uc \
   --gold-root dbfs:/Volumes/gbdp/gold_gbdp/gold_vol/gbdp/gold
 ```
 
+Add `--semantic-layer` to apply the semantic layer to those tables afterwards (see 6b).
+
+## 6b) Semantic Layer in UC (comments, views, metric views)
+
+`configs/semantic_layer.yaml` becomes table/column COMMENTs, `v_*` views and
+`mv_*` metric views in `gbdp.gold_gbdp`. It is not part of the nightly; run it
+after a gold rebuild or a YAML change:
+
+1. Edit the YAML, then `python scripts/build_semantic_layer.py` and commit
+   `docs/semantic_layer_uc.sql` (a test fails while it is stale).
+2. Check it in a scratch schema first (creates views only in `gbdp.semantic_check`,
+   reads the real tables, writes nothing in the gold schema):
+   `python scripts/build_semantic_layer.py --validate-in semantic_check`,
+   then `DROP SCHEMA gbdp.semantic_check CASCADE`.
+3. `databricks bundle run gbdp_semantic_layer --target prod` (or
+   `python dbx_entry.py semantic-layer --catalog gbdp --schema gold_gbdp` on a
+   cluster). Comments on tables/columns that don't exist yet are skipped; any
+   failed statement is listed and the job exits 1.
+
 ## 7) Where Data Appears in UC
 
 After a successful run:
 - `gbdp.bronze_gbdp.<source>_<entity>` (bronze parsed)
 - `gbdp.silver_gbdp.<source>_<entity>`
 - `gbdp.gold_gbdp.<table>`
+- `gbdp.gold_gbdp.v_*` and `mv_*` once the semantic layer has been applied (6b)
 
 ## 8) Troubleshooting
 

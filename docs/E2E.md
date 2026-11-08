@@ -334,7 +334,7 @@ FastAPI is read-only and serves gold tables.
 python -m gbdp.cli serve --port 8000
 ```
 
-Binds to 127.0.0.1 by default. Without `as_of`, endpoints read the latest snapshot. Set `GBDP_API_TOKEN` to protect `/query`.
+Binds to 127.0.0.1 by default. Without `as_of`, endpoints read the latest snapshot. Set `GBDP_API_TOKEN` to protect `/query` and `/metrics/query`.
 
 ---
 
@@ -387,7 +387,7 @@ This makes the pipeline **write managed UC tables** (no LOCATION), which is supp
 7. `GBDP_INCLUDE_PARTITION_COLS_SILVER`
 8. `GBDP_ID_SALT`
 9. `GBDP_UC_MODE` (`managed` or `external`)
-10. `GBDP_API_TOKEN` (requires a bearer token on `/query`)
+10. `GBDP_API_TOKEN` (requires a bearer token on `/query` and `/metrics/query`)
 11. `GBDP_NPB_STATS_LATEST_ONLY` (set automatically by `--window nightly`)
 
 ---
