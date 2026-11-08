@@ -15,8 +15,14 @@ from pathlib import Path
 
 G = "gbdp.gold_gbdp"
 CUR_PLAYER = f"(SELECT max(dt) FROM {G}.dim_player)"
-CUR_TEAM = f"(SELECT max(dt) FROM {G}.dim_team)"
-OUT = Path(__file__).resolve().parent.parent / "dashboards" / "gbdp_season.lvdash.json"
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "dashboards" / "gbdp_season.lvdash.json"
+SEASON = 2026
+
+sys.path.insert(0, str(ROOT / "src"))
+from gbdp.semantic import layer as semantic  # noqa: E402
+from gbdp.semantic.compile import Filter, MetricRequest, compile_request  # noqa: E402
+from gbdp.semantic.render import databricks_target  # noqa: E402
 
 DATASETS = {
     "totals": ("Totals", f"""
@@ -36,80 +42,74 @@ FROM {G}.fact_plate_appearance
 WHERE dt >= '2026-01-01'
 GROUP BY ALL"""),
 
-    "run_expectancy": ("Run expectancy (MLB, season to date)", f"""
-WITH latest AS (
-  SELECT max(dt) AS d FROM {G}.run_expectancy WHERE league_code = 'MLB' AND season_year = 2026
-)
-SELECT
-  CASE base_state WHEN 0 THEN 'Bases empty' WHEN 1 THEN '1st' WHEN 2 THEN '2nd' WHEN 3 THEN '1st & 2nd'
-                  WHEN 4 THEN '3rd' WHEN 5 THEN '1st & 3rd' WHEN 6 THEN '2nd & 3rd' ELSE 'Loaded' END AS runners,
-  max(CASE WHEN outs = 0 THEN exp_runs END) AS outs_0,
-  max(CASE WHEN outs = 1 THEN exp_runs END) AS outs_1,
-  max(CASE WHEN outs = 2 THEN exp_runs END) AS outs_2,
-  sum(pa_count) AS plate_appearances,
-  base_state
-FROM {G}.run_expectancy, latest
-WHERE league_code = 'MLB' AND season_year = 2026 AND dt = latest.d
-GROUP BY base_state
-ORDER BY base_state"""),
-
-    "pitch_mix": ("Pitch mix and velocity (MLB)", f"""
-SELECT CASE pitch_type WHEN 'FF' THEN '4-seam fastball' WHEN 'SI' THEN 'Sinker' WHEN 'FC' THEN 'Cutter'
-         WHEN 'SL' THEN 'Slider' WHEN 'ST' THEN 'Sweeper' WHEN 'CU' THEN 'Curveball' WHEN 'KC' THEN 'Knuckle curve'
-         WHEN 'CH' THEN 'Changeup' WHEN 'FS' THEN 'Splitter' WHEN 'SV' THEN 'Slurve' ELSE pitch_type END AS pitch,
-       count(*) AS pitches,
-       round(avg(release_speed), 1) AS avg_mph,
-       round(max(release_speed), 1) AS max_mph
-FROM {G}.fact_pitch
-WHERE pitch_type IS NOT NULL AND pitch_type <> '' AND release_speed IS NOT NULL
-GROUP BY 1
-HAVING count(*) >= 50
-ORDER BY pitches DESC"""),
-
-    "hitters": ("MLB hitters", f"""
-WITH p AS (
-  SELECT player_id, primary_name FROM {G}.dim_player WHERE is_current AND dt = {CUR_PLAYER}
-)
-SELECT p.primary_name AS batter,
-       count(*) AS pa,
-       count_if(event_type = 'HR') AS hr,
-       count_if(event_type IN ('1B', '2B', '3B', 'HR')) AS hits,
-       count_if(event_type = 'BB') AS bb,
-       count_if(event_type = 'K') AS k,
-       round(count_if(event_type IN ('1B', '2B', '3B', 'HR'))
-             / nullif(count_if(event_type NOT IN ('BB', 'HBP', 'SF', 'SH')), 0), 3) AS avg
-FROM {G}.fact_plate_appearance pa JOIN p ON p.player_id = pa.batter_id
-WHERE pa.source = 'mlb_statcast'
-GROUP BY p.primary_name
-HAVING count(*) >= 20
-ORDER BY hr DESC, pa DESC
-LIMIT 25"""),
-
-    "standings": ("MLB records from games", f"""
-WITH g AS (
-  SELECT DISTINCT game_id, home_team_id, away_team_id, home_score, away_score
-  FROM {G}.fact_game
-  WHERE source = 'mlb_statsapi' AND home_score IS NOT NULL AND away_score IS NOT NULL
-    AND home_score <> away_score AND lower(status) LIKE 'final%'
-), r AS (
-  SELECT home_team_id AS team_id, home_score > away_score AS won, home_score AS rs, away_score AS ra FROM g
-  UNION ALL
-  SELECT away_team_id, away_score > home_score, away_score, home_score FROM g
-), t AS (
-  SELECT team_id, team_name FROM {G}.dim_team WHERE is_current AND dt = {CUR_TEAM}
-)
-SELECT t.team_name AS team, count_if(won) AS w, count_if(NOT won) AS l,
-       round(count_if(won) / count(*), 3) AS pct, sum(rs) - sum(ra) AS run_diff
-FROM r JOIN t ON t.team_id = r.team_id
-GROUP BY t.team_name
-ORDER BY pct DESC, run_diff DESC"""),
-
+    # Metric datasets: compiled from configs/semantic_layer.yaml (see
+    # METRIC_DATASETS below), so they can't disagree with the API or Genie.
     "quality": ("Quality check results", f"""
 SELECT CAST(dt AS DATE) AS day, `check`, coalesce(`table`, '') AS table_name,
        CASE WHEN ok THEN 'pass' ELSE 'fail' END AS result
 FROM {G}.audit_quality
 WHERE dt >= '2026-01-01'"""),
 }
+
+
+def metric_sql(request: MetricRequest) -> str:
+    """One dataset's SQL, compiled from the semantic layer's metric definitions.
+
+    The views are inlined as CTEs over the gold tables, so the dashboard
+    doesn't depend on the v_* / mv_* views having been deployed.
+    """
+    sl = semantic.load(ROOT / "configs" / "semantic_layer.yaml")
+    return compile_request(sl, request, databricks_target(inline_views=True), param_style="literal").sql
+
+
+MLB_SEASON = [Filter("league_code", "eq", "MLB"), Filter("season_year", "eq", SEASON)]
+
+
+def metric_datasets() -> dict:
+    re_matrix = metric_sql(MetricRequest(
+        metrics=["exp_runs", "re_pa_count"], dimensions=["base_state", "runners", "outs"], filters=MLB_SEASON))
+    return {
+        # Season-to-date RE24, summed from run_expectancy_daily.
+        "run_expectancy": ("Run expectancy (MLB, season to date)", f"""
+SELECT runners,
+       max(CASE WHEN outs = 0 THEN exp_runs END) AS outs_0,
+       max(CASE WHEN outs = 1 THEN exp_runs END) AS outs_1,
+       max(CASE WHEN outs = 2 THEN exp_runs END) AS outs_2,
+       sum(re_pa_count) AS plate_appearances,
+       base_state
+FROM (
+{re_matrix}
+) matrix
+GROUP BY runners, base_state
+ORDER BY base_state"""),
+        "pitch_mix": ("Pitch mix and velocity (MLB)", metric_sql(MetricRequest(
+            metrics=["pitches", "avg_velocity", "max_velocity"], dimensions=["pitch_type_name"],
+            filters=[Filter("pitch_type", "not_null"), Filter("season_year", "eq", SEASON)],
+            having=[("pitches", "gte", 50)], order_by=[("pitches", "desc")],
+            aliases={"pitch_type_name": "pitch", "avg_velocity": "avg_mph", "max_velocity": "max_mph"}))),
+        # PA and AVG from the governed is_pa / is_ab flags: TRUNCATED rows
+        # aren't PAs; INT, BB, HBP, SAC and UNKNOWN aren't at-bats.
+        "hitters": ("MLB hitters", metric_sql(MetricRequest(
+            metrics=["pa", "home_runs", "hits", "walks", "strikeouts", "avg"],
+            dimensions=["batter_id", "batter_name"],
+            filters=MLB_SEASON + [Filter("data_source", "eq", "mlb_statcast")],
+            having=[("pa", "gte", 20)], order_by=[("hr", "desc"), ("pa", "desc")], limit=25,
+            aliases={"batter_name": "batter", "home_runs": "hr", "walks": "bb", "strikeouts": "k"}))),
+        # Regular season only (season_phase from fact_game.game_type).
+        "standings": ("MLB records from games", metric_sql(MetricRequest(
+            metrics=["wins", "losses", "win_pct", "run_differential"], dimensions=["team_id", "team_name"],
+            filters=MLB_SEASON + [Filter("data_source", "eq", "mlb_statsapi"),
+                                  Filter("season_phase", "eq", "regular")],
+            order_by=[("pct", "desc"), ("run_diff", "desc")],
+            aliases={"team_name": "team", "wins": "w", "losses": "l", "win_pct": "pct",
+                     "run_differential": "run_diff"}))),
+    }
+
+
+def all_datasets() -> dict:
+    out = dict(DATASETS)
+    out.update(metric_datasets())
+    return out
 
 
 def _field(name: str, expr: str | None = None) -> dict:
@@ -245,7 +245,7 @@ def build() -> dict:
     ]
     return {
         "datasets": [{"name": k, "displayName": v[0], "queryLines": [line + "\n" for line in v[1].strip().splitlines()]}
-                     for k, v in DATASETS.items()],
+                     for k, v in all_datasets().items()],
         "pages": [
             {"name": "season", "displayName": "2026 season", "layout": overview},
             {"name": "quality", "displayName": "Data quality", "layout": quality},
@@ -260,7 +260,7 @@ def check() -> int:
 
     wh = Warehouse(os.getenv("GBDP_WAREHOUSE_ID", "a9d3d2589a30ab67"), os.getenv("DATABRICKS_CONFIG_PROFILE"))
     failed = 0
-    for name, (_, sql) in DATASETS.items():
+    for name, (_, sql) in all_datasets().items():
         try:
             rows = wh.query(sql)
             print(f"OK    {name}: {len(rows)} row(s)")
