@@ -229,7 +229,7 @@ tables:
       - Always filter to one dt (normally the latest) and is_current = true, or use the view v_team_current.
       - Versions change when team_name, team_abbrev, home_city or league_id change.
       - KBO teams are missing. dim_team does not read kbo_api games, so the team_ids in fact_game and the KBO box scores have no dim_team row.
-      - On a day with no silver mlb_statsapi/teams partition, team_abbrev and home_city are carried over from the previous snapshot of the same season; on a season's first day without one they are null. Partitions published before that fix, until the production rebuild is verified, can have versions with them null.
+      - On a day with no silver mlb_statsapi/teams partition, team_abbrev and home_city are carried over from the previous snapshot (not one dated before a rebuild's --fresh-dims-before date); with no earlier snapshot they are null. Partitions published before that fix, until the production rebuild is verified, can have versions with them null.
 
   dim_player:
     description: >
@@ -267,7 +267,7 @@ tables:
       - Always filter to one dt (normally the latest) and is_current = true, or use the view v_player_current.
       - Versions change when primary_name, bats, throws, primary_position or league_id change.
       - kbo_api has no roster or player ID; its box-score players are identified by name and have no dim_player row.
-      - Each season's snapshots start from that season's own data, and within a season the SCD2 merge keeps a player missing from a day's input as current (an off day is not a release). So a player who has left every roster stays current until the season ends. Until the production rebuild is verified, older partitions can also hold NPB managers and coaches, and MLB versions built from backfilled roster bronze can reflect the fetch day's roster rather than dt's.
+      - The SCD2 merge keeps a player missing from a day's input as current (an off day is not a release), across seasons too, so a player who has left every roster stays current. A rebuild run with --fresh-dims-before D ignores snapshots dated before D, so history starts at D. Until the production rebuild is verified, older partitions can also hold NPB managers and coaches, and MLB versions built from backfilled roster bronze can reflect the fetch day's roster rather than dt's.
 
   dim_season:
     description: >
