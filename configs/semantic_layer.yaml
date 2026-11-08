@@ -203,6 +203,7 @@ tables:
       - Always filter to one dt (normally the latest) and is_current = true, or use the view v_team_current.
       - Versions change when team_name, team_abbrev, home_city or league_id change.
       - KBO teams are missing. dim_team does not read kbo_api games, so the team_ids in fact_game and the KBO box scores have no dim_team row.
+      - On a day with no silver mlb_statsapi/teams partition, MLB teams come only from that day's games, with team_abbrev and home_city null, and the SCD2 merge opens a new version with them null. Until the production rebuild of gold is verified, check team_abbrev before relying on it.
 
   dim_player:
     description: >
@@ -240,6 +241,7 @@ tables:
       - Always filter to one dt (normally the latest) and is_current = true, or use the view v_player_current.
       - Versions change when primary_name, bats, throws, primary_position or league_id change.
       - kbo_api has no roster or player ID; its box-score players are identified by name and have no dim_player row.
+      - Until the production rebuild of gold is verified, "NPB rows are players only" may not hold. The SCD2 merge keeps any player missing from a day's input as a current version, so NPB managers and coaches loaded before the players-only change stay current, as does anyone who has left every roster. MLB versions built from backfilled roster bronze can reflect the fetch day's roster rather than dt's.
 
   dim_season:
     description: >
@@ -291,6 +293,7 @@ tables:
       - A game can appear in more than one dt (postponed or suspended and resumed, or listed again on the next day's schedule). Count games with DISTINCT game_id, or use v_team_game, which keeps one row per game.
       - The same real game appears once per source that covers it (mlb_statsapi and retrosheet_local both have MLB); game_id differs per source. Filter on source for exactly-once counts.
       - status is free text and varies by source; scores are null until a game starts.
+      - There is no game type column, so spring training, All-Star and postseason games are mixed in with the regular season.
 
   fact_roster:
     description: Daily roster snapshot. NPB rows are players only, no managers or coaches.
@@ -313,6 +316,7 @@ tables:
       ingested_at_utc: When this row was written.
     caveats:
       - MLB rows are the active roster as of that date, not the 40-man roster.
+      - Until the production rebuild of gold is verified, older partitions can break both rules above. Backfilled MLB roster bronze fetched before the as-of-date fix holds the roster of the day it was fetched, not of dt, and NPB partitions built before the players-only change still include managers and coaches.
 
   fact_transaction:
     description: MLB transactions (trades, signings, recalls, assignments, injured list) from the MLB Stats API.
@@ -395,7 +399,7 @@ tables:
       outs_on_play: outs_after - outs_before, so it includes outs made on the bases during the PA.
       base_state_before: Runners on base before the PA, see vocabularies.base_state.
       outs_before: Outs before the PA (0-2).
-      base_state_after: Runners after the PA; 0 when it ended the half-inning; null when it ended the game short of three outs (walk-off), or for NPB when the result text doesn't say.
+      base_state_after: Runners after the PA; 0 when it ended the half-inning; null when it ended the game short of three outs (Statcast walk-off or a TRUNCATED walk-off). For NPB, the runners are read from the next PA's header, or for the last PA of a half-inning that didn't reach three outs (a walk-off) from the end of the result text, which writes 0 (bases empty) when the text names no base. NPB walk-off run values are therefore unreliable.
       outs_after: Outs after the PA (0-3).
       runs_to_end_of_inning: Runs from this PA through the end of its half-inning, what run expectancy averages. Null when the half-inning never reached three outs (walk-off, suspended, gaps in the feed) or a later PA's runs are unknown.
       source: Source system.
@@ -527,7 +531,8 @@ tables:
       Season-to-date run expectancy (the RE24 matrix) per league: the average
       runs scored from each base/out state to the end of the half-inning,
       over every completed half-inning of that league's season through dt.
-      The latest dt of a season is the full-season matrix.
+      The latest dt of a season is the full-season matrix only if every
+      date was published in order: see the caveat.
     grain: one row per (league_code, base_state, outs) per dt
     primary_key: [league_code, base_state, outs, dt]
     foreign_keys:
@@ -547,13 +552,16 @@ tables:
     caveats:
       - Only half-innings that reached three outs count (runs_to_end_of_inning not null).
       - Early in a season the counts are small and the values noisy; check pa_count.
+      - Each dt is summed from run_expectancy_daily when that dt is published. Rebuilding an earlier date updates its daily row but leaves every later dt's run_expectancy stale until those dates are republished. For a matrix that is always current, sum run_expectancy_daily (metric view mv_run_expectancy, and v_plate_appearance's run values, do).
 
   run_expectancy_daily:
     description: >
       One day's contribution to run_expectancy: PA count and rest-of-inning
       runs per (league, base state, outs). run_expectancy for a date is the
-      sum of these from January 1 through it. Sum any date range yourself for
-      the matrix over that range (metric view mv_run_expectancy does).
+      sum of these from January 1 through it, as of when that date was
+      published. Sum any date range yourself for the matrix over that range
+      (metric view mv_run_expectancy and v_plate_appearance do); unlike
+      run_expectancy, the sum is never stale after a rebuild.
     grain: one row per (league_code, base_state, outs) per dt
     primary_key: [league_code, base_state, outs, dt]
     foreign_keys:
@@ -649,17 +657,15 @@ views:
       fact_plate_appearance with league, season, outcome flags (is_pa, is_ab,
       is_hit, ...; TRUNCATED rows have is_pa = 0 and every outcome flag 0) and
       RE24 run value: run expectancy after minus before, plus runs scored,
-      using the league's full-season (latest dt) run_expectancy matrix.
+      using the league's full-season matrix, summed here from
+      run_expectancy_daily (so it stays right when an earlier date is rebuilt
+      and run_expectancy's later dates go stale).
     sql: |
       WITH re AS (
-        SELECT r.league_code, r.season_year, r.base_state, r.outs, r.exp_runs
-        FROM {{table:run_expectancy}} r
-        JOIN (
-          SELECT league_code, season_year, MAX(dt) AS last_dt
-          FROM {{table:run_expectancy}}
-          GROUP BY league_code, season_year
-        ) latest
-          ON r.league_code = latest.league_code AND r.season_year = latest.season_year AND r.dt = latest.last_dt
+        SELECT league_code, season_year, base_state, outs,
+               CAST(SUM(runs) AS DOUBLE) / NULLIF(SUM(pa_count), 0) AS exp_runs
+        FROM {{table:run_expectancy_daily}}
+        GROUP BY league_code, season_year, base_state, outs
       ),
       pa AS (
         SELECT
@@ -886,7 +892,10 @@ metric_views:
       - {name: data_source, expr: source.data_source, description: Source system.}
 
   mv_team_games:
-    description: Team results from finished games in fact_game (every league with game scores).
+    description: >
+      Team results from finished games in fact_game (every league with game
+      scores). fact_game has no game type, so spring training, All-Star and
+      postseason games count alongside the regular season.
     source: v_team_game
     not_applicable_roles:
       player: Game results belong to teams, not players.
@@ -1026,6 +1035,8 @@ metrics:
     expr: SUM(source.is_hit) / NULLIF(SUM(source.is_ab), 0)
     format: rate
     source_rationale: *pa_why
+    caveats: &sf_dp_ab
+      - A sacrifice-fly double play maps to DP and so counts as an at-bat, though officially it isn't one.
   obp:
     metric_view: mv_batting
     description: On-base percentage, (H + BB + HBP) / (AB + BB + HBP + SAC).
@@ -1042,6 +1053,7 @@ metrics:
     expr: SUM(source.total_bases) / NULLIF(SUM(source.is_ab), 0)
     format: rate
     source_rationale: *pa_why
+    caveats: *sf_dp_ab
   ops:
     metric_view: mv_batting
     description: On-base plus slugging, OBP + SLG.
@@ -1076,14 +1088,14 @@ metrics:
     description: >
       RE24 run value: the sum over plate appearances of (run expectancy after -
       run expectancy before + runs scored), with the league's full-season
-      matrix from run_expectancy. Positive means the batter added runs.
+      matrix (summed from run_expectancy_daily). Positive means the batter added runs.
     expr: SUM(source.run_value)
     format: decimal
     source_rationale: *pa_why
     caveats:
       - TRUNCATED rows count (they carry the inning's last runs and outs), as do base-running events Statcast credits to the PA.
       - PAs whose state after is unknown (a walk-off, NPB text without the runners) have no run value and are left out.
-      - Uses the latest run_expectancy of the season, which is season-to-date while the season is in progress.
+      - The run expectancy matrix is the league's whole season summed from run_expectancy_daily, so it covers only the dates loaded so far while the season is in progress, and a PA is valued against games played after it as well as before.
 
   # --- Batting, from box scores ------------------------------------------------
   rbi:
@@ -1201,48 +1213,57 @@ metrics:
     source_rationale: &team_why >
       fact_game has final scores for every league with games (MLB, NPB, KBO);
       fact_standings covers NPB only, and box scores miss NPB.
+    caveats: &team_caveats
+      - fact_game has no game type, so spring training, All-Star and postseason games count with the regular season. Filter by date range to the regular season until gold carries a game type.
   wins:
     metric_view: mv_team_games
     description: Wins.
     expr: SUM(source.is_win)
     format: count
     source_rationale: *team_why
+    caveats: *team_caveats
   losses:
     metric_view: mv_team_games
     description: Losses.
     expr: SUM(source.is_loss)
     format: count
     source_rationale: *team_why
+    caveats: *team_caveats
   ties:
     metric_view: mv_team_games
     description: Ties (NPB plays them).
     expr: SUM(source.is_tie)
     format: count
     source_rationale: *team_why
+    caveats: *team_caveats
   win_pct:
     metric_view: mv_team_games
     description: Winning percentage, wins / (wins + losses); ties don't count, as in NPB standings.
     expr: SUM(source.is_win) / NULLIF(SUM(source.is_win) + SUM(source.is_loss), 0)
     format: rate
     source_rationale: *team_why
+    caveats: *team_caveats
   runs_scored:
     metric_view: mv_team_games
     description: Runs scored.
     expr: SUM(source.runs_scored)
     format: count
     source_rationale: *team_why
+    caveats: *team_caveats
   runs_allowed:
     metric_view: mv_team_games
     description: Runs allowed.
     expr: SUM(source.runs_allowed)
     format: count
     source_rationale: *team_why
+    caveats: *team_caveats
   run_differential:
     metric_view: mv_team_games
     description: Runs scored minus runs allowed.
     expr: SUM(source.runs_scored) - SUM(source.runs_allowed)
     format: count
     source_rationale: *team_why
+    caveats: *team_caveats
 
   # --- Pitches, from Statcast ------------------------------------------------------
   pitches:
