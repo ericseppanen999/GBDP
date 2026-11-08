@@ -4,6 +4,11 @@ Queries the Unity Catalog tables through a SQL warehouse (via the `databricks`
 CLI's auth), so it needs no deploy and is safe to run while jobs are running.
 
     python scripts/verify_lakehouse.py [--warehouse ID] [--profile NAME] [--start 2026-05-13]
+        [--gold-delta] [--only npb_players_only,npb_pa_per_game,...]
+
+--gold-delta reads gold from its Delta tables on the Volume instead of the UC
+tables, which only change when register_uc runs: the way to check a rebuilt
+gold before its gate opens.
 
 Prints one line per check (PASS / WARN / FAIL) and exits 1 if anything FAILs.
 """
@@ -14,6 +19,7 @@ import json
 import os
 import subprocess
 import sys
+import re
 import tempfile
 import time
 from datetime import date
@@ -21,6 +27,10 @@ from datetime import date
 CATALOG = "gbdp"
 GOLD = f"{CATALOG}.gold_gbdp"
 SILVER_VOL = f"/Volumes/{CATALOG}/silver_gbdp/silver_vol/gbdp/silver"
+GOLD_VOL = f"/Volumes/{CATALOG}/gold_gbdp/gold_vol/gbdp/gold"
+# With --gold-delta, GOLD is this marker and query() points each table at its
+# Delta path instead.
+_GOLD_DELTA = "__gold_delta__"
 
 # Late-March openers through the October postseason. No-game days inside it
 # (All-Star break, NPB Mondays, rainouts) come from the schedules, not dates.
@@ -52,6 +62,7 @@ class Warehouse:
         return json.loads(r.stdout)
 
     def query(self, sql: str) -> list[list]:
+        sql = re.sub(rf"\b{_GOLD_DELTA}\.(\w+)", lambda m: f"delta.`{GOLD_VOL}/{m.group(1)}`", sql)
         s = self._api("post", "/api/2.0/sql/statements", body={
             "warehouse_id": self.warehouse_id, "statement": sql,
             "wait_timeout": "50s", "on_wait_timeout": "CONTINUE",
@@ -239,14 +250,25 @@ def check_npb_pa_per_game(wh: Warehouse, rep: Report, start: str) -> None:
 
 
 def check_npb_players_only(wh: Warehouse, rep: Report) -> None:
-    """No current NPB dim_player row may be a coach or manager (CR-002)."""
-    (n,), = wh.query(f"""
-        WITH staff AS (
-          SELECT DISTINCT player_id FROM {_silver('npb_spaia', 'rosters')}
-          WHERE dt = (SELECT max(dt) FROM {GOLD}.dim_player) AND role IS NOT NULL AND role <> 'player')
-        SELECT count(*) FROM {GOLD}.dim_player d JOIN staff s ON d.source_player_id = s.player_id
-        WHERE d.dt = (SELECT max(dt) FROM {GOLD}.dim_player) AND d.is_current AND d.source = 'npb_spaia'""")
-    rep.line("FAIL" if int(n) else "PASS", "dim_player NPB: players only", f"{n} current coach/manager rows")
+    """No current NPB dim_player row may be a coach or manager (CR-002).
+
+    Staff is anyone listed with a non-player role on ANY silver roster date
+    and never as a player, so a coach who has since left the directory
+    entirely is still caught. Current rows with no roster entry at all are
+    reported too."""
+    (n, orphans), = wh.query(f"""
+        WITH r AS (SELECT player_id, role FROM {_silver('npb_spaia', 'rosters')}
+                   WHERE player_id IS NOT NULL),
+             staff AS (SELECT player_id FROM r GROUP BY player_id
+                       HAVING count_if(role IS NOT NULL AND role <> 'player') > 0
+                          AND count_if(role IS NULL OR role = 'player') = 0),
+             cur AS (SELECT source_player_id FROM {GOLD}.dim_player
+                     WHERE dt = (SELECT max(dt) FROM {GOLD}.dim_player) AND is_current AND source = 'npb_spaia')
+        SELECT count_if(c.source_player_id IN (SELECT player_id FROM staff)),
+               count_if(c.source_player_id NOT IN (SELECT DISTINCT player_id FROM r))
+        FROM cur c""")
+    rep.line("FAIL" if int(n) or int(orphans) else "PASS", "dim_player NPB: players only",
+             f"{n} current coach/manager rows; {orphans} current rows on no silver roster")
 
 
 def check_pa_per_game(wh: Warehouse, rep: Report, start: str) -> None:
@@ -422,30 +444,42 @@ def main() -> int:
     ap.add_argument("--warehouse", default=os.getenv("GBDP_WAREHOUSE_ID", "a9d3d2589a30ab67"))
     ap.add_argument("--profile", default=os.getenv("DATABRICKS_CONFIG_PROFILE"))
     ap.add_argument("--start", default="2026-05-13", help="first dt to check (default: start of the replay)")
+    ap.add_argument("--gold-delta", action="store_true",
+                    help="read gold from its Delta tables on the Volume, not the UC tables")
+    ap.add_argument("--only", default="", help="comma-separated check names to run (default: all)")
     ap.add_argument("--truth-days", default="2026-05-20,2026-06-10",
                     help="comma-separated days to reconcile against MLB's boxscores ('' to skip)")
     args = ap.parse_args()
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+    global GOLD
+    if args.gold_delta:
+        GOLD = _GOLD_DELTA
     wh = Warehouse(args.warehouse, args.profile)
     rep = Report()
-    checks = [
-        lambda: check_bronze(wh, rep, args.start),
-        lambda: check_daily_counts(wh, rep, args.start),
-        lambda: check_pa_per_game(wh, rep, args.start),
-        lambda: check_npb_pa_per_game(wh, rep, args.start),
-        lambda: check_npb_players_only(wh, rep),
-        lambda: check_pa_teams(wh, rep, args.start),
-        lambda: check_uniqueness(wh, rep, args.start),
-        lambda: check_dim_player_current(wh, rep),
-        lambda: check_bio_fill(wh, rep),
-        lambda: check_roster_size(wh, rep, args.start),
-        lambda: check_silver_statcast(wh, rep, args.start),
-        lambda: check_silver_duplicates(wh, rep, args.start),
-        lambda: check_quality_results(wh, rep, args.start),
-        lambda: check_against_mlb(wh, rep, [d for d in args.truth_days.split(",") if d]),
-    ]
-    for check in checks:
+    checks = {
+        "bronze": lambda: check_bronze(wh, rep, args.start),
+        "daily_counts": lambda: check_daily_counts(wh, rep, args.start),
+        "pa_per_game": lambda: check_pa_per_game(wh, rep, args.start),
+        "npb_pa_per_game": lambda: check_npb_pa_per_game(wh, rep, args.start),
+        "npb_players_only": lambda: check_npb_players_only(wh, rep),
+        "pa_teams": lambda: check_pa_teams(wh, rep, args.start),
+        "uniqueness": lambda: check_uniqueness(wh, rep, args.start),
+        "dim_player_current": lambda: check_dim_player_current(wh, rep),
+        "bio_fill": lambda: check_bio_fill(wh, rep),
+        "roster_size": lambda: check_roster_size(wh, rep, args.start),
+        "silver_statcast": lambda: check_silver_statcast(wh, rep, args.start),
+        "silver_duplicates": lambda: check_silver_duplicates(wh, rep, args.start),
+        "quality_results": lambda: check_quality_results(wh, rep, args.start),
+        "against_mlb": lambda: check_against_mlb(wh, rep, [d for d in args.truth_days.split(",") if d]),
+    }
+    only = [c for c in args.only.split(",") if c]
+    unknown = sorted(set(only) - set(checks))
+    if unknown:
+        ap.error(f"unknown check(s) {unknown}; choose from {sorted(checks)}")
+    for name, check in checks.items():
+        if only and name not in only:
+            continue
         try:
             check()
         except RuntimeError as e:
