@@ -85,6 +85,8 @@ class MetricView:
     dimensions: Tuple[Dimension, ...]
     filter: Optional[str] = None
     not_applicable_roles: Dict[str, str] = field(default_factory=dict)
+    # Applied by the local engine when a request doesn't filter the dimension.
+    default_filters: Tuple[Tuple[str, str, Any], ...] = ()
 
     def dimension(self, name: str) -> Dimension:
         for d in self.dimensions:
@@ -119,6 +121,7 @@ class Vocabulary:
     values: Any  # dict code -> meaning/label, or a list
     groups: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
     prefixes: Tuple[str, ...] = ()
+    rules: Tuple[Dict[str, Any], ...] = ()  # season_phase: {phase, source, values, suffixes}
 
 
 @dataclass
@@ -179,6 +182,7 @@ class SemanticLayer:
                 {"name": d.name, "role": d.role, "type": d.type, "description": d.description} for d in mv.dimensions
             ],
             "not_applicable_roles": dict(mv.not_applicable_roles),
+            "default_filters": [{"dimension": d, "op": op, "value": v} for d, op, v in mv.default_filters],
         }
 
 
@@ -198,9 +202,10 @@ _ALLOWED_KEYS = {
     "top": {"version", "conventions", "vocabularies", "tables", "audit_tables", "views", "metric_views", "metrics"},
     "table": {"description", "grain", "columns", "primary_key", "foreign_keys", "sources", "caveats", "placeholder",
               "written_by"},
-    "vocabulary": {"description", "values", "groups", "prefixes"},
+    "vocabulary": {"description", "values", "groups", "prefixes", "rules"},
     "view": {"description", "sql"},
-    "metric_view": {"description", "source", "joins", "dimensions", "filter", "not_applicable_roles"},
+    "metric_view": {"description", "source", "joins", "dimensions", "filter", "not_applicable_roles",
+                    "default_filters"},
     "join": {"name", "source", "on", True},
     "dimension": {"name", "expr", "description", "role", "type"},
     "metric": {"metric_view", "description", "expr", "format", "source_rationale", "caveats"},
@@ -256,6 +261,7 @@ def parse(raw: Dict[str, Any]) -> SemanticLayer:
             values=v.get("values") or {},
             groups={g: tuple(str(x) for x in vals) for g, vals in (v.get("groups") or {}).items()},
             prefixes=tuple(v.get("prefixes") or ()),
+            rules=tuple(dict(r) for r in v.get("rules") or ()),
         )
 
     views = {
@@ -281,6 +287,8 @@ def parse(raw: Dict[str, Any]) -> SemanticLayer:
             name=name, description=_text(mv.get("description")), source=mv["source"], joins=joins,
             dimensions=dims, filter=mv.get("filter"),
             not_applicable_roles={k: _text(v) for k, v in (mv.get("not_applicable_roles") or {}).items()},
+            default_filters=tuple((f["dimension"], f.get("op", "eq"), f.get("value"))
+                                  for f in mv.get("default_filters") or ()),
         )
 
     metrics = {
@@ -339,7 +347,13 @@ def validate(layer: SemanticLayer) -> None:
                 errors.append(f"{where}: {{{{final:...}}}} needs vocabularies.final_status")
             elif kind == "league_of" and "source_league" not in layer.vocabularies:
                 errors.append(f"{where}: {{{{league_of:...}}}} needs vocabularies.source_league")
-            elif kind not in ("table", "view", "list", "label", "final", "league_of", "col"):
+            elif kind == "season_phase":
+                v = layer.vocabularies.get("season_phase")
+                if v is None or not v.rules:
+                    errors.append(f"{where}: {{{{season_phase:...}}}} needs vocabularies.season_phase.rules")
+                elif arg.count(":") != 1:
+                    errors.append(f"{where}: write {{{{season_phase:GAME_TYPE_EXPR:SOURCE_EXPR}}}}")
+            elif kind not in ("table", "view", "list", "label", "final", "league_of", "col", "season_phase"):
                 errors.append(f"{where}: unknown placeholder {{{{{kind}:...}}}}")
 
     for v in layer.views.values():
@@ -367,6 +381,11 @@ def validate(layer: SemanticLayer) -> None:
                 errors.append(f"metric view {mv.name}: join {j.name} reads {j.source}, not a defined view")
             if j.name == "source":
                 errors.append(f"metric view {mv.name}: a join can't be named source")
+        for dim, op, _ in mv.default_filters:
+            if dim not in names:
+                errors.append(f"metric view {mv.name}: default filter on unknown dimension {dim}")
+            if op not in ("eq", "ne", "in", "not_in"):
+                errors.append(f"metric view {mv.name}: default filter op {op} (use eq, ne, in or not_in)")
         for d in mv.dimensions:
             if d.role is not None and d.role not in ROLES:
                 errors.append(f"metric view {mv.name}: dimension {d.name} has unknown role {d.role}")

@@ -21,7 +21,7 @@ ALTER TABLE gbdp.gold_gbdp.dim_league ALTER COLUMN `dt` COMMENT 'Snapshot date.'
 
 ALTER TABLE gbdp.gold_gbdp.dim_league ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
 
-COMMENT ON TABLE gbdp.gold_gbdp.dim_team IS 'Team dimension, SCD2. Built each day from that day\'s games (every source with a games entity except kbo_api) and from the MLB season team list (silver mlb_statsapi/teams), which also covers MLB teams without a game that day. Each dt is a full snapshot of every version known by then. Grain: one row per team_id per version (valid_from_dt), within each dt snapshot. Sources: mlb_statsapi, npb_spaia, indy_local, kbo_local, lmb_local, retrosheet_local. Caveat: Always filter to one dt (normally the latest) and is_current = true, or use the view v_team_current. Caveat: Versions change when team_name, team_abbrev, home_city or league_id change. Caveat: KBO teams are missing. dim_team does not read kbo_api games, so the team_ids in fact_game and the KBO box scores have no dim_team row. Caveat: On a day with no silver mlb_statsapi/teams partition, MLB teams come only from that day\'s games, with team_abbrev and home_city null, and the SCD2 merge opens a new version with them null. Until the production rebuild of gold...';
+COMMENT ON TABLE gbdp.gold_gbdp.dim_team IS 'Team dimension, SCD2. Built each day from that day\'s games (every source with a games entity except kbo_api) and from the MLB season team list (silver mlb_statsapi/teams), which also covers MLB teams without a game that day. Each dt is a full snapshot of every version known by then. Grain: one row per team_id per version (valid_from_dt), within each dt snapshot. Sources: mlb_statsapi, npb_spaia, indy_local, kbo_local, lmb_local, retrosheet_local. Caveat: Always filter to one dt (normally the latest) and is_current = true, or use the view v_team_current. Caveat: Versions change when team_name, team_abbrev, home_city or league_id change. Caveat: KBO teams are missing. dim_team does not read kbo_api games, so the team_ids in fact_game and the KBO box scores have no dim_team row. Caveat: On a day with no silver mlb_statsapi/teams partition, team_abbrev and home_city are carried over from the previous snapshot of the same season; on a season\'s first day without one they are null. Partitions published before tha...';
 
 ALTER TABLE gbdp.gold_gbdp.dim_team ALTER COLUMN `team_id` COMMENT 'Canonical team ID.';
 
@@ -47,7 +47,7 @@ ALTER TABLE gbdp.gold_gbdp.dim_team ALTER COLUMN `dt` COMMENT 'Snapshot date.';
 
 ALTER TABLE gbdp.gold_gbdp.dim_team ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
 
-COMMENT ON TABLE gbdp.gold_gbdp.dim_player IS 'Player dimension, SCD2. Built each day from active rosters (MLB, NPB and the local sources) plus MLB\'s season player list, which adds players on a 40-man roster but not that day\'s active roster (injured list, minors, recently traded), since Statcast still sees them. NPB rows are players only: the NPB directory\'s managers and coaches are left out. Each dt is a full snapshot of every version known by then. Grain: one row per player_id per version (valid_from_dt), within each dt snapshot. Sources: mlb_statsapi, npb_spaia, indy_local, kbo_local, lmb_local, retrosheet_local. Caveat: Always filter to one dt (normally the latest) and is_current = true, or use the view v_player_current. Caveat: Versions change when primary_name, bats, throws, primary_position or league_id change. Caveat: kbo_api has no roster or player ID; its box-score players are identified by name and have no dim_player row. Caveat: Until the production rebuild of gold is verified, "NPB rows are players only" may not hold. The SCD2 merge keeps...';
+COMMENT ON TABLE gbdp.gold_gbdp.dim_player IS 'Player dimension, SCD2. Built each day from active rosters (MLB, NPB and the local sources) plus MLB\'s season player list, which adds players on a 40-man roster but not that day\'s active roster (injured list, minors, recently traded), since Statcast still sees them. NPB rows are players only: the NPB directory\'s managers and coaches are left out. Each dt is a full snapshot of every version known by then. Grain: one row per player_id per version (valid_from_dt), within each dt snapshot. Sources: mlb_statsapi, npb_spaia, indy_local, kbo_local, lmb_local, retrosheet_local. Caveat: Always filter to one dt (normally the latest) and is_current = true, or use the view v_player_current. Caveat: Versions change when primary_name, bats, throws, primary_position or league_id change. Caveat: kbo_api has no roster or player ID; its box-score players are identified by name and have no dim_player row. Caveat: Each season\'s snapshots start from that season\'s own data, and within a season the SCD2 merge keeps a player miss...';
 
 ALTER TABLE gbdp.gold_gbdp.dim_player ALTER COLUMN `player_id` COMMENT 'Canonical player ID.';
 
@@ -103,7 +103,7 @@ ALTER TABLE gbdp.gold_gbdp.dim_season ALTER COLUMN `dt` COMMENT 'Snapshot date.'
 
 ALTER TABLE gbdp.gold_gbdp.dim_season ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
 
-COMMENT ON TABLE gbdp.gold_gbdp.fact_game IS 'One row per game per source, in the dt of the schedule day the source listed it on. Grain: one row per (game_id, dt). Sources: mlb_statsapi, npb_spaia, kbo_api, indy_local, kbo_local, lmb_local, retrosheet_local. Caveat: A game can appear in more than one dt (postponed or suspended and resumed, or listed again on the next day\'s schedule). Count games with DISTINCT game_id, or use v_team_game, which keeps one row per game. Caveat: The same real game appears once per source that covers it (mlb_statsapi and retrosheet_local both have MLB); game_id differs per source. Filter on source for exactly-once counts. Caveat: status is free text and varies by source; scores are null until a game starts. Caveat: There is no game type column, so spring training, All-Star and postseason games are mixed in with the regular season. Semantic layer: configs/semantic_layer.yaml.';
+COMMENT ON TABLE gbdp.gold_gbdp.fact_game IS 'One row per game per source, in the dt of the schedule day the source listed it on. Grain: one row per (game_id, dt). Sources: mlb_statsapi, npb_spaia, kbo_api, indy_local, kbo_local, lmb_local, retrosheet_local. Caveat: A game can appear in more than one dt (postponed or suspended and resumed, or listed again on the next day\'s schedule). Count games with DISTINCT game_id, or use v_team_game, which keeps one row per game. Caveat: The same real game appears once per source that covers it (mlb_statsapi and retrosheet_local both have MLB); game_id differs per source. Filter on source for exactly-once counts. Caveat: status is free text and varies by source; scores are null until a game starts. Caveat: game_type is null for sources that don\'t give one (KBO, Retrosheet, local files) and in partitions published before gold had the column; season_phase calls those unknown. Semantic layer: configs/semantic_layer.yaml.';
 
 ALTER TABLE gbdp.gold_gbdp.fact_game ALTER COLUMN `game_id` COMMENT 'Canonical game ID, hashed from source and the source\'s game ID (game:mlb_statsapi:745123).';
 
@@ -120,6 +120,8 @@ ALTER TABLE gbdp.gold_gbdp.fact_game ALTER COLUMN `home_team_id` COMMENT 'FK to 
 ALTER TABLE gbdp.gold_gbdp.fact_game ALTER COLUMN `away_team_id` COMMENT 'FK to dim_team.';
 
 ALTER TABLE gbdp.gold_gbdp.fact_game ALTER COLUMN `venue` COMMENT 'Venue name (MLB, KBO, Retrosheet); null elsewhere.';
+
+ALTER TABLE gbdp.gold_gbdp.fact_game ALTER COLUMN `game_type` COMMENT 'The source\'s game type. MLB Stats API gameType (R regular season, S spring, E exhibition, A All-Star, F wild card, D division series, L LCS, W World Series); NPB SPAIA\'s Japanese name (セ・リーグ公式戦 / パ・リーグ公式戦 league games, セ・パ交流戦 interleague, クライマックスシリーズ, 日本シリーズ). Null for other sources. See vocabularies.season_phase.';
 
 ALTER TABLE gbdp.gold_gbdp.fact_game ALTER COLUMN `status` COMMENT 'The source\'s own status text, see vocabularies.final_status. NPB uses Japanese (試合終了 = final, 試合中止 = called off).';
 
@@ -361,7 +363,7 @@ ALTER TABLE gbdp.gold_gbdp.bridge_source_ids ALTER COLUMN `notes` COMMENT 'Alway
 
 ALTER TABLE gbdp.gold_gbdp.bridge_source_ids ALTER COLUMN `dt` COMMENT 'Snapshot date.';
 
-COMMENT ON TABLE gbdp.gold_gbdp.run_expectancy IS 'Season-to-date run expectancy (the RE24 matrix) per league: the average runs scored from each base/out state to the end of the half-inning, over every completed half-inning of that league\'s season through dt. The latest dt of a season is the full-season matrix only if every date was published in order: see the caveat. Grain: one row per (league_code, base_state, outs) per dt. Sources: fact_plate_appearance. Caveat: Only half-innings that reached three outs count (runs_to_end_of_inning not null). Caveat: Early in a season the counts are small and the values noisy; check pa_count. Caveat: Each dt is summed from run_expectancy_daily when that dt is published. Rebuilding an earlier date updates its daily row but leaves every later dt\'s run_expectancy stale until those dates are republished. For a matrix that is always current, sum run_expectancy_daily (metric view mv_run_expectancy, and v_plate_appearance\'s run values, do). Semantic layer: configs/semantic_layer.yaml.';
+COMMENT ON TABLE gbdp.gold_gbdp.run_expectancy IS 'Season-to-date run expectancy (the RE24 matrix) per league: the average runs scored from each base/out state to the end of the half-inning, over every completed half-inning of that league\'s season through dt. The latest dt of a season is the full-season matrix only if every date was published in order: see the caveat. Grain: one row per (league_code, base_state, outs) per dt. Sources: fact_plate_appearance. Caveat: Only half-innings that reached three outs count (runs_to_end_of_inning not null). Caveat: Early in a season the counts are small and the values noisy; check pa_count. Caveat: Each dt is summed from run_expectancy_daily. Publishing a date range now also rebuilds every later date of that season from the daily rows, but a later dt can still be stale if that refresh didn\'t run (an interrupted rebuild, or partitions from before the fix). Summing run_expectancy_daily is always current, and is what mv_run_expectancy and v_plate_appearance\'s run values do. Semantic layer: configs/semantic_layer.yaml.';
 
 ALTER TABLE gbdp.gold_gbdp.run_expectancy ALTER COLUMN `league_code` COMMENT 'MLB or NPB (the leagues with plate appearances).';
 
@@ -550,25 +552,25 @@ SELECT
 FROM gbdp.gold_gbdp.fact_boxscore_pitching p;
 
 CREATE OR REPLACE VIEW gbdp.gold_gbdp.v_team_game
-COMMENT 'One row per team per finished game: two per game (home and away). A game listed in several dts is kept once, on the first dt it was final. Games without both scores or not final (vocabularies.final_status) are left out.'
+COMMENT 'One row per team per finished game: two per game (home and away). A game listed in several dts is kept once, on the first dt it was final. Games without both scores or not final (vocabularies.final_status) are left out. season_phase comes from game_type (vocabularies.season_phase).'
 AS
 WITH ranked AS (
-  SELECT g.game_id, g.dt, g.source, g.home_team_id, g.away_team_id, g.home_score, g.away_score,
+  SELECT g.game_id, g.dt, g.source, g.game_type, g.home_team_id, g.away_team_id, g.home_score, g.away_score,
          ROW_NUMBER() OVER (PARTITION BY g.game_id ORDER BY g.dt) AS rn
   FROM gbdp.gold_gbdp.fact_game g
   WHERE (g.status IN ('Final', 'final', 'Game Over', 'Completed Early', '試合終了') OR g.status LIKE 'Final:%' OR g.status LIKE 'Completed Early:%') AND g.home_score IS NOT NULL AND g.away_score IS NOT NULL
 ),
 games AS (
-  SELECT game_id, dt, source, home_team_id, away_team_id, home_score, away_score
+  SELECT game_id, dt, source, game_type, home_team_id, away_team_id, home_score, away_score
   FROM ranked
   WHERE rn = 1
 ),
 sides AS (
-  SELECT game_id, dt, source, home_team_id AS team_id, away_team_id AS opponent_team_id,
+  SELECT game_id, dt, source, game_type, home_team_id AS team_id, away_team_id AS opponent_team_id,
          1 AS is_home, home_score AS runs_scored, away_score AS runs_allowed
   FROM games
   UNION ALL
-  SELECT game_id, dt, source, away_team_id AS team_id, home_team_id AS opponent_team_id,
+  SELECT game_id, dt, source, game_type, away_team_id AS team_id, home_team_id AS opponent_team_id,
          0 AS is_home, away_score AS runs_scored, home_score AS runs_allowed
   FROM games
 )
@@ -578,6 +580,8 @@ SELECT
   YEAR(CAST(dt AS DATE)) AS season_year,
   CASE source WHEN 'mlb_statsapi' THEN 'MLB' WHEN 'mlb_statcast' THEN 'MLB' WHEN 'retrosheet_local' THEN 'MLB' WHEN 'npb_spaia' THEN 'NPB' WHEN 'kbo_api' THEN 'KBO' WHEN 'kbo_local' THEN 'KBO' WHEN 'lmb_local' THEN 'LMB' WHEN 'indy_local' THEN 'INDY' END AS league_code,
   source AS data_source,
+  game_type,
+  CASE WHEN game_type IS NULL THEN 'unknown' WHEN source = 'mlb_statsapi' AND (game_type IN ('R')) THEN 'regular' WHEN source = 'mlb_statsapi' AND (game_type IN ('F', 'D', 'L', 'W')) THEN 'postseason' WHEN source = 'mlb_statsapi' AND (game_type IN ('A')) THEN 'allstar' WHEN source = 'mlb_statsapi' AND (game_type IN ('S')) THEN 'preseason' WHEN source = 'mlb_statsapi' AND (game_type IN ('E')) THEN 'exhibition' WHEN source = 'npb_spaia' AND (game_type IN ('セ・パ交流戦') OR game_type LIKE '%公式戦') THEN 'regular' WHEN source = 'npb_spaia' AND (game_type IN ('クライマックスシリーズ', '日本シリーズ')) THEN 'postseason' WHEN source = 'npb_spaia' AND (game_type IN ('オールスターゲーム')) THEN 'allstar' WHEN source = 'npb_spaia' AND (game_type IN ('オープン戦')) THEN 'preseason' ELSE 'other' END AS season_phase,
   team_id, opponent_team_id, is_home, runs_scored, runs_allowed,
   CASE WHEN runs_scored > runs_allowed THEN 1 ELSE 0 END AS is_win,
   CASE WHEN runs_scored < runs_allowed THEN 1 ELSE 0 END AS is_loss,
@@ -874,7 +878,7 @@ WITH METRICS
 LANGUAGE YAML
 AS $$
 version: 1.1
-comment: Team results from finished games in fact_game (every league with game scores). fact_game has no game type, so spring training, All-Star and postseason games count alongside the regular season. Defined in configs/semantic_layer.yaml.
+comment: 'Team results from finished games in fact_game (every league with game scores). Filter season_phase for the part of the season you want: the API and MCP default to regular season (season_phase regular or unknown) when a request doesn''t filter season_phase; a Unity Catalog metric view can''t hold a default, so filter it yourself there. Defined in configs/semantic_layer.yaml.'
 source: gbdp.gold_gbdp.v_team_game
 joins:
 - name: team
@@ -902,6 +906,12 @@ dimensions:
 - name: is_home
   expr: source.is_home
   comment: 1 for home games, 0 for away.
+- name: season_phase
+  expr: source.season_phase
+  comment: regular, postseason, allstar, preseason, exhibition, other or unknown (vocabularies.season_phase). Filter to regular for a season record.
+- name: game_type
+  expr: source.game_type
+  comment: The source's own game type code or name.
 - name: league_code
   expr: source.league_code
   comment: League code.
@@ -917,28 +927,28 @@ dimensions:
 measures:
 - name: games_played
   expr: COUNT(*)
-  comment: 'Finished games. Caveats: fact_game has no game type, so spring training, All-Star and postseason games count with the regular season. Filter by date range to the regular season until gold carries a game type.'
+  comment: 'Finished games. Caveats: Regular season (and games whose type is unknown) by default in the API and MCP; filter season_phase in Unity Catalog. Games published before gold had game_type are unknown, postseason included.'
 - name: wins
   expr: SUM(source.is_win)
-  comment: 'Wins. Caveats: fact_game has no game type, so spring training, All-Star and postseason games count with the regular season. Filter by date range to the regular season until gold carries a game type.'
+  comment: 'Wins. Caveats: Regular season (and games whose type is unknown) by default in the API and MCP; filter season_phase in Unity Catalog. Games published before gold had game_type are unknown, postseason included.'
 - name: losses
   expr: SUM(source.is_loss)
-  comment: 'Losses. Caveats: fact_game has no game type, so spring training, All-Star and postseason games count with the regular season. Filter by date range to the regular season until gold carries a game type.'
+  comment: 'Losses. Caveats: Regular season (and games whose type is unknown) by default in the API and MCP; filter season_phase in Unity Catalog. Games published before gold had game_type are unknown, postseason included.'
 - name: ties
   expr: SUM(source.is_tie)
-  comment: 'Ties (NPB plays them). Caveats: fact_game has no game type, so spring training, All-Star and postseason games count with the regular season. Filter by date range to the regular season until gold carries a game type.'
+  comment: 'Ties (NPB plays them). Caveats: Regular season (and games whose type is unknown) by default in the API and MCP; filter season_phase in Unity Catalog. Games published before gold had game_type are unknown, postseason included.'
 - name: win_pct
   expr: SUM(source.is_win) / NULLIF(SUM(source.is_win) + SUM(source.is_loss), 0)
-  comment: 'Winning percentage, wins / (wins + losses); ties don''t count, as in NPB standings. Caveats: fact_game has no game type, so spring training, All-Star and postseason games count with the regular season. Filter by date range to the regular season until gold carries a game type.'
+  comment: 'Winning percentage, wins / (wins + losses); ties don''t count, as in NPB standings. Caveats: Regular season (and games whose type is unknown) by default in the API and MCP; filter season_phase in Unity Catalog. Games published before gold had game_type are unknown, postseason included.'
 - name: runs_scored
   expr: SUM(source.runs_scored)
-  comment: 'Runs scored. Caveats: fact_game has no game type, so spring training, All-Star and postseason games count with the regular season. Filter by date range to the regular season until gold carries a game type.'
+  comment: 'Runs scored. Caveats: Regular season (and games whose type is unknown) by default in the API and MCP; filter season_phase in Unity Catalog. Games published before gold had game_type are unknown, postseason included.'
 - name: runs_allowed
   expr: SUM(source.runs_allowed)
-  comment: 'Runs allowed. Caveats: fact_game has no game type, so spring training, All-Star and postseason games count with the regular season. Filter by date range to the regular season until gold carries a game type.'
+  comment: 'Runs allowed. Caveats: Regular season (and games whose type is unknown) by default in the API and MCP; filter season_phase in Unity Catalog. Games published before gold had game_type are unknown, postseason included.'
 - name: run_differential
   expr: SUM(source.runs_scored) - SUM(source.runs_allowed)
-  comment: 'Runs scored minus runs allowed. Caveats: fact_game has no game type, so spring training, All-Star and postseason games count with the regular season. Filter by date range to the regular season until gold carries a game type.'
+  comment: 'Runs scored minus runs allowed. Caveats: Regular season (and games whose type is unknown) by default in the API and MCP; filter season_phase in Unity Catalog. Games published before gold had game_type are unknown, postseason included.'
 $$;
 
 CREATE OR REPLACE VIEW gbdp.gold_gbdp.mv_pitches

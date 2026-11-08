@@ -128,6 +128,29 @@ vocabularies:
     values: [Final, final, Game Over, Completed Early, 試合終了]
     prefixes: ["Final:", "Completed Early:"]
 
+  season_phase:
+    description: >
+      Which part of the season a game belongs to, mapped from
+      fact_game.game_type per source. Rules are checked in order and the
+      first match wins: values match exactly, suffixes match the end of the
+      text. A game_type no rule matches is other (kept, never dropped); a
+      null game_type (sources without one, and rows published before gold
+      had the column) is unknown. Team records default to regular and
+      unknown (see mv_team_games).
+    rules:
+      - {phase: regular, source: mlb_statsapi, values: [R]}
+      - {phase: postseason, source: mlb_statsapi, values: [F, D, L, W]}
+      - {phase: allstar, source: mlb_statsapi, values: [A]}
+      - {phase: preseason, source: mlb_statsapi, values: [S]}
+      - {phase: exhibition, source: mlb_statsapi, values: [E]}
+      - {phase: regular, source: npb_spaia, suffixes: [公式戦], values: [セ・パ交流戦]}
+      - {phase: postseason, source: npb_spaia, values: [クライマックスシリーズ, 日本シリーズ]}
+      - {phase: allstar, source: npb_spaia, values: [オールスターゲーム]}
+      - {phase: preseason, source: npb_spaia, values: [オープン戦]}
+    values: [regular, postseason, allstar, preseason, exhibition, other, unknown]
+    groups:
+      record_default: [regular, unknown]
+
   pitch_result:
     description: >
       fact_pitch.result, Statcast's pitch description. A swing is any pitch
@@ -203,7 +226,7 @@ tables:
       - Always filter to one dt (normally the latest) and is_current = true, or use the view v_team_current.
       - Versions change when team_name, team_abbrev, home_city or league_id change.
       - KBO teams are missing. dim_team does not read kbo_api games, so the team_ids in fact_game and the KBO box scores have no dim_team row.
-      - On a day with no silver mlb_statsapi/teams partition, MLB teams come only from that day's games, with team_abbrev and home_city null, and the SCD2 merge opens a new version with them null. Until the production rebuild of gold is verified, check team_abbrev before relying on it.
+      - On a day with no silver mlb_statsapi/teams partition, team_abbrev and home_city are carried over from the previous snapshot of the same season; on a season's first day without one they are null. Partitions published before that fix, until the production rebuild is verified, can have versions with them null.
 
   dim_player:
     description: >
@@ -241,7 +264,7 @@ tables:
       - Always filter to one dt (normally the latest) and is_current = true, or use the view v_player_current.
       - Versions change when primary_name, bats, throws, primary_position or league_id change.
       - kbo_api has no roster or player ID; its box-score players are identified by name and have no dim_player row.
-      - Until the production rebuild of gold is verified, "NPB rows are players only" may not hold. The SCD2 merge keeps any player missing from a day's input as a current version, so NPB managers and coaches loaded before the players-only change stay current, as does anyone who has left every roster. MLB versions built from backfilled roster bronze can reflect the fetch day's roster rather than dt's.
+      - Each season's snapshots start from that season's own data, and within a season the SCD2 merge keeps a player missing from a day's input as current (an off day is not a release). So a player who has left every roster stays current until the season ends. Until the production rebuild is verified, older partitions can also hold NPB managers and coaches, and MLB versions built from backfilled roster bronze can reflect the fetch day's roster rather than dt's.
 
   dim_season:
     description: >
@@ -282,6 +305,13 @@ tables:
       home_team_id: FK to dim_team.
       away_team_id: FK to dim_team.
       venue: Venue name (MLB, KBO, Retrosheet); null elsewhere.
+      game_type: >
+        The source's game type. MLB Stats API gameType (R regular season, S
+        spring, E exhibition, A All-Star, F wild card, D division series, L
+        LCS, W World Series); NPB SPAIA's Japanese name (セ・リーグ公式戦 /
+        パ・リーグ公式戦 league games, セ・パ交流戦 interleague,
+        クライマックスシリーズ, 日本シリーズ). Null for other sources. See
+        vocabularies.season_phase.
       status: The source's own status text, see vocabularies.final_status. NPB uses Japanese (試合終了 = final, 試合中止 = called off).
       home_score: Home runs, final or as of the fetch.
       away_score: Away runs, final or as of the fetch.
@@ -293,7 +323,7 @@ tables:
       - A game can appear in more than one dt (postponed or suspended and resumed, or listed again on the next day's schedule). Count games with DISTINCT game_id, or use v_team_game, which keeps one row per game.
       - The same real game appears once per source that covers it (mlb_statsapi and retrosheet_local both have MLB); game_id differs per source. Filter on source for exactly-once counts.
       - status is free text and varies by source; scores are null until a game starts.
-      - There is no game type column, so spring training, All-Star and postseason games are mixed in with the regular season.
+      - game_type is null for sources that don't give one (KBO, Retrosheet, local files) and in partitions published before gold had the column; season_phase calls those unknown.
 
   fact_roster:
     description: Daily roster snapshot. NPB rows are players only, no managers or coaches.
@@ -552,7 +582,7 @@ tables:
     caveats:
       - Only half-innings that reached three outs count (runs_to_end_of_inning not null).
       - Early in a season the counts are small and the values noisy; check pa_count.
-      - Each dt is summed from run_expectancy_daily when that dt is published. Rebuilding an earlier date updates its daily row but leaves every later dt's run_expectancy stale until those dates are republished. For a matrix that is always current, sum run_expectancy_daily (metric view mv_run_expectancy, and v_plate_appearance's run values, do).
+      - Each dt is summed from run_expectancy_daily. Publishing a date range now also rebuilds every later date of that season from the daily rows, but a later dt can still be stale if that refresh didn't run (an interrupted rebuild, or partitions from before the fix). Summing run_expectancy_daily is always current, and is what mv_run_expectancy and v_plate_appearance's run values do.
 
   run_expectancy_daily:
     description: >
@@ -757,25 +787,25 @@ views:
       One row per team per finished game: two per game (home and away). A
       game listed in several dts is kept once, on the first dt it was final.
       Games without both scores or not final (vocabularies.final_status) are
-      left out.
+      left out. season_phase comes from game_type (vocabularies.season_phase).
     sql: |
       WITH ranked AS (
-        SELECT g.game_id, g.dt, g.source, g.home_team_id, g.away_team_id, g.home_score, g.away_score,
+        SELECT g.game_id, g.dt, g.source, g.game_type, g.home_team_id, g.away_team_id, g.home_score, g.away_score,
                ROW_NUMBER() OVER (PARTITION BY g.game_id ORDER BY g.dt) AS rn
         FROM {{table:fact_game}} g
         WHERE {{final:g.status}} AND g.home_score IS NOT NULL AND g.away_score IS NOT NULL
       ),
       games AS (
-        SELECT game_id, dt, source, home_team_id, away_team_id, home_score, away_score
+        SELECT game_id, dt, source, game_type, home_team_id, away_team_id, home_score, away_score
         FROM ranked
         WHERE rn = 1
       ),
       sides AS (
-        SELECT game_id, dt, source, home_team_id AS team_id, away_team_id AS opponent_team_id,
+        SELECT game_id, dt, source, game_type, home_team_id AS team_id, away_team_id AS opponent_team_id,
                1 AS is_home, home_score AS runs_scored, away_score AS runs_allowed
         FROM games
         UNION ALL
-        SELECT game_id, dt, source, away_team_id AS team_id, home_team_id AS opponent_team_id,
+        SELECT game_id, dt, source, game_type, away_team_id AS team_id, home_team_id AS opponent_team_id,
                0 AS is_home, away_score AS runs_scored, home_score AS runs_allowed
         FROM games
       )
@@ -785,6 +815,8 @@ views:
         YEAR(CAST(dt AS DATE)) AS season_year,
         {{league_of:source}} AS league_code,
         source AS data_source,
+        game_type,
+        {{season_phase:game_type:source}} AS season_phase,
         team_id, opponent_team_id, is_home, runs_scored, runs_allowed,
         CASE WHEN runs_scored > runs_allowed THEN 1 ELSE 0 END AS is_win,
         CASE WHEN runs_scored < runs_allowed THEN 1 ELSE 0 END AS is_loss,
@@ -905,9 +937,13 @@ metric_views:
   mv_team_games:
     description: >
       Team results from finished games in fact_game (every league with game
-      scores). fact_game has no game type, so spring training, All-Star and
-      postseason games count alongside the regular season.
+      scores). Filter season_phase for the part of the season you want: the
+      API and MCP default to regular season (season_phase regular or unknown)
+      when a request doesn't filter season_phase; a Unity Catalog metric view
+      can't hold a default, so filter it yourself there.
     source: v_team_game
+    default_filters:
+      - {dimension: season_phase, op: in, value: [regular, unknown]}
     not_applicable_roles:
       player: Game results belong to teams, not players.
     joins:
@@ -924,6 +960,8 @@ metric_views:
       - {name: opponent_team_id, expr: source.opponent_team_id, description: The opponent.}
       - {name: opponent_name, expr: opponent.team_name, description: The opponent's current name.}
       - {name: is_home, expr: source.is_home, type: int, description: "1 for home games, 0 for away."}
+      - {name: season_phase, expr: source.season_phase, description: "regular, postseason, allstar, preseason, exhibition, other or unknown (vocabularies.season_phase). Filter to regular for a season record."}
+      - {name: game_type, expr: source.game_type, description: The source's own game type code or name.}
       - {name: league_code, expr: source.league_code, role: league, description: League code.}
       - {name: season_year, expr: source.season_year, role: season, type: int, description: Calendar year of the game.}
       - {name: game_date, expr: source.game_date, role: date, type: date, description: Game date (first dt the game was final).}
@@ -1225,7 +1263,7 @@ metrics:
       fact_game has final scores for every league with games (MLB, NPB, KBO);
       fact_standings covers NPB only, and box scores miss NPB.
     caveats: &team_caveats
-      - fact_game has no game type, so spring training, All-Star and postseason games count with the regular season. Filter by date range to the regular season until gold carries a game type.
+      - Regular season (and games whose type is unknown) by default in the API and MCP; filter season_phase in Unity Catalog. Games published before gold had game_type are unknown, postseason included.
   wins:
     metric_view: mv_team_games
     description: Wins.

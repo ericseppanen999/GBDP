@@ -112,6 +112,18 @@ def render(sql: str, layer: SemanticLayer, target: Target) -> str:
             values = layer.vocabularies[vocab].values
             whens = " ".join(f"WHEN {_literal_key(k, target)} THEN {target.string(lbl)}" for k, lbl in values.items())
             return f"CASE {expr} {whens} ELSE CAST({expr} AS STRING) END"
+        if kind == "season_phase":
+            type_expr, _, source_expr = arg.partition(":")
+            type_expr, source_expr = render(type_expr, layer, target), render(source_expr, layer, target)
+            whens = [f"WHEN {type_expr} IS NULL THEN 'unknown'"]
+            for rule in layer.vocabularies["season_phase"].rules:
+                tests = []
+                if rule.get("values"):
+                    tests.append(f"{type_expr} IN {in_list(rule['values'], target)}")
+                tests += [f"{type_expr} LIKE {target.string('%' + sfx)}" for sfx in rule.get("suffixes") or ()]
+                whens.append(f"WHEN {source_expr} = {target.string(rule['source'])} AND ({' OR '.join(tests)}) "
+                             f"THEN {target.string(rule['phase'])}")
+            return "CASE " + " ".join(whens) + " ELSE 'other' END"
         if kind == "final":
             expr = render(arg, layer, target)
             v = layer.vocabularies["final_status"]

@@ -174,6 +174,41 @@ def test_team_records_count_each_game_once(semantic_gold):
     assert [(r["ties"], r["win_pct"]) for r in npb] == [(1, None), (1, None)]
 
 
+def test_team_records_default_to_the_regular_season(semantic_gold):
+    # The All-Star game (MLB A) and NPB's Climax Series and unmapped game type
+    # are left out by default, and each can be asked for by season_phase.
+    phases = {(r["league_code"], r["season_phase"]): r["games_played"] for r in run(
+        ["games_played"], ["league_code", "season_phase"],
+        [("season_phase", "in", ["regular", "postseason", "allstar", "preseason", "exhibition", "other", "unknown"])])}
+    assert phases == {("MLB", "regular"): 4, ("MLB", "allstar"): 2, ("NPB", "regular"): 2,
+                      ("NPB", "postseason"): 2, ("NPB", "other"): 2, ("KBO", "unknown"): 2}
+    by_default = {r["league_code"]: r["games_played"] for r in run(["games_played"], ["league_code"])}
+    assert by_default == {"MLB": 4, "NPB": 2, "KBO": 2}  # regular, plus unknown (KBO has no game type)
+    allstar = one(["wins", "runs_scored"], [("team_abbrev", "eq", "NYY"), ("season_phase", "eq", "allstar")])
+    assert (allstar["wins"], allstar["runs_scored"]) == (1, 9)
+    types = {(r["game_type"], r["season_phase"]) for r in run(
+        ["games_played"], ["game_type", "season_phase"], [("season_phase", "ne", "nothing")])}
+    assert types == {("R", "regular"), ("A", "allstar"), ("セ・パ交流戦", "regular"),
+                     ("クライマックスシリーズ", "postseason"), ("ファーム交流戦", "other"), (None, "unknown")}
+    # The default is listed with the metric.
+    assert SL.metric_summary("wins")["default_filters"] == [
+        {"dimension": "season_phase", "op": "in", "value": ["regular", "unknown"]}]
+
+
+def test_season_phase_rules_cover_npb_league_games():
+    from gbdp.semantic.render import duckdb_target, render
+    import duckdb
+
+    case = render("{{season_phase:t:s}}", SL, duckdb_target())
+    con = duckdb.connect()
+    got = {t: con.execute(f"SELECT {case} FROM (SELECT ? AS t, ? AS s)", [t, src]).fetchone()[0]
+           for t, src in [("セ・リーグ公式戦", "npb_spaia"), ("パ・リーグ公式戦", "npb_spaia"), ("日本シリーズ", "npb_spaia"),
+                          ("W", "mlb_statsapi"), ("F", "mlb_statsapi"), ("S", "mlb_statsapi"),
+                          ("R", "npb_spaia"), ("Z", "mlb_statsapi")]}
+    assert got == {"セ・リーグ公式戦": "regular", "パ・リーグ公式戦": "regular", "日本シリーズ": "postseason",
+                   "W": "postseason", "F": "postseason", "S": "preseason", "R": "other", "Z": "other"}
+
+
 # --- pitches ---------------------------------------------------------------------------
 
 def test_velocity_by_pitch_type_and_whiff_rate(semantic_gold):
@@ -271,7 +306,7 @@ def test_api_lists_describes_and_computes_metrics(semantic_gold):
     # /query still refuses writes, and can read the semantic views.
     assert client.post("/query", json={"sql": "DROP VIEW v_plate_appearance"}).status_code == 400
     rows = client.post("/query", json={"sql": "SELECT count(*) AS n FROM v_team_game"}).json()
-    assert rows == [{"n": 8}]
+    assert rows == [{"n": 14}]  # 7 finished games (3 MLB, 3 NPB, 1 KBO), two sides each
 
 
 def test_metric_query_takes_the_api_token_and_hides_internal_errors(semantic_gold, monkeypatch):

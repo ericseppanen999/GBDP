@@ -122,17 +122,21 @@ def build_silver(silver: Path) -> None:
     # --- MLB Stats API -----------------------------------------------------
     game_1001 = {"game_id": "1001", "game_date": d1.isoformat(), "home_team_id": NYY, "home_team_name": "New York Yankees",
                  "away_team_id": BOS, "away_team_name": "Boston Red Sox", "venue": "Yankee Stadium",
-                 "status": "Final", "home_score": 3, "away_score": 0}
+                 "status": "Final", "game_type": "R", "home_score": 3, "away_score": 0}
     _write(silver, "mlb_statsapi", "games", d1, [game_1001])
     _write(silver, "mlb_statsapi", "games", d2, [
         # 1001 shows up again on the next day's schedule: it must count once.
         game_1001,
         {"game_id": "1002", "game_date": d2.isoformat(), "home_team_id": BOS, "home_team_name": "Boston Red Sox",
          "away_team_id": NYY, "away_team_name": "New York Yankees", "venue": "Fenway Park",
-         "status": "Final", "home_score": 4, "away_score": 5},
+         "status": "Final", "game_type": "R", "home_score": 4, "away_score": 5},
+        # An All-Star game (A): not part of either team's regular season.
+        {"game_id": "1004", "game_date": d2.isoformat(), "home_team_id": NYY, "home_team_name": "New York Yankees",
+         "away_team_id": BOS, "away_team_name": "Boston Red Sox", "venue": "Yankee Stadium",
+         "status": "Final", "game_type": "A", "home_score": 9, "away_score": 1},
         {"game_id": "1003", "game_date": d2.isoformat(), "home_team_id": BOS, "home_team_name": "Boston Red Sox",
          "away_team_id": NYY, "away_team_name": "New York Yankees", "venue": "Fenway Park",
-         "status": "Postponed", "home_score": None, "away_score": None},
+         "status": "Postponed", "game_type": "R", "home_score": None, "away_score": None},
     ])
     teams = [{"team_id": NYY, "team_name": "New York Yankees", "team_abbrev": "NYY", "home_city": "Bronx"},
              {"team_id": BOS, "team_name": "Boston Red Sox", "team_abbrev": "BOS", "home_city": "Boston"}]
@@ -177,7 +181,14 @@ def build_silver(silver: Path) -> None:
     _write(silver, "npb_spaia", "games", d2, [
         {"game_id": "n1", "game_date": d2.isoformat(), "home_team_id": NPB_HOME, "home_team_name": "西武",
          "away_team_id": NPB_AWAY, "away_team_name": "広島", "home_score": 2, "away_score": 2,
-         "game_state_name": "試合終了"}])
+         "game_state_name": "試合終了", "game_type_name": "セ・パ交流戦"},
+        # Postseason, and a game type no rule knows (other).
+        {"game_id": "n2", "game_date": d2.isoformat(), "home_team_id": NPB_HOME, "home_team_name": "西武",
+         "away_team_id": NPB_AWAY, "away_team_name": "広島", "home_score": 3, "away_score": 1,
+         "game_state_name": "試合終了", "game_type_name": "クライマックスシリーズ"},
+        {"game_id": "n3", "game_date": d2.isoformat(), "home_team_id": NPB_HOME, "home_team_name": "西武",
+         "away_team_id": NPB_AWAY, "away_team_name": "広島", "home_score": 0, "away_score": 4,
+         "game_state_name": "試合終了", "game_type_name": "ファーム交流戦"}])
     _write(silver, "npb_spaia", "rosters", d2, [
         {"team_id": NPB_AWAY, "player_id": "np1", "player_name": "名原　典彦", "position": "OF", "role": "player",
          "raw_json": json.dumps({"PlayerNameK": "ナハラ　ノリヒコ"})},

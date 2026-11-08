@@ -130,6 +130,10 @@ def compile_request(layer: SemanticLayer, req: MetricRequest, target: Target, pa
     if mv.filter:
         where.append(f"({render(mv.filter, layer, target)})")
     filters = list(req.filters)
+    # A metric view's default filters hold unless the request filters that
+    # dimension itself (team records: regular season unless asked otherwise).
+    asked = {f.dimension for f in filters}
+    filters += [Filter(d, op, v) for d, op, v in mv.default_filters if d not in asked]
     if req.start or req.end:
         date_dim = mv.dimension_for_role("date")
         if date_dim is None:
