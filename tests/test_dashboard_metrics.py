@@ -81,7 +81,7 @@ def test_totals_count_only_the_season(semantic_gold):
     assert after == before
     assert before[0] == "2026" and before[1] > 0 and before[-1].startswith("2026-")
     for dataset in ("daily_coverage", "quality"):
-        assert f"YEAR(CAST(dt AS DATE)) = ({mod.SEASON_SQL})" in _sql(dataset)
+        assert f"WHERE {mod.IN_SEASON}" in _sql(dataset)
 
 
 def test_the_season_rolls_over_with_the_first_regular_season_game(semantic_gold):

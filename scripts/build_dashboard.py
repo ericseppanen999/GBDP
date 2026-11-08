@@ -32,7 +32,9 @@ SEASON_SQL = (f"SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM {G}.fact_game sg "
               f"WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R'")
 SEASON = SqlExpr(SEASON_SQL)
 # Every count on the season page reads only that season's partitions.
-IN_SEASON = f"YEAR(CAST(dt AS DATE)) = ({SEASON_SQL})"
+# A range on dt itself, not YEAR(dt), so the warehouse can prune partitions.
+IN_SEASON = (f"dt >= concat(CAST(({SEASON_SQL}) AS STRING), '-01-01') "
+             f"AND dt < concat(CAST(({SEASON_SQL}) + 1 AS STRING), '-01-01')")
 
 DATASETS = {
     "totals": ("Totals", f"""

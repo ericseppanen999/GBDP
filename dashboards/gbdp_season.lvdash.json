@@ -6,12 +6,12 @@
       "queryLines": [
         "SELECT\n",
         "  CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') AS STRING) AS season,\n",
-        "  (SELECT count(DISTINCT game_id) FROM gbdp.gold_gbdp.fact_game WHERE YEAR(CAST(dt AS DATE)) = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')) AS games,\n",
-        "  (SELECT count(*) FROM gbdp.gold_gbdp.fact_plate_appearance WHERE YEAR(CAST(dt AS DATE)) = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')) AS plate_appearances,\n",
-        "  (SELECT count(*) FROM gbdp.gold_gbdp.fact_pitch WHERE YEAR(CAST(dt AS DATE)) = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')) AS pitches,\n",
+        "  (SELECT count(DISTINCT game_id) FROM gbdp.gold_gbdp.fact_game WHERE dt >= concat(CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') AS STRING), '-01-01') AND dt < concat(CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') + 1 AS STRING), '-01-01')) AS games,\n",
+        "  (SELECT count(*) FROM gbdp.gold_gbdp.fact_plate_appearance WHERE dt >= concat(CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') AS STRING), '-01-01') AND dt < concat(CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') + 1 AS STRING), '-01-01')) AS plate_appearances,\n",
+        "  (SELECT count(*) FROM gbdp.gold_gbdp.fact_pitch WHERE dt >= concat(CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') AS STRING), '-01-01') AND dt < concat(CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') + 1 AS STRING), '-01-01')) AS pitches,\n",
         "  (SELECT count(*) FROM gbdp.gold_gbdp.dim_player WHERE is_current AND dt = (SELECT max(dt) FROM gbdp.gold_gbdp.dim_player)) AS players,\n",
-        "  (SELECT count(DISTINCT dt) FROM gbdp.gold_gbdp.fact_game WHERE YEAR(CAST(dt AS DATE)) = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')) AS days_loaded,\n",
-        "  (SELECT max(dt) FROM gbdp.gold_gbdp.fact_game WHERE YEAR(CAST(dt AS DATE)) = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')) AS latest_day\n"
+        "  (SELECT count(DISTINCT dt) FROM gbdp.gold_gbdp.fact_game WHERE dt >= concat(CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') AS STRING), '-01-01') AND dt < concat(CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') + 1 AS STRING), '-01-01')) AS days_loaded,\n",
+        "  (SELECT max(dt) FROM gbdp.gold_gbdp.fact_game WHERE dt >= concat(CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') AS STRING), '-01-01') AND dt < concat(CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') + 1 AS STRING), '-01-01')) AS latest_day\n"
       ]
     },
     {
@@ -22,7 +22,7 @@
         "       CASE source WHEN 'mlb_statcast' THEN 'MLB (Statcast)' WHEN 'npb_spaia' THEN 'NPB' ELSE source END AS feed,\n",
         "       count(*) AS plate_appearances\n",
         "FROM gbdp.gold_gbdp.fact_plate_appearance\n",
-        "WHERE YEAR(CAST(dt AS DATE)) = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')\n",
+        "WHERE dt >= concat(CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') AS STRING), '-01-01') AND dt < concat(CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') + 1 AS STRING), '-01-01')\n",
         "GROUP BY ALL\n"
       ]
     },
@@ -33,7 +33,7 @@
         "SELECT CAST(dt AS DATE) AS day, `check`, coalesce(`table`, '') AS table_name,\n",
         "       CASE WHEN ok THEN 'pass' ELSE 'fail' END AS result\n",
         "FROM gbdp.gold_gbdp.audit_quality\n",
-        "WHERE YEAR(CAST(dt AS DATE)) = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')\n"
+        "WHERE dt >= concat(CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') AS STRING), '-01-01') AND dt < concat(CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') + 1 AS STRING), '-01-01')\n"
       ]
     },
     {
