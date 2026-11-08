@@ -241,7 +241,7 @@ ALTER TABLE gbdp.gold_gbdp.fact_plate_appearance ALTER COLUMN `base_state_before
 
 ALTER TABLE gbdp.gold_gbdp.fact_plate_appearance ALTER COLUMN `outs_before` COMMENT 'Outs before the PA (0-2).';
 
-ALTER TABLE gbdp.gold_gbdp.fact_plate_appearance ALTER COLUMN `base_state_after` COMMENT 'Runners after the PA; 0 when it ended the half-inning; null when it ended the game short of three outs (Statcast walk-off or a TRUNCATED walk-off). For NPB, the runners are read from the next PA\'s header, or for the last PA of a half-inning that didn\'t reach three outs (a walk-off) from the end of the result text, which writes 0 (bases empty) when the text names no base. NPB walk-off run values are therefore unreliable.';
+ALTER TABLE gbdp.gold_gbdp.fact_plate_appearance ALTER COLUMN `base_state_after` COMMENT 'Runners after the PA; 0 when it ended the half-inning; null (unknown) when it ended the game short of three outs, a walk-off, in every source. For NPB, the runners come from the next PA\'s header, or for a half-inning\'s last PA from the end of its result text, and are null when that text names no runners.';
 
 ALTER TABLE gbdp.gold_gbdp.fact_plate_appearance ALTER COLUMN `outs_after` COMMENT 'Outs after the PA (0-3).';
 
@@ -440,28 +440,34 @@ ALTER TABLE gbdp.gold_gbdp.feature_player_rolling_30d ALTER COLUMN `dt` COMMENT 
 ALTER TABLE gbdp.gold_gbdp.feature_player_rolling_30d ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
 
 CREATE OR REPLACE VIEW gbdp.gold_gbdp.v_player_current
-COMMENT 'Current version of every player, from the latest dim_player snapshot holding the player (each snapshot carries every known player forward, so that is the latest dt). One row per player_id.'
+COMMENT 'Current version of every player in the latest dim_player snapshot (the newest dt only; a player missing from it is not current, whatever older snapshots say). One row per player_id.'
 AS
 SELECT player_id, primary_name, bats, throws, primary_position, league_id
 FROM (
-  SELECT p.player_id, p.primary_name, p.bats, p.throws, p.primary_position, p.league_id,
+  SELECT p.player_id, p.primary_name, p.bats, p.throws, p.primary_position, p.league_id, p.dt,
+         MAX(p.dt) OVER () AS latest_dt,
          ROW_NUMBER() OVER (PARTITION BY p.player_id ORDER BY p.dt DESC, p.valid_from_dt DESC) AS rn
   FROM gbdp.gold_gbdp.dim_player p
   WHERE p.is_current
 ) ranked
-WHERE rn = 1;
+-- Only entities in the newest snapshot. (A join to MAX(dt), or a
+-- scalar subquery, hits a DuckDB 1.5 binder error once joined.)
+WHERE rn = 1 AND dt = latest_dt;
 
 CREATE OR REPLACE VIEW gbdp.gold_gbdp.v_team_current
-COMMENT 'Current version of every team, from the latest dim_team snapshot holding the team (each snapshot carries every known team forward). One row per team_id.'
+COMMENT 'Current version of every team in the latest dim_team snapshot (the newest dt only). One row per team_id.'
 AS
 SELECT team_id, team_name, team_abbrev, home_city, league_id
 FROM (
-  SELECT t.team_id, t.team_name, t.team_abbrev, t.home_city, t.league_id,
+  SELECT t.team_id, t.team_name, t.team_abbrev, t.home_city, t.league_id, t.dt,
+         MAX(t.dt) OVER () AS latest_dt,
          ROW_NUMBER() OVER (PARTITION BY t.team_id ORDER BY t.dt DESC, t.valid_from_dt DESC) AS rn
   FROM gbdp.gold_gbdp.dim_team t
   WHERE t.is_current
 ) ranked
-WHERE rn = 1;
+-- Only entities in the newest snapshot. (A join to MAX(dt), or a
+-- scalar subquery, hits a DuckDB 1.5 binder error once joined.)
+WHERE rn = 1 AND dt = latest_dt;
 
 CREATE OR REPLACE VIEW gbdp.gold_gbdp.v_plate_appearance
 COMMENT 'fact_plate_appearance with league, season, outcome flags (is_pa, is_ab, is_hit, ...; TRUNCATED rows have is_pa = 0 and every outcome flag 0) and RE24 run value: run expectancy after minus before, plus runs scored, using the league\'s full-season matrix, summed here from run_expectancy_daily (so it stays right when an earlier date is rebuilt and run_expectancy\'s later dates go stale).'
