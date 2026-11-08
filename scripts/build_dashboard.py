@@ -143,15 +143,33 @@ def counter(name: str, dataset: str, column: str, title: str, x: int, y: int, w:
 def table(name: str, dataset: str, columns: list, title: str, x: int, y: int, w: int, h: int,
           description: str | None = None) -> dict:
     """columns: (field, display name, 'string' | 'integer' | 'float')."""
+    # Lakeview rejects a table column without its full display spec (the
+    # three tables rendered "invalid widget" with only name/type/order), so
+    # every column carries the properties Lakeview itself exports.
+    number_format = {"integer": "0", "float": "0.000"}
     cols = []
     for i, (field, display, kind) in enumerate(columns):
-        cols.append({"fieldName": field, "displayName": display, "title": display, "type": kind,
-                     "displayAs": "string" if kind == "string" else "number",
-                     "visible": True, "order": 100000 + i,
-                     "alignContent": "left" if kind == "string" else "right"})
+        col = {
+            "fieldName": field, "displayName": display, "title": display,
+            "type": kind, "displayAs": "string" if kind == "string" else "number",
+            "visible": True, "order": 100000 + i,
+            "alignContent": "left" if kind == "string" else "right",
+            "booleanValues": ["false", "true"],
+            "imageUrlTemplate": "{{ @ }}", "imageTitleTemplate": "{{ @ }}", "imageWidth": "", "imageHeight": "",
+            "linkUrlTemplate": "{{ @ }}", "linkTextTemplate": "{{ @ }}", "linkTitleTemplate": "{{ @ }}",
+            "linkOpenInNewTab": True,
+            "allowSearch": kind == "string", "allowHTML": False, "highlightLinks": False,
+            "useMonospaceFont": False, "preserveWhitespace": False,
+        }
+        if kind in number_format:
+            col["numberFormat"] = number_format[kind]
+        cols.append(col)
     return {"widget": {"name": name, "queries": _query(dataset, [_field(c[0]) for c in columns], True),
                        "spec": {"version": 1, "widgetType": "table",
                                 "encodings": {"columns": cols},
+                                "invisibleColumns": [], "allowHTMLByDefault": False,
+                                "itemsPerPage": 25, "paginationSize": "default",
+                                "condensed": True, "withRowNumber": False,
                                 "frame": _frame(title, description)}},
             "position": {"x": x, "y": y, "width": w, "height": h}}
 
