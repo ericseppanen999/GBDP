@@ -5,12 +5,12 @@
       "displayName": "Totals",
       "queryLines": [
         "SELECT\n",
-        "  (SELECT count(DISTINCT game_id) FROM gbdp.gold_gbdp.fact_game) AS games,\n",
-        "  (SELECT count(*) FROM gbdp.gold_gbdp.fact_plate_appearance) AS plate_appearances,\n",
-        "  (SELECT count(*) FROM gbdp.gold_gbdp.fact_pitch) AS pitches,\n",
+        "  (SELECT count(DISTINCT game_id) FROM gbdp.gold_gbdp.fact_game WHERE dt >= '2026-01-01' AND dt < '2027-01-01') AS games,\n",
+        "  (SELECT count(*) FROM gbdp.gold_gbdp.fact_plate_appearance WHERE dt >= '2026-01-01' AND dt < '2027-01-01') AS plate_appearances,\n",
+        "  (SELECT count(*) FROM gbdp.gold_gbdp.fact_pitch WHERE dt >= '2026-01-01' AND dt < '2027-01-01') AS pitches,\n",
         "  (SELECT count(*) FROM gbdp.gold_gbdp.dim_player WHERE is_current AND dt = (SELECT max(dt) FROM gbdp.gold_gbdp.dim_player)) AS players,\n",
-        "  (SELECT count(DISTINCT dt) FROM gbdp.gold_gbdp.fact_game) AS days_loaded,\n",
-        "  (SELECT max(dt) FROM gbdp.gold_gbdp.fact_game) AS latest_day\n"
+        "  (SELECT count(DISTINCT dt) FROM gbdp.gold_gbdp.fact_game WHERE dt >= '2026-01-01' AND dt < '2027-01-01') AS days_loaded,\n",
+        "  (SELECT max(dt) FROM gbdp.gold_gbdp.fact_game WHERE dt >= '2026-01-01' AND dt < '2027-01-01') AS latest_day\n"
       ]
     },
     {
@@ -21,7 +21,7 @@
         "       CASE source WHEN 'mlb_statcast' THEN 'MLB (Statcast)' WHEN 'npb_spaia' THEN 'NPB' ELSE source END AS feed,\n",
         "       count(*) AS plate_appearances\n",
         "FROM gbdp.gold_gbdp.fact_plate_appearance\n",
-        "WHERE dt >= '2026-01-01'\n",
+        "WHERE dt >= '2026-01-01' AND dt < '2027-01-01'\n",
         "GROUP BY ALL\n"
       ]
     },
@@ -32,7 +32,7 @@
         "SELECT CAST(dt AS DATE) AS day, `check`, coalesce(`table`, '') AS table_name,\n",
         "       CASE WHEN ok THEN 'pass' ELSE 'fail' END AS result\n",
         "FROM gbdp.gold_gbdp.audit_quality\n",
-        "WHERE dt >= '2026-01-01'\n"
+        "WHERE dt >= '2026-01-01' AND dt < '2027-01-01'\n"
       ]
     },
     {

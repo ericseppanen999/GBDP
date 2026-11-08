@@ -24,22 +24,26 @@ from gbdp.semantic import layer as semantic  # noqa: E402
 from gbdp.semantic.compile import Filter, MetricRequest, compile_request  # noqa: E402
 from gbdp.semantic.render import databricks_target  # noqa: E402
 
+# Every count on the season page reads only this season's partitions: gold
+# also holds test days from other years (2004-05-18, 2024-05-18).
+IN_SEASON = f"dt >= '{SEASON}-01-01' AND dt < '{SEASON + 1}-01-01'"
+
 DATASETS = {
     "totals": ("Totals", f"""
 SELECT
-  (SELECT count(DISTINCT game_id) FROM {G}.fact_game) AS games,
-  (SELECT count(*) FROM {G}.fact_plate_appearance) AS plate_appearances,
-  (SELECT count(*) FROM {G}.fact_pitch) AS pitches,
+  (SELECT count(DISTINCT game_id) FROM {G}.fact_game WHERE {IN_SEASON}) AS games,
+  (SELECT count(*) FROM {G}.fact_plate_appearance WHERE {IN_SEASON}) AS plate_appearances,
+  (SELECT count(*) FROM {G}.fact_pitch WHERE {IN_SEASON}) AS pitches,
   (SELECT count(*) FROM {G}.dim_player WHERE is_current AND dt = {CUR_PLAYER}) AS players,
-  (SELECT count(DISTINCT dt) FROM {G}.fact_game) AS days_loaded,
-  (SELECT max(dt) FROM {G}.fact_game) AS latest_day"""),
+  (SELECT count(DISTINCT dt) FROM {G}.fact_game WHERE {IN_SEASON}) AS days_loaded,
+  (SELECT max(dt) FROM {G}.fact_game WHERE {IN_SEASON}) AS latest_day"""),
 
     "daily_coverage": ("Daily coverage", f"""
 SELECT CAST(dt AS DATE) AS day,
        CASE source WHEN 'mlb_statcast' THEN 'MLB (Statcast)' WHEN 'npb_spaia' THEN 'NPB' ELSE source END AS feed,
        count(*) AS plate_appearances
 FROM {G}.fact_plate_appearance
-WHERE dt >= '2026-01-01'
+WHERE {IN_SEASON}
 GROUP BY ALL"""),
 
     # Metric datasets: compiled from configs/semantic_layer.yaml (see
@@ -48,7 +52,7 @@ GROUP BY ALL"""),
 SELECT CAST(dt AS DATE) AS day, `check`, coalesce(`table`, '') AS table_name,
        CASE WHEN ok THEN 'pass' ELSE 'fail' END AS result
 FROM {G}.audit_quality
-WHERE dt >= '2026-01-01'"""),
+WHERE {IN_SEASON}"""),
 }
 
 
@@ -84,6 +88,7 @@ GROUP BY runners, base_state
 ORDER BY base_state"""),
         "pitch_mix": ("Pitch mix and velocity (MLB)", metric_sql(MetricRequest(
             metrics=["pitches", "avg_velocity", "max_velocity"], dimensions=["pitch_type_name"],
+            # v_pitch turns '' into null, so not_null drops empty pitch types too.
             filters=[Filter("pitch_type", "not_null"), Filter("season_year", "eq", SEASON)],
             having=[("pitches", "gte", 50)], order_by=[("pitches", "desc")],
             aliases={"pitch_type_name": "pitch", "avg_velocity": "avg_mph", "max_velocity": "max_mph"}))),
@@ -277,7 +282,8 @@ def main() -> int:
     if args.check:
         return check()
     OUT.parent.mkdir(exist_ok=True)
-    OUT.write_text(json.dumps(build(), indent=2) + "\n", encoding="utf-8")
+    # "\n" on every platform: a Windows regen must not rewrite every line as CRLF.
+    OUT.write_text(json.dumps(build(), indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"wrote {OUT}")
     return 0
 

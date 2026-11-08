@@ -59,3 +59,55 @@ def test_dashboard_metric_sql_gives_the_api_answer(semantic_gold):
     rows = {r[1]: r for r in con.execute(sql).fetchall()}
     assert rows["Aaron Batter"][2] == 6  # pa
     assert rows["Aaron Batter"][-1] == pytest.approx(0.6)  # avg
+
+
+def _local(sql: str) -> str:
+    return sql.replace("gbdp.gold_gbdp.", "")
+
+
+def test_totals_count_only_the_season(semantic_gold):
+    # fixes SL-016: a test-day partition from another year (gold holds
+    # 2004-05-18 and 2024-05-18) doesn't count on the 2026 season page.
+    from gbdp.serve import db
+
+    mod = _builder()
+    con = db._duckdb_connection()
+    before = con.execute(_local(mod.all_datasets()["totals"][1])).fetchone()
+    for table in ("fact_game", "fact_plate_appearance", "fact_pitch"):
+        con.execute(f"CREATE TABLE {table}_copy AS SELECT * FROM {table}")
+        con.execute(f"CREATE OR REPLACE VIEW {table} AS SELECT * FROM {table}_copy UNION ALL BY NAME "
+                    f"SELECT * REPLACE ('2024-05-18' AS dt) FROM {table}_copy")
+    after = con.execute(_local(mod.all_datasets()["totals"][1])).fetchone()
+    assert after == before
+    assert before[0] > 0 and before[-1].startswith("2026-")
+    assert "AND dt < '2027-01-01'" in _sql("daily_coverage") and "AND dt < '2027-01-01'" in _sql("quality")
+
+
+def test_pitch_mix_drops_empty_pitch_types(semantic_gold):
+    # fixes SL-016: an empty pitch_type is not its own bar.
+    from gbdp.serve import db
+
+    con = db._duckdb_connection()
+    con.execute("CREATE TABLE fact_pitch_copy AS SELECT * FROM fact_pitch")
+    con.execute("CREATE OR REPLACE VIEW fact_pitch AS SELECT * FROM fact_pitch_copy UNION ALL BY NAME "
+                "SELECT * REPLACE ('' AS pitch_type) FROM fact_pitch_copy")
+    sql = _local(_builder().all_datasets()["pitch_mix"][1])
+    sql = sql.replace("HAVING COUNT(*) >= 50", "HAVING COUNT(*) >= 1")
+    pitches = [r[0] for r in con.execute(sql).fetchall()]
+    assert pitches and "" not in pitches and None not in pitches
+
+
+def test_generated_files_are_written_with_lf(tmp_path, monkeypatch):
+    # fixes SL-018: a Windows regen doesn't rewrite every line as CRLF.
+    mod = _builder()
+    monkeypatch.setattr(mod, "OUT", tmp_path / "d.json")
+    monkeypatch.setattr("sys.argv", ["build_dashboard.py"])
+    assert mod.main() == 0
+    assert b"\r\n" not in (tmp_path / "d.json").read_bytes()
+
+    spec = importlib.util.spec_from_file_location("build_semantic_layer", Path("scripts/build_semantic_layer.py"))
+    sl_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sl_mod)
+    monkeypatch.setattr("sys.argv", ["build_semantic_layer.py", "--out", str(tmp_path / "uc.sql")])
+    assert sl_mod.main() == 0
+    assert b"\r\n" not in (tmp_path / "uc.sql").read_bytes()
