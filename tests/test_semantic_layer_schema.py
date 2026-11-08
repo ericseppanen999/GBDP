@@ -127,6 +127,8 @@ def test_event_type_groups_only_use_known_codes(sl):
         assert set(codes) <= set(map(str, vocab.values)), group
     # The PA rule: TRUNCATED is the only non-PA row, and it is in no outcome group.
     assert vocab.groups["not_a_pa"] == ("TRUNCATED",)
+    # Catcher's interference is a PA but not an at-bat (gbdp-40's rule too).
+    assert "INT" not in vocab.groups["at_bat"] and "INT" not in vocab.groups["not_a_pa"]
     assert all("TRUNCATED" not in codes for g, codes in vocab.groups.items() if g != "not_a_pa")
 
 
