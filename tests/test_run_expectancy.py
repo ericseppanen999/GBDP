@@ -86,6 +86,24 @@ def test_rebuilding_a_date_does_not_double_count(gold):
     assert _re(gold, d)[("MLB", 0, 0)]["pa_count"] == 1
 
 
+def test_dashboard_file_matches_its_generator():
+    import importlib.util
+    import json
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location("build_dashboard", Path("scripts/build_dashboard.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    on_disk = json.loads(Path("dashboards/gbdp_season.lvdash.json").read_text(encoding="utf-8"))
+    assert on_disk == mod.build(), "run: python scripts/build_dashboard.py"
+    # Every widget query points at a dataset that exists.
+    names = {d["name"] for d in on_disk["datasets"]}
+    for page in on_disk["pages"]:
+        for item in page["layout"]:
+            for q in item["widget"].get("queries", []):
+                assert q["query"]["datasetName"] in names
+
+
 def test_api_filters_by_league_and_returns_a_seasons_latest_table(gold):
     from gbdp.serve import db
     from gbdp.serve.api import app

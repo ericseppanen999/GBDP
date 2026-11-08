@@ -74,13 +74,15 @@ Each day (`dt`) flows through 16 stages: `fetch_*` â†’ `silver_normalize` �
 - **Schema safety.** Column types that sparse days would otherwise infer wrongly are pinned. When a table and new data still disagree, the UC publisher casts only where no value can be lost, isolates the failure to that one table, and doesn't waste retries on it.
 - **Quality gates.** `row_count_min`, `uniqueness`, `referential_integrity`, `base_state_range`, `outs_range`, `pitch_coverage`, `npb_pbp_coverage` and `schema_drift` run after every gold publish. Results land in `audit_quality`, and hard failures fail the job.
 
-## Run it locally (about a minute)
+## Run it locally
+
+The pipeline run below takes about 15 seconds; most of the setup time is `pip install`.
 
 ```bash
 pip install -e .
 export GBDP_DATA_ROOT=./data            # PowerShell: $env:GBDP_DATA_ROOT = "./data"
 
-# One real MLB day: 13 games, 3,704 pitches, 933 plate appearances
+# One real MLB day, fetched live: 13 games, 3,704 pitches, 933 plate appearances (~13 s)
 python -m gbdp.cli run --start 2025-04-01 --end 2025-04-01 --leagues mlb \
   --stages fetch_schedules,fetch_pitches,silver_normalize,identity_resolve,gold_publish --force
 

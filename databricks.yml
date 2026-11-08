@@ -28,6 +28,10 @@ variables:
     description: PAUSED or UNPAUSED for the gbdp-nightly schedule
     default: PAUSED
 
+  warehouse_id:
+    description: SQL warehouse that runs the dashboard's queries
+    default: a9d3d2589a30ab67
+
 # Files synced to the workspace on every deploy (data/ excluded — too large).
 sync:
   exclude:
@@ -41,6 +45,17 @@ sync:
     - .env.*
 
 resources:
+  # AI/BI dashboard over the gold UC tables. Generated from
+  # scripts/build_dashboard.py; regenerate rather than editing the JSON.
+  dashboards:
+    gbdp_season:
+      display_name: GBDP 2026 season
+      file_path: ./dashboards/gbdp_season.lvdash.json
+      warehouse_id: ${var.warehouse_id}
+      # Viewers it's shared with read through the owner's access, so they need
+      # no grants on gbdp.gold_gbdp.
+      embed_credentials: true
+
   # -------------------------------------------------------------------------
   # Jobs — Free Edition runs on serverless compute only (no job clusters).
   # Python dependencies are declared in the environment spec below.
