@@ -222,3 +222,48 @@ def test_mlb_silver_rosters_one_row_per_team_and_player(tmp_path, monkeypatch):
     out = mlb._normalize_rosters(tmp_path, date(2026, 6, 19), True)
     rows = read_parquet_rows(out.parent if out.suffix else out)
     assert sorted((r["team_id"], r["player_id"]) for r in rows) == [("109", "1"), ("109", "647336"), ("112", "647336")]
+
+
+# ---- CR-001: integer columns must not flip to DOUBLE between days ----
+
+def test_arrow_schema_keeps_nullable_integers_as_bigint():
+    pytest.importorskip("pyspark.sql")
+    import pyarrow as pa
+    from pyspark.sql import types as T
+
+    from gbdp.utils.io import spark_schema_from_arrow
+
+    table = pa.Table.from_pylist([{"W_PIT_P_ID": 56348, "name": "x", "v": 1.5, "ok": True, "gone": None},
+                                  {"W_PIT_P_ID": None, "name": None, "v": None, "ok": None, "gone": None}])
+    schema = {f.name: f.dataType for f in spark_schema_from_arrow(table.schema).fields}
+    assert schema == {"W_PIT_P_ID": T.LongType(), "name": T.StringType(), "v": T.DoubleType(),
+                      "ok": T.BooleanType(), "gone": T.StringType()}
+
+
+@pytest.fixture(scope="module")
+def local_spark():
+    pytest.importorskip("pyspark.sql")
+    from pyspark.sql import SparkSession
+
+    spark = SparkSession.builder.master("local[1]").config("spark.ui.enabled", "false").getOrCreate()
+    yield spark
+    spark.stop()
+
+
+def test_whole_number_doubles_cast_into_a_bigint_table(local_spark):
+    from pyspark.sql import types as T
+
+    from gbdp.catalog import managed_publish as mp
+
+    # Built with SQL (no Python workers) so the test runs on any local Spark.
+    df = local_spark.sql("""SELECT * FROM VALUES (56348.0D, 1.5D, 1e17D, 95.1D), (CAST(NULL AS DOUBLE), 2.0D, NULL, 94.0D)
+                            AS t(W_PIT_P_ID, frac, big, speed)""")
+    # Only columns whose TABLE type is an integer are candidates; a real
+    # fraction or a value past 2^53 keeps the clash loud.
+    assert mp._integral_double_columns(df, ["W_PIT_P_ID", "frac", "big"]) == {"W_PIT_P_ID"}
+
+    local_spark.sql("SELECT 1L AS W_PIT_P_ID, 1L AS frac, 1L AS big, 1.0D AS speed").createOrReplaceTempView("t_kbo")
+    out = mp._align_to_table_types(local_spark, "t_kbo", df)
+    types = {f.name: f.dataType for f in out.schema.fields}
+    assert types == {"W_PIT_P_ID": T.LongType(), "frac": T.DoubleType(), "big": T.DoubleType(), "speed": T.DoubleType()}
+    assert [r.W_PIT_P_ID for r in out.collect()] == [56348, None]

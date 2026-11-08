@@ -399,14 +399,46 @@ def _align_to_table_types(spark, full_name: str, df):
     from pyspark.sql import functions as F
 
     target = {f.name: f.dataType for f in spark.table(full_name).schema.fields}
+    integral = _integral_double_columns(df, [f.name for f in df.schema.fields
+                                             if _is_integer_type(target.get(f.name))])
     cols = []
     for f in df.schema.fields:
         t = target.get(f.name)
-        if t is not None and t != f.dataType and _lossless_cast(t, f.dataType):
+        if t is not None and t != f.dataType and (_lossless_cast(t, f.dataType) or f.name in integral):
             cols.append(F.col(f"`{f.name}`").cast(t).alias(f.name))
         else:
             cols.append(F.col(f"`{f.name}`"))
     return df.select(*cols)
+
+
+def _is_integer_type(t) -> bool:
+    from pyspark.sql.types import IntegerType, LongType
+
+    return isinstance(t, (IntegerType, LongType))
+
+
+def _integral_double_columns(df, names: List[str]) -> set:
+    """DOUBLE columns among `names` whose every value in df is a whole number
+    (or null), so casting them to an integer table column loses nothing.
+
+    Parsed bronze went through pandas, which turns an integer column with a
+    null into float64: kbo_api_games IDs arrive as 56348.0 on a day with a
+    rainout and as 56348 on a day without. The values decide, not the type,
+    so a column with a real fraction still fails loudly.
+    """
+    from pyspark.sql import functions as F
+    from pyspark.sql.types import DoubleType, FloatType
+
+    doubles = [f.name for f in df.schema.fields if f.name in names and isinstance(f.dataType, (DoubleType, FloatType))]
+    if not doubles:
+        return set()
+    row = df.select(*[
+        F.sum(F.when(F.col(f"`{c}`").isNotNull()
+                     & (F.isnan(F.col(f"`{c}`")) | (F.col(f"`{c}`") != F.floor(F.col(f"`{c}`")))
+                        | (F.abs(F.col(f"`{c}`")) > F.lit(9.0e15))), 1).otherwise(0)).alias(c)
+        for c in doubles
+    ]).collect()[0]
+    return {c for c in doubles if not row[c]}
 
 
 def _add_missing_columns(spark, full_name: str, df) -> None:

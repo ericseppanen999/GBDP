@@ -373,6 +373,39 @@ def write_text(path: Path, text: str, encoding: str = "utf-8", force: bool = Fal
     return write_bytes(path, text.encode(encoding), force=force)
 
 
+def spark_schema_from_arrow(schema: Any) -> Any:
+    """Spark StructType for a pyarrow schema. All-null (null-typed) columns
+    become STRING, since parquet can't store NullType; anything without a
+    direct Spark type is stored as STRING too."""
+    import pyarrow as pa
+    from pyspark.sql import types as T
+
+    def convert(t: Any) -> Any:
+        if pa.types.is_null(t):
+            return T.StringType()
+        if pa.types.is_boolean(t):
+            return T.BooleanType()
+        if pa.types.is_int8(t) or pa.types.is_int16(t) or pa.types.is_int32(t):
+            return T.IntegerType()
+        if pa.types.is_integer(t):
+            return T.LongType()
+        if pa.types.is_floating(t):
+            return T.DoubleType()
+        if pa.types.is_timestamp(t):
+            return T.TimestampType()
+        if pa.types.is_date(t):
+            return T.DateType()
+        if pa.types.is_binary(t) or pa.types.is_large_binary(t):
+            return T.BinaryType()
+        if pa.types.is_list(t) or pa.types.is_large_list(t):
+            return T.ArrayType(convert(t.value_type), True)
+        if pa.types.is_struct(t):
+            return T.StructType([T.StructField(f.name, convert(f.type), True) for f in t])
+        return T.StringType()
+
+    return T.StructType([T.StructField(f.name, convert(f.type), True) for f in schema])
+
+
 def write_parquet_table(table: Any, path: Path, force: bool = False) -> Path:
     if not force and path_exists(path):
         return path
@@ -392,9 +425,12 @@ def write_parquet_table(table: Any, path: Path, force: bool = False) -> Path:
         except Exception as exc:
             raise RuntimeError("pyspark is required for parquet writes on DBFS") from exc
         spark = SparkSession.builder.getOrCreate()
-        pdf = table.to_pandas()
-        df = spark.createDataFrame(pdf)
-        if len(df.columns) == 0:
+        # Rows plus the Arrow table's own schema, not to_pandas(): pandas turns
+        # an integer column holding a null into float64, so a day with one
+        # rainout wrote IDs as DOUBLE (56348.0) and the next day as BIGINT.
+        if table.num_columns:
+            df = spark.createDataFrame(table.to_pylist(), schema=spark_schema_from_arrow(table.schema))
+        else:
             df = spark.createDataFrame([{"empty": True}])
         # Parquet does not support NullType; cast null-only columns to string
         for field in df.schema.fields:
