@@ -18,6 +18,26 @@ runners:
   second: 二
   third: 三
 
+# The roster endpoint is the whole team directory, staff included.
+# StaffKind -> role. Checked on 2026-06-10: kind 3 carries coach titles
+# (投手コーチ, 二軍打撃コーチ, ...), kind 5 player-coaches (選手兼任), and kinds
+# 1 and 2 one person per first-team club. Only players go to identity and gold.
+staff_kinds:
+  "1": manager
+  "2": manager
+  "3": coach
+  "4": player
+  "5": player      # player-coach
+  "7": staff
+  "10": staff
+
+# RosterName -> position group. SPAIA gives no bats/throws on rosters.
+positions:
+  投手: P     # pitcher
+  捕手: C     # catcher
+  内野手: IF  # infielder
+  外野手: OF  # outfielder
+
 # Result text -> event type. Checked IN ORDER and the first match wins, so
 # compound results ("bunt attempt, but grounded out") must come before the
 # words they contain.

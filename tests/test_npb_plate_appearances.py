@@ -110,6 +110,39 @@ def test_a_result_less_header_mid_inning_is_dropped():
     assert [p["event_type"] for p in publish._reconstruct_npb_pa(rows, date(2026, 6, 10), {})] == ["OUT", "OUT"]
 
 
+def test_npb_roster_directory_splits_players_from_staff(tmp_path, monkeypatch):
+    from gbdp.silver import npb
+    from gbdp.utils.io import read_parquet_rows
+
+    people = [
+        {"PersonInfoID": "1100099", "PlayerName": "上沢　直之", "StaffKind": "4", "RosterName": "投手",
+         "BackNumber": "10", "MovementName": "出場選手登録抹消", "AnnounceDate": "20260517"},
+        {"PersonInfoID": "1200001", "PlayerName": "捕手　一郎", "StaffKind": "4", "RosterName": "捕手", "BackNumber": "27"},
+        {"PersonInfoID": "9000001", "PlayerName": "投手コーチ", "StaffKind": "3", "StaffTitle": "投手コーチ"},
+        {"PersonInfoID": "9000002", "PlayerName": "監督", "StaffKind": "1"},
+    ]
+    team = {"team_id": "12", "body_text": json.dumps({"players": people})}
+    monkeypatch.setattr(npb, "_read_bronze", lambda entity, dt, root: [{"teams": json.dumps([team])}])
+
+    rows = read_parquet_rows(type(tmp_path)(npb._normalize_rosters(tmp_path, date(2026, 6, 10), True)).parent)
+    by_id = {r["player_id"]: r for r in rows}
+    assert (by_id["1100099"]["role"], by_id["1100099"]["position"], by_id["1100099"]["uniform_number"]) == ("player", "P", "10")
+    assert (by_id["1100099"]["latest_movement"], by_id["1100099"]["movement_date"]) == ("出場選手登録抹消", "2026-05-17")
+    assert by_id["1200001"]["position"] == "C"
+    assert (by_id["9000001"]["role"], by_id["9000002"]["role"]) == ("coach", "manager")
+
+    # Gold takes only players.
+    silver, gold = tmp_path / "silver", tmp_path / "gold"
+    gold.mkdir()
+    monkeypatch.setenv("GBDP_SILVER_ROOT", str(silver))
+    monkeypatch.setenv("GBDP_GOLD_ROOT", str(gold))
+    monkeypatch.setenv("GBDP_STORAGE_FORMAT", "parquet")
+    npb._normalize_rosters(silver, date(2026, 6, 10), True)
+    publish._write_dim_player(gold, date(2026, 6, 10), {}, True)
+    names = {r["primary_name"] for r in read_parquet_rows(gold / "dim_player" / "dt=2026-06-10")}
+    assert names == {"上沢　直之", "捕手　一郎"}
+
+
 def test_runs_from_a_walk_off_row_go_to_the_pa_in_progress():
     rows = [
         _ev(1, 1, "15", "9回裏 デ7-7楽　DeNAは5番度会からの攻撃", inning=9, top="2"),

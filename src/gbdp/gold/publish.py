@@ -604,7 +604,9 @@ def _write_dim_player(root: Path, dt: date, bridge: Dict[tuple, str], force: boo
         if pid not in on_roster and b.get("player_name"):
             rows.append(_player_row(b, "MLB", bridge, "mlb_statsapi", b))
     for r in _read_silver(root, "npb_spaia", "rosters", dt):
-        rows.append(_player_row(r, "NPB", bridge, "npb_spaia"))
+        # The NPB directory includes managers and coaches; they are not players.
+        if r.get("role") in (None, "player"):
+            rows.append(_player_row(r, "NPB", bridge, "npb_spaia"))
     for r in _read_silver(root, "indy_local", "rosters", dt):
         rows.append(_player_row(r, "INDY", bridge, "indy_local"))
     for r in _read_silver(root, "kbo_local", "rosters", dt):
@@ -771,7 +773,8 @@ def _write_fact_roster(root: Path, dt: date, bridge: Dict[tuple, str], force: bo
     for r in _read_silver(root, "mlb_statsapi", "rosters", dt):
         rows.append(_fact_roster_row(r, "mlb_statsapi", "MLB", bridge, dt))
     for r in _read_silver(root, "npb_spaia", "rosters", dt):
-        rows.append(_fact_roster_row(r, "npb_spaia", "NPB", bridge, dt))
+        if r.get("role") in (None, "player"):
+            rows.append(_fact_roster_row(r, "npb_spaia", "NPB", bridge, dt))
     for r in _read_silver(root, "indy_local", "rosters", dt):
         rows.append(_fact_roster_row(r, "indy_local", "INDY", bridge, dt))
     for r in _read_silver(root, "kbo_local", "rosters", dt):
@@ -1696,15 +1699,7 @@ def _npb_text_sec(row: Dict[str, Any]) -> str | None:
     return None if sec is None else str(sec)
 
 
-@lru_cache(maxsize=None)
-def _npb_text() -> Dict[str, Any]:
-    """configs/npb_text.yaml: what the Japanese phrases in SPAIA's text mean."""
-    import yaml
-
-    with Path("configs/npb_text.yaml").open(encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    cfg["events"] = [(e["event"], tuple(e["phrases"])) for e in cfg["events"]]
-    return cfg
+from gbdp.utils.npb_text import npb_text as _npb_text  # noqa: E402
 
 
 def _npb_runner_bits(text: str) -> int:

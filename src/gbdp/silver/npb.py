@@ -15,6 +15,7 @@ from gbdp.utils.io import (
     read_bronze_rows,
     stable_json_dumps,
 )
+from gbdp.utils.npb_text import npb_text as _npb_text
 from gbdp.utils.time import daterange, parse_date
 
 
@@ -121,6 +122,9 @@ def _normalize_rosters(root: Path, dt: date, force: bool) -> Path:
             payload = _parse_json_maybe(body_text)
             players = _extract_player_list(payload)
             for p in players:
+                text = _npb_text()
+                kind = _as_str(p.get("StaffKind"))
+                announce = _parse_yyyymmdd(p.get("AnnounceDate"))
                 row = {
                         "team_id": team_id,
                         "player_id": _as_str(
@@ -135,7 +139,14 @@ def _normalize_rosters(root: Path, dt: date, force: bool) -> Path:
                         or p.get("PlayerName")
                         or p.get("nameFull")
                         or p.get("name_full"),
-                        "position": p.get("position") or p.get("pos"),
+                        "position": p.get("position") or p.get("pos") or text["positions"].get(p.get("RosterName")),
+                        # The directory lists managers and coaches too.
+                        "role": text["staff_kinds"].get(kind, "player" if kind is None else "staff"),
+                        "staff_title": p.get("StaffTitle"),
+                        "uniform_number": _as_str(p.get("BackNumber")),
+                        "latest_movement": p.get("MovementName"),
+                        "movement_date": announce,
+                        # SPAIA's roster gives no handedness; kept for schema parity.
                         "bats": p.get("bats"),
                         "throws": p.get("throws"),
                         "raw_json": stable_json_dumps(p),

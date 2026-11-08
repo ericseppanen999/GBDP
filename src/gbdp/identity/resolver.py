@@ -103,7 +103,8 @@ def _collect_player_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
     npb_rosters = _read_silver(silver_root(), "npb_spaia", "rosters", dt)
     for r in npb_rosters:
         source_id = r.get("player_id")
-        if not source_id:
+        # The NPB directory includes managers and coaches; players only.
+        if not source_id or r.get("role") not in (None, "player"):
             continue
         rows.append(
             {

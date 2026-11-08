@@ -93,6 +93,8 @@ BRONZE_VOL = f"/Volumes/{CATALOG}/bronze_gbdp/bronze_vol/gbdp/bronze"
 BRONZE_ENTITIES = [
     ("mlb_statsapi", "schedule", 2_000),
     ("mlb_statsapi", "rosters", 50_000),
+    ("mlb_statsapi", "teams", 20_000),
+    ("mlb_statsapi", "transactions", 500),
     ("mlb_statsapi", "boxscore", 50_000),
     ("mlb_statsapi", "player_bios", 100_000),
     ("mlb_statcast", "pitches", 100_000),
@@ -129,9 +131,17 @@ def check_bronze(wh: Warehouse, rep: Report, start: str) -> None:
         bad_status = [r[0] for r in rows if r[1] is not None and int(r[1]) != 200]
         thin = [r[0] for r in in_season if int(r[2] or 0) < min_bytes and r[0] not in off_days.get(source, set())]
         if entity == "games" and source == "npb_spaia":
-            # A small games payload is a day with no NPB games (Mondays, the
-            # All-Star break). Recorded so the other NPB entities skip them too.
-            off_days[source] = {r[0] for r in in_season if int(r[2] or 0) < min_bytes}
+            # A day with no game played (Mondays, the All-Star break, or every
+            # game rained out: 06-08's only game was 試合中止). Recorded so the
+            # other NPB entities skip those days.
+            played = wh.query(f"""
+                SELECT dt, max_by(n, fetched_at_utc) FROM (
+                  SELECT regexp_extract(_metadata.file_path, 'dt=([0-9-]+)', 1) AS dt, fetched_at_utc,
+                         size(filter(from_json(body_text, 'array<struct<gameStateName:string>>'),
+                                     g -> g.gameStateName <> '試合中止')) AS n
+                  FROM read_files('{path}', format => 'json'))
+                WHERE dt >= '{start}' GROUP BY dt""")
+            off_days[source] = {d for d, n in played if int(n or 0) == 0}
             thin = []
         # A league's schedule (MLB) / games (NPB) entity defines which dates were
         # loaded; every other entity of that league should have the same dates.
