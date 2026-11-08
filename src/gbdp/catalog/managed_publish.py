@@ -91,6 +91,26 @@ def _ensure_schema(spark, catalog: str, schema: str) -> None:
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
 
 
+_INVALID_UC_CHARS = re.compile(r"[ ,;{}()\n\t=]")
+
+
+def uc_column_name(name: str, position: int = 0) -> str:
+    """The name a column gets in a managed UC table ("2b" -> "c_2b").
+
+    Replaces characters Delta rejects and anything outside [A-Za-z0-9_], and
+    prefixes a leading digit. The semantic layer uses this to name the columns
+    of the Unity Catalog tables, so keep it the only copy of the rule.
+    """
+    new = _INVALID_UC_CHARS.sub("_", name).strip()
+    new = re.sub(r"[^0-9A-Za-z_]", "_", new)
+    new = re.sub(r"_+", "_", new).strip("_")
+    if new == "" or new == ".":
+        new = f"col_{position}"
+    if new[0].isdigit():
+        new = f"c_{new}"
+    return new
+
+
 def _sanitize_for_uc(df):
     """
     Make DF safe for UC-managed Delta tables:
@@ -107,23 +127,11 @@ def _sanitize_for_uc(df):
             df = df.withColumn(field.name, F.to_json(F.col(field.name)))
 
     # 2) sanitize top-level column names
-    invalid_re = re.compile(r"[ ,;{}()\n\t=]")
     seen = set()
     renames = {}
 
     for i, c in enumerate(df.columns):
-        name = "" if c is None else str(c)
-
-        # Replace known-invalid chars + also anything non [A-Za-z0-9_]
-        new = invalid_re.sub("_", name).strip()
-        new = re.sub(r"[^0-9A-Za-z_]", "_", new)
-        new = re.sub(r"_+", "_", new).strip("_")
-
-        if new == "" or new == ".":
-            new = f"col_{i}"
-        if new[0].isdigit():
-            new = f"c_{new}"
-
+        new = uc_column_name("" if c is None else str(c), position=i)
         base = new
         j = 1
         while new in seen:

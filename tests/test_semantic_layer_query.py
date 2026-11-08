@@ -40,23 +40,23 @@ def test_assert_read_only_sql_allows_selects(sql):
     assert_read_only_sql(sql)  # must not raise
 
 
-def test_semantic_layer_loads_and_covers_known_gold_tables():
+def test_semantic_layer_loads():
+    # Table and column coverage is checked against the code itself in
+    # test_semantic_layer_schema.py; this only checks the API's view of it.
     layer = load_semantic_layer()
-    assert "tables" in layer
-    # Spot-check a few tables that gold/publish.py actually writes are
-    # documented -- catches the semantic layer silently drifting out of
-    # sync with the real schema as new tables get added.
-    for expected in ["fact_game", "fact_boxscore_batting", "fact_boxscore_pitching", "dim_player", "dim_team"]:
-        assert expected in layer["tables"], f"{expected} missing from semantic_layer.yaml"
+    assert {"tables", "views", "metric_views", "metrics", "vocabularies"} <= set(layer)
 
 
 def test_semantic_layer_documents_known_data_gotchas():
     layer = load_semantic_layer()
-    # These are real, confirmed-live caveats (found earlier this session) --
-    # if they get scrubbed from the yaml during an edit, a client loses the
-    # exact warnings that prevent it from misusing the data.
+    # These are real, confirmed-live caveats -- if they get scrubbed from the
+    # yaml during an edit, a client loses the exact warnings that prevent it
+    # from misusing the data.
     boxscore_pitching_note = str(layer["tables"]["fact_boxscore_pitching"]["columns"].get("ip", ""))
-    assert "STRING" in boxscore_pitching_note.upper() or "string" in boxscore_pitching_note
+    assert "STRING" in boxscore_pitching_note
+    pa_caveats = " ".join(layer["tables"]["fact_plate_appearance"]["caveats"])
+    assert "TRUNCATED rows are not plate appearances" in pa_caveats
+    assert "TRUNCATED" in layer["vocabularies"]["event_type"]["values"]
 
 
 def test_known_table_names_nonempty():

@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
 from typing import Any, Dict, List, Sequence, Tuple
 
 import time
 
 import duckdb
-import yaml
 
 from gbdp.utils.io import gold_root, list_dir, storage_format, path_exists, spark_path
 
@@ -19,8 +17,6 @@ Filter = Tuple[str, str, Any]
 _CACHE: Dict[tuple, Tuple[float, List[Dict[str, Any]]]] = {}
 _CACHE_TTL_S = 24 * 60 * 60
 
-_SEMANTIC_LAYER_PATH = Path("configs/semantic_layer.yaml")
-_semantic_layer_cache: Dict[str, Any] | None = None
 
 
 def latest_dt(table: str) -> str | None:
@@ -98,23 +94,25 @@ def _query_delta(base: Path, dt: str | None, filters: Sequence[Filter], limit: i
     return [row.asDict() for row in df.limit(int(limit)).collect()]
 
 
+def semantic_layer():
+    """The validated semantic layer (gbdp.semantic.layer.SemanticLayer)."""
+    from gbdp.semantic import layer
+
+    return layer.load()
+
+
 def load_semantic_layer() -> Dict[str, Any]:
-    """Load configs/semantic_layer.yaml (cached in-process)."""
-    global _semantic_layer_cache
-    if _semantic_layer_cache is not None:
-        return _semantic_layer_cache
-    if not _SEMANTIC_LAYER_PATH.exists():
-        _semantic_layer_cache = {"tables": {}, "audit_tables": {}, "derived_metrics": {}}
-        return _semantic_layer_cache
-    with _SEMANTIC_LAYER_PATH.open("r", encoding="utf-8") as f:
-        _semantic_layer_cache = yaml.safe_load(f) or {}
-    return _semantic_layer_cache
+    """configs/semantic_layer.yaml as plain data, validated (cached until it changes)."""
+    return semantic_layer().raw
 
 
 def known_table_names() -> List[str]:
-    layer = load_semantic_layer()
-    names = list(layer.get("tables", {}).keys()) + list(layer.get("audit_tables", {}).keys())
-    return names
+    sl = semantic_layer()
+    return [t for t in sl.tables if not sl.tables[t].placeholder] + list(sl.audit_tables)
+
+
+def known_view_names() -> List[str]:
+    return list(semantic_layer().views)
 
 
 # Whole-word match against SQL keywords that mutate data/schema or otherwise
@@ -164,46 +162,103 @@ def run_sql(sql: str, limit: int = 1000) -> List[Dict[str, Any]]:
     stripped = sql.strip().rstrip(";")
     limited = f"SELECT * FROM ({stripped}) AS _gbdp_query_result LIMIT {int(limit)}"
 
-    root = gold_root()
-    fmt = storage_format()
-
-    if fmt == "parquet":
-        con = duckdb.connect()
-        gold_dir = os.path.abspath(str(root))
-        for table in known_table_names():
-            base = root / table
-            if not path_exists(base):
-                continue
-            glob = os.path.join(gold_dir, table, "**", "*.parquet")
-            try:
-                con.execute(
-                    f"CREATE OR REPLACE VIEW \"{table}\" AS "
-                    f"SELECT * FROM read_parquet('{glob}', union_by_name=true)"
-                )
-            except Exception:
-                continue
-        # Confine the connection to gold, so a query that slips past the text
-        # guard still can't read the rest of the machine.
-        con.execute("SET allowed_directories = [?]", [gold_dir])
-        con.execute("SET enable_external_access = false")
-        con.execute("SET lock_configuration = true")
-        cur = con.execute(limited)
+    if storage_format() == "parquet":
+        cur = _duckdb_connection().execute(limited)
         cols = [c[0] for c in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
-    # delta
+    rows = _spark_session_with_views().sql(limited).collect()
+    return [row.asDict() for row in rows]
+
+
+def _gold_tables() -> List[str]:
+    """Every described gold/audit table that has data on disk."""
+    root = gold_root()
+    return [t for t in known_table_names() if path_exists(root / t)]
+
+
+def _duckdb_connection():
+    """A DuckDB connection with every gold table and semantic-layer view
+    registered by bare name, then confined to the gold directory.
+
+    A view whose tables aren't on disk yet (no Statcast data loaded, say) is
+    skipped; a query that needs it fails with DuckDB's "does not exist".
+    """
+    from gbdp.semantic.render import duckdb_target, render
+
+    root = gold_root()
+    con = duckdb.connect()
+    gold_dir = os.path.abspath(str(root))
+    for table in _gold_tables():
+        glob = os.path.join(gold_dir, table, "**", "*.parquet")
+        # hive_types_autocast=false keeps dt a string, as it is in the files and
+        # in Unity Catalog. Autocast makes it a DATE, which DuckDB 1.5 then
+        # mis-binds (an internal error) in YEAR(CAST(dt AS DATE)) and windows.
+        try:
+            con.execute(
+                f"CREATE OR REPLACE VIEW \"{table}\" AS "
+                f"SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_types_autocast=false)"
+            )
+        except Exception:
+            continue
+    sl = semantic_layer()
+    target = duckdb_target()
+    for name, view in sl.views.items():
+        try:
+            con.execute(f"CREATE OR REPLACE VIEW \"{name}\" AS {render(view.sql, sl, target)}")
+        except Exception:
+            continue
+    # Confine the connection to gold, so a query that slips past the text
+    # guard still can't read the rest of the machine.
+    con.execute("SET allowed_directories = [?]", [gold_dir])
+    con.execute("SET enable_external_access = false")
+    con.execute("SET lock_configuration = true")
+    return con
+
+
+def _spark_session_with_views():
     try:
         from pyspark.sql import SparkSession
     except Exception as exc:
         raise RuntimeError("pyspark is required for delta reads") from exc
+    from gbdp.semantic.render import render, spark_local_target
+
     spark = SparkSession.builder.getOrCreate()
-    for table in known_table_names():
-        base = root / table
-        if not path_exists(base):
-            continue
+    root = gold_root()
+    for table in _gold_tables():
         try:
-            spark.read.format("delta").load(spark_path(base)).createOrReplaceTempView(table)
+            spark.read.format("delta").load(spark_path(root / table)).createOrReplaceTempView(table)
         except Exception:
             continue
-    rows = spark.sql(limited).collect()
-    return [row.asDict() for row in rows]
+    sl = semantic_layer()
+    target = spark_local_target()
+    for name, view in sl.views.items():
+        try:
+            spark.sql(f"CREATE OR REPLACE TEMPORARY VIEW {name} AS {render(view.sql, sl, target)}")
+        except Exception:
+            continue
+    return spark
+
+
+def compute_metrics(request) -> Dict[str, Any]:
+    """Compute semantic-layer metrics for a gbdp.semantic.compile.MetricRequest.
+
+    The SQL is compiled from configs/semantic_layer.yaml and filter values are
+    bound parameters, never pasted into it. Returns the rows and the SQL.
+    """
+    from gbdp.semantic.compile import compile_request
+    from gbdp.semantic.render import duckdb_target, spark_local_target
+
+    sl = semantic_layer()
+    if request.limit is None:
+        request.limit = 1000
+    if storage_format() == "parquet":
+        compiled = compile_request(sl, request, duckdb_target(), param_style="qmark")
+        cur = _duckdb_connection().execute(compiled.sql, compiled.params)
+        cols = [c[0] for c in cur.description]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    else:
+        compiled = compile_request(sl, request, spark_local_target(), param_style="named")
+        args = {f"p{i}": v for i, v in enumerate(compiled.params)}
+        rows = [r.asDict() for r in _spark_session_with_views().sql(compiled.sql, args=args).collect()]
+    return {"metric_view": compiled.metric_view, "columns": compiled.columns, "rows": rows, "sql": compiled.sql}
