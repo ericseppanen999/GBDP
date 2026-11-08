@@ -63,9 +63,10 @@ BATTER_1 = [("batter_name", "eq", "Aaron Batter")]
 
 def test_batting_line_by_hand(semantic_gold):
     row = one(["pa", "ab", "hits", "doubles", "triples", "home_runs", "walks", "hit_by_pitch", "strikeouts",
-               "total_bases", "avg", "obp", "slg", "ops", "bb_pct", "k_pct"], BATTER_1)
+               "total_bases", "avg", "obp", "slg", "ops", "bb_pct", "k_pct", "sac_flies", "sac_bunts"], BATTER_1)
     assert (row["pa"], row["ab"], row["hits"], row["doubles"], row["triples"], row["home_runs"]) == (6, 5, 3, 1, 0, 1)
     assert (row["walks"], row["hit_by_pitch"], row["strikeouts"], row["total_bases"]) == (1, 0, 1, 7)
+    assert (row["sac_flies"], row["sac_bunts"]) == (0, 0)  # SF/SH by hand: test_semantic_views
     assert row["avg"] == pytest.approx(0.600)
     assert row["obp"] == pytest.approx(4 / 6)
     assert row["slg"] == pytest.approx(1.400)
@@ -347,3 +348,4 @@ def test_mcp_compute_metric(semantic_gold):
     assert out["rows"] == [{"team_name": "Boston Red Sox", "ip_display": "7.0", "era": pytest.approx(18 / 7)}]
     assert "error" in compute_metric(["avg", "era"])
     assert "error" in compute_metric(["avg"], filters=[{"op": "eq"}])
+

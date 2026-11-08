@@ -70,9 +70,10 @@ vocabularies:
       HBP: Hit by pitch.
       K: Strikeout, including a strikeout double play and a dropped third strike where the batter reaches.
       OUT: Any other batted-ball or ball-in-play out (ground, fly, line, pop, force out).
-      DP: Double play (grounded into, lined into; a sacrifice fly double play is DP too).
+      DP: Double play (grounded into, lined into). A sacrifice fly double play is SF, not DP.
       TP: Triple play.
-      SAC: Sacrifice, fly or bunt. Sources do not separate the two.
+      SF: Sacrifice fly, a sacrifice fly double play included, and still SF when the batter reaches on an error or fielder's choice. Not an at-bat; counts in OBP's denominator.
+      SH: Sacrifice bunt, squeeze included, and still SH when the batter reaches on an error or fielder's choice. Not an at-bat and not in OBP.
       FC: Fielder's choice.
       ERROR: Batter reached on an error.
       INT: Batter awarded first on catcher's interference.
@@ -83,6 +84,13 @@ vocabularies:
         out and any runs that scored. Statcast calls it truncated_pa; NPB rows
         get it when the last header of a half-inning has no result.
       UNKNOWN: The source outcome could not be mapped. Counted as a PA, not as an at-bat.
+    legacy:
+      SAC: >
+        Written before gold split sacrifices into SF and SH: a sacrifice fly
+        or bunt. The code no longer writes it and the gold rebuild replaces
+        it; until then a SAC row counts as a sacrifice fly (in OBP's
+        denominator, as it always did), and a sacrifice fly double play from
+        then is still DP, an at-bat.
     groups:
       not_a_pa: [TRUNCATED]
       at_bat: [1B, 2B, 3B, HR, K, OUT, DP, TP, FC, ERROR]
@@ -90,7 +98,11 @@ vocabularies:
       walk: [BB]
       hit_by_pitch: [HBP]
       strikeout: [K]
-      sacrifice: [SAC]
+      # SAC is legacy (see legacy): counted with SF so OBP on pre-rebuild
+      # gold is what it was. Drop it once production gold has no SAC rows.
+      sac_fly: [SF, SAC]
+      sac_bunt: [SH]
+      sacrifice: [SF, SH, SAC]
 
   base_state:
     description: >
@@ -442,7 +454,8 @@ tables:
       - TRUNCATED rows are not plate appearances. Exclude them from PA counts and every PA-based rate (use the is_pa flag in v_plate_appearance); keep them for runs and outs.
       - For Statcast the state after a PA is read from the next PA's first pitch, so a stolen base or pickoff between PAs is credited to the earlier PA.
       - MLB games can be in both mlb_statcast and retrosheet_local; filter on source to avoid counting a game twice.
-      - SAC does not separate sacrifice flies from bunts, and there is no RBI outside Retrosheet.
+      - There is no RBI outside Retrosheet.
+      - Rows written before the SF/SH split (until the gold rebuild) carry SAC for both kinds of sacrifice and DP for a sacrifice fly double play; see vocabularies.event_type.legacy.
 
   fact_boxscore_batting:
     description: Per-player, per-game batting line from each source's box score.
@@ -732,6 +745,8 @@ views:
           CASE WHEN f.event_type IN {{list:event_type.hit_by_pitch}} THEN 1 ELSE 0 END AS is_hbp,
           CASE WHEN f.event_type IN {{list:event_type.strikeout}} THEN 1 ELSE 0 END AS is_k,
           CASE WHEN f.event_type IN {{list:event_type.sacrifice}} THEN 1 ELSE 0 END AS is_sac,
+          CASE WHEN f.event_type IN {{list:event_type.sac_fly}} THEN 1 ELSE 0 END AS is_sf,
+          CASE WHEN f.event_type IN {{list:event_type.sac_bunt}} THEN 1 ELSE 0 END AS is_sh,
           CASE f.event_type WHEN '1B' THEN 1 WHEN '2B' THEN 2 WHEN '3B' THEN 3 WHEN 'HR' THEN 4 ELSE 0 END AS total_bases
         FROM {{table:fact_plate_appearance}} f
       )
@@ -1075,6 +1090,19 @@ metrics:
     expr: SUM(source.is_k)
     format: count
     source_rationale: *pa_why
+  sac_flies:
+    metric_view: mv_batting
+    description: Sacrifice flies (SF; legacy SAC rows count here until the gold rebuild).
+    expr: SUM(source.is_sf)
+    format: count
+    source_rationale: *pa_why
+  sac_bunts:
+    metric_view: mv_batting
+    description: Sacrifice bunts (SH).
+    expr: SUM(source.is_sh)
+    format: count
+    source_rationale: *pa_why
+    caveats: [Until the gold rebuild, sacrifice bunts written before the SF/SH split are SAC and count as sac_flies instead.]
   total_bases:
     metric_view: mv_batting
     description: Total bases (1B = 1, 2B = 2, 3B = 3, HR = 4).
@@ -1088,17 +1116,17 @@ metrics:
     format: rate
     source_rationale: *pa_why
     caveats: &sf_dp_ab
-      - A sacrifice-fly double play maps to DP and so counts as an at-bat, though officially it isn't one.
+      - Until the gold rebuild, a sacrifice fly double play written before the SF/SH split is DP and so counts as an at-bat, though officially it isn't one.
   obp:
     metric_view: mv_batting
-    description: On-base percentage, (H + BB + HBP) / (AB + BB + HBP + SAC).
+    description: On-base percentage, (H + BB + HBP) / (AB + BB + HBP + SF). Sacrifice bunts are left out, as officially.
     expr: >-
       (SUM(source.is_hit) + SUM(source.is_bb) + SUM(source.is_hbp))
-      / NULLIF(SUM(source.is_ab) + SUM(source.is_bb) + SUM(source.is_hbp) + SUM(source.is_sac), 0)
+      / NULLIF(SUM(source.is_ab) + SUM(source.is_bb) + SUM(source.is_hbp) + SUM(source.is_sf), 0)
     format: rate
     source_rationale: *pa_why
     caveats:
-      - Official OBP counts sacrifice flies but not sacrifice bunts in the denominator. Sources don't separate them, so every SAC counts; OBP is slightly low for batters with sacrifice bunts.
+      - Rows written before the SF/SH split (until the gold rebuild) carry SAC for both kinds; they count as sacrifice flies, so OBP on those rows is slightly low for batters with sacrifice bunts.
   slg:
     metric_view: mv_batting
     description: Slugging percentage, total bases / at-bats.
@@ -1111,7 +1139,7 @@ metrics:
     description: On-base plus slugging, OBP + SLG.
     expr: >-
       (SUM(source.is_hit) + SUM(source.is_bb) + SUM(source.is_hbp))
-      / NULLIF(SUM(source.is_ab) + SUM(source.is_bb) + SUM(source.is_hbp) + SUM(source.is_sac), 0)
+      / NULLIF(SUM(source.is_ab) + SUM(source.is_bb) + SUM(source.is_hbp) + SUM(source.is_sf), 0)
       + SUM(source.total_bases) / NULLIF(SUM(source.is_ab), 0)
     format: rate
     source_rationale: *pa_why

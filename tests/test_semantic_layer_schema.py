@@ -118,18 +118,27 @@ def test_event_type_vocabulary_is_exactly_what_the_code_emits(sl):
     emitted = _returned_codes(publish._map_event_type) | _returned_codes(publish._map_retrosheet_event)
     emitted |= _returned_codes(publish._npb_event_type) | npb_events
     emitted |= set(re.findall(r'"event_type": "(\w+)"', inspect.getsource(publish._npb_pa_rows)))
-    assert set(map(str, sl.vocabularies["event_type"].values)) == emitted
+    vocab = sl.vocabularies["event_type"]
+    assert set(map(str, vocab.values)) == emitted
+    # Legacy codes are only in older gold partitions: the code never writes them.
+    assert not set(vocab.legacy) & emitted
 
 
 def test_event_type_groups_only_use_known_codes(sl):
     vocab = sl.vocabularies["event_type"]
     for group, codes in vocab.groups.items():
-        assert set(codes) <= set(map(str, vocab.values)), group
+        assert set(codes) <= set(map(str, vocab.values)) | set(vocab.legacy), group
     # The PA rule: TRUNCATED is the only non-PA row, and it is in no outcome group.
     assert vocab.groups["not_a_pa"] == ("TRUNCATED",)
     # Catcher's interference is a PA but not an at-bat (gbdp-40's rule too).
     assert "INT" not in vocab.groups["at_bat"] and "INT" not in vocab.groups["not_a_pa"]
     assert all("TRUNCATED" not in codes for g, codes in vocab.groups.items() if g != "not_a_pa")
+    # Sacrifices: neither kind is an at-bat; only flies (and legacy SAC, which
+    # was always counted in OBP's denominator) are in sac_fly.
+    for code in ("SF", "SH", "SAC"):
+        assert code not in vocab.groups["at_bat"] and code in vocab.groups["sacrifice"]
+    assert set(vocab.groups["sac_fly"]) == {"SF", "SAC"} and vocab.groups["sac_bunt"] == ("SH",)
+    assert publish._map_event_type("sac_fly_double_play") == "SF"
 
 
 def test_base_state_encoding_matches_the_code(sl):

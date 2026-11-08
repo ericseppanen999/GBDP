@@ -122,6 +122,9 @@ class Vocabulary:
     groups: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
     prefixes: Tuple[str, ...] = ()
     rules: Tuple[Dict[str, Any], ...] = ()  # season_phase: {phase, source, values, suffixes}
+    # Codes the code no longer writes but older gold partitions still hold
+    # (until a rebuild replaces them): code -> meaning. Groups may list them.
+    legacy: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -202,7 +205,7 @@ _ALLOWED_KEYS = {
     "top": {"version", "conventions", "vocabularies", "tables", "audit_tables", "views", "metric_views", "metrics"},
     "table": {"description", "grain", "columns", "primary_key", "foreign_keys", "sources", "caveats", "placeholder",
               "written_by"},
-    "vocabulary": {"description", "values", "groups", "prefixes", "rules"},
+    "vocabulary": {"description", "values", "groups", "prefixes", "rules", "legacy"},
     "view": {"description", "sql"},
     "metric_view": {"description", "source", "joins", "dimensions", "filter", "not_applicable_roles",
                     "default_filters"},
@@ -262,6 +265,7 @@ def parse(raw: Dict[str, Any]) -> SemanticLayer:
             groups={g: tuple(str(x) for x in vals) for g, vals in (v.get("groups") or {}).items()},
             prefixes=tuple(v.get("prefixes") or ()),
             rules=tuple(dict(r) for r in v.get("rules") or ()),
+            legacy={str(k): _text(d) for k, d in (v.get("legacy") or {}).items()},
         )
 
     views = {
@@ -327,6 +331,19 @@ def validate(layer: SemanticLayer) -> None:
         for col, desc in t.columns.items():
             if not desc:
                 errors.append(f"table {t.name}: column {col} has no description")
+
+    for v in layer.vocabularies.values():
+        if not isinstance(v.values, dict):
+            if v.legacy:
+                errors.append(f"vocabulary {v.name}: legacy codes need a values mapping")
+            continue
+        current = set(map(str, v.values))
+        for code in set(v.legacy) & current:
+            errors.append(f"vocabulary {v.name}: {code} is both a value and legacy")
+        if current:  # a vocabulary with only groups (pitch_result) has nothing to check against
+            for group, codes in v.groups.items():
+                for code in set(codes) - current - set(v.legacy):
+                    errors.append(f"vocabulary {v.name}: group {group} lists unknown code {code}")
 
     def check_placeholders(where: str, sql: str) -> None:
         for kind, arg in _PLACEHOLDER.findall(sql):

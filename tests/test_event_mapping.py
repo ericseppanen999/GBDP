@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -80,6 +81,11 @@ def test_dashboard_batting_average_excludes_both_sacrifices():
     spec = importlib.util.spec_from_file_location("build_dashboard", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    sql = json.dumps(mod.build())
-    assert "'SAC'" not in sql
-    assert "NOT IN ('BB', 'HBP', 'SF', 'SH')" in sql
+    sql = mod.all_datasets()["hitters"][1]
+    # AVG is hits / the governed is_ab flag (semantic layer, CR-007), and the
+    # at-bat list has neither sacrifice (nor legacy SAC, from gold written
+    # before the split).
+    assert "SUM(source.is_hit) / NULLIF(SUM(source.is_ab), 0) AS avg" in sql
+    at_bat = re.search(r"CASE WHEN f.event_type IN \(([^)]*)\) THEN 1 ELSE 0 END AS is_ab", sql).group(1)
+    assert "'OUT'" in at_bat and not {"'SF'", "'SH'", "'SAC'"} & {c.strip() for c in at_bat.split(",")}
+    assert "THEN 1 ELSE 0 END AS is_sf" in sql and "THEN 1 ELSE 0 END AS is_sh" in sql

@@ -213,7 +213,7 @@ ALTER TABLE gbdp.gold_gbdp.fact_pitch ALTER COLUMN `dt` COMMENT 'Game date.';
 
 ALTER TABLE gbdp.gold_gbdp.fact_pitch ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
 
-COMMENT ON TABLE gbdp.gold_gbdp.fact_plate_appearance IS 'One row per plate appearance: MLB from Statcast (pitch rows grouped by at-bat), NPB rebuilt from SPAIA\'s text play-by-play (one row per real PA), and Retrosheet plays where loaded. Plus TRUNCATED rows, which are not plate appearances (see vocabularies.event_type). Grain: one row per pa_id. Sources: mlb_statcast, npb_spaia, retrosheet_local. Caveat: TRUNCATED rows are not plate appearances. Exclude them from PA counts and every PA-based rate (use the is_pa flag in v_plate_appearance); keep them for runs and outs. Caveat: For Statcast the state after a PA is read from the next PA\'s first pitch, so a stolen base or pickoff between PAs is credited to the earlier PA. Caveat: MLB games can be in both mlb_statcast and retrosheet_local; filter on source to avoid counting a game twice. Caveat: SAC does not separate sacrifice flies from bunts, and there is no RBI outside Retrosheet. Semantic layer: configs/semantic_layer.yaml.';
+COMMENT ON TABLE gbdp.gold_gbdp.fact_plate_appearance IS 'One row per plate appearance: MLB from Statcast (pitch rows grouped by at-bat), NPB rebuilt from SPAIA\'s text play-by-play (one row per real PA), and Retrosheet plays where loaded. Plus TRUNCATED rows, which are not plate appearances (see vocabularies.event_type). Grain: one row per pa_id. Sources: mlb_statcast, npb_spaia, retrosheet_local. Caveat: TRUNCATED rows are not plate appearances. Exclude them from PA counts and every PA-based rate (use the is_pa flag in v_plate_appearance); keep them for runs and outs. Caveat: For Statcast the state after a PA is read from the next PA\'s first pitch, so a stolen base or pickoff between PAs is credited to the earlier PA. Caveat: MLB games can be in both mlb_statcast and retrosheet_local; filter on source to avoid counting a game twice. Caveat: There is no RBI outside Retrosheet. Caveat: Rows written before the SF/SH split (until the gold rebuild) carry SAC for both kinds of sacrifice and DP for a sacrifice fly double play; see vocabularies.event_type.legacy. Semant...';
 
 ALTER TABLE gbdp.gold_gbdp.fact_plate_appearance ALTER COLUMN `pa_id` COMMENT 'Canonical ID. Statcast and fact_pitch derive it from gamePk and at-bat number.';
 
@@ -500,7 +500,9 @@ pa AS (
     CASE WHEN f.event_type IN ('BB') THEN 1 ELSE 0 END AS is_bb,
     CASE WHEN f.event_type IN ('HBP') THEN 1 ELSE 0 END AS is_hbp,
     CASE WHEN f.event_type IN ('K') THEN 1 ELSE 0 END AS is_k,
-    CASE WHEN f.event_type IN ('SAC') THEN 1 ELSE 0 END AS is_sac,
+    CASE WHEN f.event_type IN ('SF', 'SH', 'SAC') THEN 1 ELSE 0 END AS is_sac,
+    CASE WHEN f.event_type IN ('SF', 'SAC') THEN 1 ELSE 0 END AS is_sf,
+    CASE WHEN f.event_type IN ('SH') THEN 1 ELSE 0 END AS is_sh,
     CASE f.event_type WHEN '1B' THEN 1 WHEN '2B' THEN 2 WHEN '3B' THEN 3 WHEN 'HR' THEN 4 ELSE 0 END AS total_bases
   FROM gbdp.gold_gbdp.fact_plate_appearance f
 )
@@ -712,20 +714,26 @@ measures:
 - name: strikeouts
   expr: SUM(source.is_k)
   comment: Strikeouts.
+- name: sac_flies
+  expr: SUM(source.is_sf)
+  comment: Sacrifice flies (SF; legacy SAC rows count here until the gold rebuild).
+- name: sac_bunts
+  expr: SUM(source.is_sh)
+  comment: 'Sacrifice bunts (SH). Caveats: Until the gold rebuild sacrifice bunts written before the SF/SH split are SAC and count as sac_flies instead.'
 - name: total_bases
   expr: SUM(source.total_bases)
   comment: Total bases (1B = 1, 2B = 2, 3B = 3, HR = 4).
 - name: avg
   expr: SUM(source.is_hit) / NULLIF(SUM(source.is_ab), 0)
-  comment: 'Batting average, hits / at-bats. Caveats: A sacrifice-fly double play maps to DP and so counts as an at-bat, though officially it isn''t one.'
+  comment: 'Batting average, hits / at-bats. Caveats: Until the gold rebuild, a sacrifice fly double play written before the SF/SH split is DP and so counts as an at-bat, though officially it isn''t one.'
 - name: obp
-  expr: (SUM(source.is_hit) + SUM(source.is_bb) + SUM(source.is_hbp)) / NULLIF(SUM(source.is_ab) + SUM(source.is_bb) + SUM(source.is_hbp) + SUM(source.is_sac), 0)
-  comment: 'On-base percentage, (H + BB + HBP) / (AB + BB + HBP + SAC). Caveats: Official OBP counts sacrifice flies but not sacrifice bunts in the denominator. Sources don''t separate them, so every SAC counts; OBP is slightly low for batters with sacrifice bunts.'
+  expr: (SUM(source.is_hit) + SUM(source.is_bb) + SUM(source.is_hbp)) / NULLIF(SUM(source.is_ab) + SUM(source.is_bb) + SUM(source.is_hbp) + SUM(source.is_sf), 0)
+  comment: 'On-base percentage, (H + BB + HBP) / (AB + BB + HBP + SF). Sacrifice bunts are left out, as officially. Caveats: Rows written before the SF/SH split (until the gold rebuild) carry SAC for both kinds; they count as sacrifice flies, so OBP on those rows is slightly low for batters with sacrifice bunts.'
 - name: slg
   expr: SUM(source.total_bases) / NULLIF(SUM(source.is_ab), 0)
-  comment: 'Slugging percentage, total bases / at-bats. Caveats: A sacrifice-fly double play maps to DP and so counts as an at-bat, though officially it isn''t one.'
+  comment: 'Slugging percentage, total bases / at-bats. Caveats: Until the gold rebuild, a sacrifice fly double play written before the SF/SH split is DP and so counts as an at-bat, though officially it isn''t one.'
 - name: ops
-  expr: (SUM(source.is_hit) + SUM(source.is_bb) + SUM(source.is_hbp)) / NULLIF(SUM(source.is_ab) + SUM(source.is_bb) + SUM(source.is_hbp) + SUM(source.is_sac), 0) + SUM(source.total_bases) / NULLIF(SUM(source.is_ab), 0)
+  expr: (SUM(source.is_hit) + SUM(source.is_bb) + SUM(source.is_hbp)) / NULLIF(SUM(source.is_ab) + SUM(source.is_bb) + SUM(source.is_hbp) + SUM(source.is_sf), 0) + SUM(source.total_bases) / NULLIF(SUM(source.is_ab), 0)
   comment: 'On-base plus slugging, OBP + SLG. Caveats: Inherits the OBP sacrifice caveat.'
 - name: bb_pct
   expr: SUM(source.is_bb) / NULLIF(SUM(source.is_pa), 0)

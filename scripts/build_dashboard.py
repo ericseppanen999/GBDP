@@ -100,7 +100,7 @@ ORDER BY base_state"""),
             having=[("pitches", "gte", 50)], order_by=[("pitches", "desc")],
             aliases={"pitch_type_name": "pitch", "avg_velocity": "avg_mph", "max_velocity": "max_mph"}))),
         # PA and AVG from the governed is_pa / is_ab flags: TRUNCATED rows
-        # aren't PAs; INT, BB, HBP, SAC and UNKNOWN aren't at-bats.
+        # aren't PAs; INT, BB, HBP, SF, SH (and legacy SAC) and UNKNOWN aren't at-bats.
         "hitters": ("MLB hitters", metric_sql(MetricRequest(
             metrics=["pa", "home_runs", "hits", "walks", "strikeouts", "avg"],
             dimensions=["batter_id", "batter_name"],
