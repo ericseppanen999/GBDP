@@ -656,8 +656,8 @@
                   "datasetName": "daily_coverage",
                   "fields": [
                     {
-                      "name": "day",
-                      "expression": "`day`"
+                      "name": "daily(day)",
+                      "expression": "DATE_TRUNC(\"DAY\", `day`)"
                     },
                     {
                       "name": "sum(plate_appearances)",
@@ -677,7 +677,7 @@
               "widgetType": "line",
               "encodings": {
                 "x": {
-                  "fieldName": "day",
+                  "fieldName": "daily(day)",
                   "scale": {
                     "type": "temporal"
                   },
@@ -943,8 +943,8 @@
                   "datasetName": "quality",
                   "fields": [
                     {
-                      "name": "day",
-                      "expression": "`day`"
+                      "name": "daily(day)",
+                      "expression": "DATE_TRUNC(\"DAY\", `day`)"
                     },
                     {
                       "name": "count(check)",
@@ -964,7 +964,7 @@
               "widgetType": "bar",
               "encodings": {
                 "x": {
-                  "fieldName": "day",
+                  "fieldName": "daily(day)",
                   "scale": {
                     "type": "temporal"
                   },

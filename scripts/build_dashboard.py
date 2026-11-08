@@ -160,9 +160,15 @@ def chart(name: str, kind: str, dataset: str, x_field: str, x_scale: str, y_fiel
           title: str, x: int, y: int, w: int, h: int, color: str | None = None,
           x_title: str | None = None, y_title: str | None = None, description: str | None = None) -> dict:
     y_name = f"{y_agg.lower()}({y_field})"
-    fields = [_field(x_field), _field(y_name, f"{y_agg.upper()}(`{y_field}`)")]
+    # A temporal axis takes a time-binned field, the way Lakeview writes its own
+    # charts; a raw date there makes the widget invalid.
+    if x_scale == "temporal":
+        x_name, x_expr = f"daily({x_field})", f'DATE_TRUNC("DAY", `{x_field}`)'
+    else:
+        x_name, x_expr = x_field, None
+    fields = [_field(x_name, x_expr), _field(y_name, f"{y_agg.upper()}(`{y_field}`)")]
     encodings = {
-        "x": {"fieldName": x_field, "scale": {"type": x_scale}, "displayName": x_title or x_field},
+        "x": {"fieldName": x_name, "scale": {"type": x_scale}, "displayName": x_title or x_field},
         "y": {"fieldName": y_name, "scale": {"type": "quantitative"}, "displayName": y_title or y_field},
     }
     if color:
