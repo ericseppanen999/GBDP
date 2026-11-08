@@ -179,6 +179,7 @@ def _stage_fetch_rosters(start, end, cfg, writer, cache, force, leagues=None):
     if _allowed(leagues, "mlb"):
         mlb = MlbStatsApiConnector(writer, cache, cfg["mlb_statsapi"]["base_url"])
         _run_partitions(mlb, mlb.list_partitions(start, end, "rosters"), force, "fetch_rosters:mlb_statsapi:rosters")
+        _run_partitions(mlb, mlb.list_partitions(start, end, "teams"), force, "fetch_rosters:mlb_statsapi:teams")
     if _allowed(leagues, "npb"):
         npb = NpbSpaiaConnector(writer, cache, cfg["npb_spaia"]["base_url"])
         _run_partitions(npb, npb.list_partitions(start, end, "rosters"), force, "fetch_rosters:npb_spaia:rosters")
@@ -279,7 +280,7 @@ def _stage_fetch_npb_stats(start, end, cfg, writer, cache, force, leagues=None):
 
 def _stage_silver(start, end, cfg, writer, cache, force, leagues=None):
     if _allowed(leagues, "mlb"):
-        for entity in ["games", "rosters", "transactions", "pitches", "boxscore_batting", "boxscore_pitching"]:
+        for entity in ["games", "rosters", "teams", "transactions", "pitches", "boxscore_batting", "boxscore_pitching"]:
             _run_step(f"silver_normalize:mlb:{entity}", lambda entity=entity: normalize_mlb(entity, start, end, force=force))
     if _allowed(leagues, "npb"):
         for entity in [

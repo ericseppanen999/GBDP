@@ -175,6 +175,9 @@ def reconcile_gold_misc(root: Path, day: str, rep: Report) -> None:
     rep.check(bool(mlb) and filled / len(mlb) >= 0.9, "dim_player MLB bios filled", f"{filled}/{len(mlb)}")
     ids = Counter(r["player_id"] for r in players)
     rep.check(max(ids.values(), default=1) == 1, "dim_player one current row per player", f"{len(players)} players")
+    teams = [r for r in _rows(root, "gold", "dim_team", f"dt={day}") if r["source"] == "mlb_statsapi" and r.get("is_current")]
+    named = sum(bool(r.get("team_abbrev") and r.get("home_city")) for r in teams)
+    rep.check(len(teams) == 30 and named == 30, "dim_team: 30 MLB teams with abbrev + city", f"{named}/{len(teams)}")
     roster = _rows(root, "gold", "fact_roster", f"dt={day}")
     keys = Counter((r["team_id"], r["player_id"], r["source"]) for r in roster)
     rep.check(max(keys.values(), default=1) == 1, "fact_roster one row per team+player", f"{len(roster)} rows")

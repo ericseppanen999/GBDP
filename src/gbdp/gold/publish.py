@@ -535,7 +535,29 @@ def _write_dim_team(root: Path, dt: date, bridge: Dict[tuple, str], force: bool)
         rows.extend(_team_rows_from_game(r, "LMB", bridge, "lmb_local"))
     for r in _read_silver(root, "retrosheet_local", "games", dt):
         rows.extend(_team_rows_from_game(r, "MLB", bridge, "retrosheet_local"))
-    dedup = {(r["team_id"], r["team_name"]): r for r in rows}
+    # The season team list carries what games don't: abbreviation and city.
+    # It also covers teams with no game that day.
+    for t in _read_silver(root, "mlb_statsapi", "teams", dt):
+        if not t.get("team_id"):
+            continue
+        rows.append({
+            "team_id": _canonical(bridge, "team", "mlb_statsapi", t["team_id"]),
+            "league_id": _league_id_for_code("MLB"),
+            "team_name": t.get("team_name"),
+            "team_abbrev": t.get("team_abbrev"),
+            "home_city": t.get("home_city"),
+            "valid_from_dt": dt.isoformat(),
+            "valid_to_dt": None,
+            "is_current": True,
+            "dt": dt.isoformat(),
+            "source": "mlb_statsapi",
+            "source_team_id": str(t["team_id"]),
+        })
+    # One row per team; a team-list row (with abbreviation) wins over a game's.
+    dedup: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        if r["team_id"] not in dedup or r.get("team_abbrev"):
+            dedup[r["team_id"]] = r
     scd_rows = _apply_scd2(
         root, "dim_team", dt, list(dedup.values()), key_field="team_id", attr_fields=["team_name", "team_abbrev", "home_city", "league_id"]
     )

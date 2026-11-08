@@ -39,6 +39,8 @@ def normalize_mlb(
             outputs.append(_normalize_boxscore_pitching(root, d, force))
         elif entity == "player_bios":
             outputs.append(_normalize_player_bios(root, d, force))
+        elif entity == "teams":
+            outputs.append(_normalize_teams(root, d, force))
         else:
             raise ValueError(f"Unsupported MLB silver entity: {entity}")
     return outputs
@@ -236,6 +238,36 @@ def _normalize_player_bios(root: Path, dt: date, force: bool) -> Path:
                 row["source"] = "mlb_statsapi"
             normalized.append(row)
     out_dir = _silver_path(root, "mlb_statsapi", "player_bios", dt)
+    ensure_dir(out_dir)
+    return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
+
+
+def _normalize_teams(root: Path, dt: date, force: bool) -> Path:
+    rows = _read_bronze("mlb_statsapi", "teams", dt, root)
+    normalized: List[Dict[str, Any]] = []
+    include_partition_cols = include_partition_cols_silver()
+    for r in rows:
+        teams = r.get("teams") or []
+        if isinstance(teams, str):
+            teams = _parse_json_maybe(teams) or []
+        for t in teams:
+            row = {
+                "team_id": _as_str(t.get("id")),
+                "team_name": t.get("name"),
+                "team_abbrev": t.get("abbreviation"),
+                "club_name": t.get("clubName"),
+                "home_city": t.get("locationName"),
+                "league_name": (t.get("league") or {}).get("name"),
+                "division_name": (t.get("division") or {}).get("name"),
+                "venue_name": (t.get("venue") or {}).get("name"),
+                "first_year": _as_int(t.get("firstYearOfPlay")),
+                "active": t.get("active"),
+            }
+            if include_partition_cols:
+                row["dt"] = dt.isoformat()
+                row["source"] = "mlb_statsapi"
+            normalized.append(row)
+    out_dir = _silver_path(root, "mlb_statsapi", "teams", dt)
     ensure_dir(out_dir)
     return write_parquet(normalized, out_dir / "part-00001.parquet", force=force)
 

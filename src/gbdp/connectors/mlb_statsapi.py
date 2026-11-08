@@ -17,6 +17,7 @@ class MlbStatsApiConnector(BaseConnector):
         "transactions": ["transactions"],
         "boxscore": ["games"],
         "player_bios": ["people"],
+        "teams": ["teams"],
     }
 
     def __init__(self, writer, cache, base_url: str) -> None:
@@ -102,6 +103,25 @@ class MlbStatsApiConnector(BaseConnector):
             return raw.__class__(
                 source=self.source,
                 entity="player_bios",
+                dt=partition.dt,
+                url=raw.url,
+                params=params,
+                status_code=raw.status_code,
+                fetched_at_utc=raw.fetched_at_utc,
+                checksum=raw.checksum,
+                content_type=raw.content_type,
+                body_text=raw.body_text,
+            )
+        if partition.entity == "teams":
+            # Names, abbreviations, cities, league and division for the season.
+            # The roster fetch already calls this endpoint for team IDs; this
+            # keeps the response instead of discarding it.
+            params = {"sportId": 1, "season": date.fromisoformat(partition.dt).year}
+            url = f"{self.base_url}/teams"
+            raw = self.http_get(url, params)
+            return raw.__class__(
+                source=self.source,
+                entity="teams",
                 dt=partition.dt,
                 url=raw.url,
                 params=params,
