@@ -28,6 +28,8 @@ from gbdp.semantic import layer as semantic  # noqa: E402
 from gbdp.semantic.uc import sql_script  # noqa: E402
 
 OUT = ROOT / "docs" / "semantic_layer_uc.sql"
+# The lakehouse's own schemas (databricks.yml): a scratch check never writes there.
+PROTECTED_SCHEMAS = frozenset({"bronze_gbdp", "silver_gbdp", "gold_gbdp"})
 
 
 def build(catalog: str = "gbdp", schema: str = "gold_gbdp", uc_mode: str = "managed") -> str:
@@ -39,8 +41,9 @@ def validate(catalog: str, schema: str, scratch: str, uc_mode: str, warehouse, o
     tables, then SELECT every measure of every metric view. Returns failures."""
     from gbdp.semantic import uc
 
-    if scratch == schema:
-        raise SystemExit("--validate-in must be a scratch schema, not the gold schema itself")
+    if scratch in {schema} | PROTECTED_SCHEMAS:
+        raise SystemExit(f"--validate-in must be a scratch schema, not {scratch} "
+                         f"(never {', '.join(sorted(PROTECTED_SCHEMAS | {schema}))})")
     sl = semantic.load(ROOT / "configs" / "semantic_layer.yaml")
     failures = 0
 

@@ -162,5 +162,10 @@ def test_validation_creates_only_in_the_scratch_schema():
     assert len(queries) == len(SL.metric_views) - 1 and "MEASURE(`avg`)" in queries[0]
     import pytest
 
+    before = len(wh.sql)
+    for scratch in ("gold_gbdp", "silver_gbdp", "bronze_gbdp"):
+        with pytest.raises(SystemExit):
+            mod.validate("gbdp", "other_gold", scratch, "managed", wh)
     with pytest.raises(SystemExit):
-        mod.validate("gbdp", "gold_gbdp", "gold_gbdp", "managed", wh)
+        mod.validate("gbdp", "my_gold", "my_gold", "managed", wh)
+    assert len(wh.sql) == before  # refused before running anything
