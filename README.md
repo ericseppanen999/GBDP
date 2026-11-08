@@ -39,7 +39,7 @@ flowchart LR
     subgraph Lakehouse
         BR["Bronze<br/>raw responses + parsed parquet<br/>append-only, checksum-named"]
         SV["Silver<br/>one normalized table per source/entity/day<br/>latest fetch wins"]
-        ID["Identity<br/>source IDs â†’ stable canonical IDs"]
+        ID["Identity<br/>source IDs → stable canonical IDs"]
         GD["Gold (Delta)<br/>SCD2 dims, facts, derived tables"]
         Q["Quality gates<br/>+ audit tables"]
     end
@@ -48,22 +48,22 @@ flowchart LR
     GD --> API[FastAPI + SQL]
 ```
 
-Each day (`dt`) flows through 16 stages: `fetch_*` â†’ `silver_normalize` â†’ `identity_resolve` â†’ `gold_publish` â†’ `quality_checks` â†’ `audit_report` â†’ `register_uc`. Any range of days can be re-run at any time; re-running is idempotent.
+Each day (`dt`) flows through 16 stages: `fetch_*` → `silver_normalize` → `identity_resolve` → `gold_publish` → `quality_checks` → `audit_report` → `register_uc`. Any range of days can be re-run at any time; re-running is idempotent.
 
 ## Gold data model
 
 | Table | Grain |
 |---|---|
-| `dim_league`, `dim_season` | league; league Ã— season |
+| `dim_league`, `dim_season` | league; league × season |
 | `dim_team`, `dim_player` | SCD2: one version per change, `valid_from_dt`/`valid_to_dt`/`is_current` |
-| `bridge_source_ids` | source system + source ID â†’ canonical ID |
+| `bridge_source_ids` | source system + source ID → canonical ID |
 | `fact_game` | game (teams, score, status) |
 | `fact_plate_appearance` | plate appearance: batter, pitcher, batting/fielding team, event, base/out state before and after, runs on the play, runs to end of inning |
 | `fact_pitch` | pitch: type, velocity, location, count, result, linked to its plate appearance |
-| `fact_roster`, `fact_transaction`, `fact_standings` | team Ã— player Ã— day; transaction; team Ã— day |
-| `fact_boxscore_batting`, `fact_boxscore_pitching` | player Ã— game |
-| `run_expectancy` | league Ã— season Ã— base state Ã— outs, season to date |
-| `feature_player_rolling_30d`, `breakout_candidates` | player Ã— day |
+| `fact_roster`, `fact_transaction`, `fact_standings` | team × player × day; transaction; team × day |
+| `fact_boxscore_batting`, `fact_boxscore_pitching` | player × game |
+| `run_expectancy` | league × season × base state × outs, season to date |
+| `feature_player_rolling_30d`, `breakout_candidates` | player × day |
 | `audit_quality`, `audit_stage_runs`, `audit_pipeline_runs` | check / stage / run results |
 
 ## Design decisions worth knowing
@@ -125,20 +125,37 @@ Every read endpoint takes `as_of=YYYY-MM-DD` to read the data as it stood on tha
 
 Storage is Unity Catalog Volumes per layer (`/Volumes/gbdp/{bronze,silver,gold}_gbdp/...`). Gold is Delta, and every layer is also registered as managed UC tables in `gbdp.{bronze,silver,gold}_gbdp`. See [docs/OPERATIONS.md](docs/OPERATIONS.md) for runbooks and [docs/E2E.md](docs/E2E.md) for the end-to-end walkthrough.
 
-### Checking the live data
+## Proving the data is right
+
+Quality checks catch broken invariants. They can't tell you the numbers match reality, so two tools reconcile the platform against the leagues' own records.
+
+**`scripts/reconcile_day.py`** runs on a local pipeline output for one day. It fetches ground truth independently: MLB boxscores and linescores, and the totals NPB's feed embeds in every event. Then it checks each layer: bronze has every entity, silver has every game with the right final score, gold rebuilds each team's plate appearances, runs and hits exactly, and the API returns what gold holds.
+
+```bash
+python -m gbdp.cli run --start 2026-06-10 --end 2026-06-10 --leagues mlb,npb --force
+python scripts/reconcile_day.py 2026-06-10 --data-root ./data
+```
+
+On 2026-06-10 and 2026-09-05 (15 MLB + 6 NPB games each), every check passes:
+- MLB plate appearances, runs and hits per team match the official boxscores in every game, every PA has a batter and both teams, and every pitch belongs to a PA;
+- NPB runs and hits per team match the feed's totals in every game. Over all 156 NPB games in May–June, hits match in 156 and runs in 155; the one exception is a walk-off run on a wild pitch, which belongs to no PA.
+
+Getting there found and fixed real defects: NPB counted every pitch as a plate appearance, 20% of MLB PAs had no batter, runs that scored mid-PA were dropped, and backfilled MLB rosters held the current roster instead of the historical one. Each fix has a regression test.
+
+**`scripts/verify_lakehouse.py`** checks the live Unity Catalog tables through a SQL warehouse:
 
 ```bash
 python scripts/verify_lakehouse.py --start 2026-05-13
 ```
 
-This queries the live UC tables through a SQL warehouse and prints PASS/WARN/FAIL for:
-- daily game, plate appearance and pitch counts;
-- plate appearances per MLB game and their team coverage;
-- key uniqueness in every fact table;
-- one current row per player, and bio fill rates per source;
-- roster sizes, Statcast coverage in silver, and recorded quality failures.
+It prints PASS/WARN/FAIL for:
+- bronze: every key entity present for each loaded date, the HTTP status of its latest fetch, and payloads too small to be real;
+- daily game, plate appearance and pitch counts, and PAs per MLB game with their team coverage;
+- key uniqueness in every fact table, one current row per player, and bio fill rates;
+- roster sizes, Statcast coverage in silver, and recorded quality failures;
+- production gold reconciled against MLB's boxscores for sample days.
 
-It only reads, so it's safe to run while jobs are running.
+Both tools only read, so they're safe to run while jobs are running.
 
 ## Tests
 
@@ -146,7 +163,7 @@ It only reads, so it's safe to run while jobs are running.
 pytest
 ```
 
-The suite has about 140 tests. Most are regression tests named after real production incidents, such as rosters duplicated ~110Ã—, a type clash that blocked publishing, and IDs that changed daily. Each pins the fix so the bug can't come back.
+The suite has 181 tests. Most are regression tests named after real production incidents, such as rosters duplicated ~110×, a type clash that blocked publishing, and IDs that changed daily. Each pins the fix so the bug can't come back.
 
 ## Repository layout
 
@@ -162,7 +179,7 @@ src/gbdp/
   pipeline/     stage runner, windows, retries
   serve/        FastAPI app and the gold query layer
 configs/        sources and leagues
-scripts/        operational tools (verify_lakehouse.py)
+scripts/        reconcile_day.py, verify_lakehouse.py, build_dashboard.py
 docs/           operations runbook, end-to-end walkthrough, UC SQL
 TRD.md          the original technical requirements
 ```

@@ -96,7 +96,8 @@ BRONZE_ENTITIES = [
     ("mlb_statsapi", "boxscore", 50_000),
     ("mlb_statsapi", "player_bios", 100_000),
     ("mlb_statcast", "pitches", 100_000),
-    ("npb_spaia", "games", 1_000),
+    # One NPB game is ~400 bytes (09-03 had 2 games in 785); a day off is "[]".
+    ("npb_spaia", "games", 100),
     ("npb_spaia", "rosters", 50_000),
     ("npb_spaia", "game_pbp", 50_000),
 ]
@@ -283,6 +284,32 @@ def check_silver_duplicates(wh: Warehouse, rep: Report, start: str) -> None:
         rep.line("FAIL" if dupes else "PASS", f"silver {src}/{entity} duplicates", f"{dupes} duplicate rows of {total}")
 
 
+def check_against_mlb(wh: Warehouse, rep: Report, days: list) -> None:
+    """Production gold vs MLB's own boxscores: PAs, runs and hits per team, per game."""
+    from reconcile_day import mlb_truth
+
+    for day in days:
+        truth = {pk: g for pk, g in mlb_truth(day).items() if g["status"] == "Final"}
+        rows = wh.query(f"""
+            SELECT g.source_game_id, pa.is_top_inning,
+                   count_if(pa.event_type <> 'TRUNCATED') AS pas,
+                   coalesce(sum(pa.runs_scored_on_play), 0) AS runs,
+                   count_if(pa.event_type IN ('1B', '2B', '3B', 'HR')) AS hits
+            FROM {GOLD}.fact_plate_appearance pa
+            JOIN {GOLD}.fact_game g ON g.game_id = pa.game_id AND g.dt = pa.dt
+            WHERE pa.dt = '{day}' AND pa.source = 'mlb_statcast'
+            GROUP BY 1, 2""")
+        got: dict = {}
+        for pk, top, pas, runs, hits in rows:
+            side = 1 if str(top).lower() == "true" else 0  # [home, away]
+            for key, v in (("pa", pas), ("runs", runs), ("hits", hits)):
+                got.setdefault(pk, {}).setdefault(key, [0, 0])[side] = int(v)
+        for key in ("pa", "runs", "hits"):
+            bad = [pk for pk, g in truth.items() if tuple(got.get(pk, {}).get(key, [0, 0])) != tuple(g[key])]
+            rep.line("PASS" if not bad else "FAIL", f"{day} MLB {key} per team = boxscore",
+                     f"{len(truth) - len(bad)}/{len(truth)} games" + (f"; e.g. {bad[:3]}" if bad else ""))
+
+
 def check_quality_results(wh: Warehouse, rep: Report, start: str) -> None:
     rows = wh.query(f"""
         SELECT `check`, coalesce(`table`, ''), count(DISTINCT dt), concat_ws(',', sort_array(collect_set(dt)))
@@ -301,7 +328,10 @@ def main() -> int:
     ap.add_argument("--warehouse", default=os.getenv("GBDP_WAREHOUSE_ID", "a9d3d2589a30ab67"))
     ap.add_argument("--profile", default=os.getenv("DATABRICKS_CONFIG_PROFILE"))
     ap.add_argument("--start", default="2026-05-13", help="first dt to check (default: start of the replay)")
+    ap.add_argument("--truth-days", default="2026-05-20,2026-06-10",
+                    help="comma-separated days to reconcile against MLB's boxscores ('' to skip)")
     args = ap.parse_args()
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
     wh = Warehouse(args.warehouse, args.profile)
     rep = Report()
@@ -317,6 +347,7 @@ def main() -> int:
         lambda: check_silver_statcast(wh, rep, args.start),
         lambda: check_silver_duplicates(wh, rep, args.start),
         lambda: check_quality_results(wh, rep, args.start),
+        lambda: check_against_mlb(wh, rep, [d for d in args.truth_days.split(",") if d]),
     ]
     for check in checks:
         try:
