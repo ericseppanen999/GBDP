@@ -55,6 +55,10 @@ _KNOWN_FIELD_TYPES: Dict[str, str] = {
     # fact_plate_appearance
     "inning": "long", "outs_on_play": "long", "base_state_before": "long", "outs_before": "long",
     "base_state_after": "long", "outs_after": "long", "runs_scored_on_play": "long",
+    "runs_to_end_of_inning": "long",
+    # run_expectancy / run_expectancy_daily
+    "base_state": "long", "outs": "long", "pa_count": "long", "runs": "long",
+    "exp_runs": "double", "season_year": "long",
     # fact_game
     "home_score": "long", "away_score": "long",
     # dim_player
@@ -889,7 +893,9 @@ def _write_fact_plate_appearance(root: Path, dt: date, bridge: Dict[tuple, str],
     npb_rows = _read_silver(root, "npb_spaia", "game_pbp", dt)
     rows.extend(_reconstruct_npb_pa(npb_rows, dt, bridge))
     # Retrosheet plays
-    for r in _read_silver(root, "retrosheet_local", "game_pbp", dt):
+    # Play order matters for runs_to_end_of_inning.
+    retro = sorted(_read_silver(root, "retrosheet_local", "game_pbp", dt), key=_retrosheet_play_order)
+    for r in retro:
         event_type = _map_retrosheet_event(r)
         base_before = _base_state_from_br(r.get("br1_pre"), r.get("br2_pre"), r.get("br3_pre"))
         base_after = _base_state_from_br(r.get("br1_post"), r.get("br2_post"), r.get("br3_post"))
@@ -921,7 +927,44 @@ def _write_fact_plate_appearance(root: Path, dt: date, bridge: Dict[tuple, str],
             }
         )
     _fill_pa_teams(rows, _game_teams(root, dt, bridge))
+    _fill_runs_to_end_of_inning(rows)
     return _write_gold_table(root, "fact_plate_appearance", dt, rows, force)
+
+
+def _retrosheet_play_order(r: Dict[str, Any]) -> tuple:
+    seq = r.get("event_id") or r.get("pn")
+    try:
+        seq = int(seq)
+    except (TypeError, ValueError):
+        seq = 0
+    return (str(r.get("game_id") or ""), seq)
+
+
+def _fill_runs_to_end_of_inning(rows: List[Dict[str, Any]]) -> None:
+    """runs_to_end_of_inning: runs from this PA through the end of its half-inning.
+
+    This is what run expectancy averages. Rows must be in play order within
+    each game (every builder emits them that way). Left None when any PA in
+    the rest of the half-inning has unknown runs, or when the half-inning did
+    not reach 3 outs (walk-offs, suspended games, gaps in the feed), since its
+    run total would be cut short.
+    """
+    halves: Dict[tuple, List[Dict[str, Any]]] = {}
+    for r in rows:
+        r["runs_to_end_of_inning"] = None
+        if r.get("is_top_inning") is None or r.get("inning") is None:
+            continue
+        halves.setdefault((r["source"], r["game_id"], r["inning"], r["is_top_inning"]), []).append(r)
+    for pas in halves.values():
+        if pas[-1].get("outs_after") != 3:
+            continue
+        remaining = 0
+        for r in reversed(pas):
+            runs = r.get("runs_scored_on_play")
+            if runs is None:
+                break
+            remaining += runs
+            r["runs_to_end_of_inning"] = remaining
 
 
 def _game_teams(root: Path, dt: date, bridge: Dict[tuple, str]) -> Dict[str, tuple]:
@@ -1200,49 +1243,74 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
 # Derived tables (FIXED delta reads)
 # -----------------------------
 
+# Which league a plate appearance belongs to, by the source that produced it.
+_PA_SOURCE_LEAGUE = {"mlb_statcast": "MLB", "retrosheet_local": "MLB", "npb_spaia": "NPB"}
+
+
+def _run_expectancy_daily_rows(pas: List[Dict[str, Any]], dt: date) -> List[Dict[str, Any]]:
+    """One day's PA count and rest-of-inning runs per (league, base state, outs)."""
+    sums: Dict[tuple, List[int]] = {}
+    for r in pas:
+        league = _PA_SOURCE_LEAGUE.get(r.get("source"))
+        runs = r.get("runs_to_end_of_inning")
+        base, outs = r.get("base_state_before"), r.get("outs_before")
+        if league is None or runs is None or base is None or outs is None or not 0 <= outs <= 2:
+            continue
+        s = sums.setdefault((league, int(base), int(outs)), [0, 0])
+        s[0] += 1
+        s[1] += int(runs)
+    return [
+        {"league_code": league, "league_id": _league_id_for_code(league), "season_year": dt.year,
+         "base_state": base, "outs": outs, "pa_count": n, "runs": runs, "dt": dt.isoformat()}
+        for (league, base, outs), (n, runs) in sorted(sums.items())
+    ]
+
+
+def _read_gold_range(root: Path, table: str, start: date, end: date) -> List[Dict[str, Any]]:
+    """All rows of a gold table with start <= dt <= end."""
+    if storage_format() == "parquet":
+        rows: List[Dict[str, Any]] = []
+        for d in daterange(start, end):
+            path = root / table / f"dt={d.isoformat()}"
+            if path_exists(path):
+                rows.extend(read_parquet_rows(path))
+        return rows
+    base = root / table
+    if not path_exists(base):
+        return []
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
+
+    spark = SparkSession.builder.getOrCreate()
+    df = spark.read.format("delta").load(spark_path(base))
+    df = df.where((F.col("dt") >= start.isoformat()) & (F.col("dt") <= end.isoformat()))
+    return [row.asDict() for row in df.collect()]
+
+
 def _write_run_expectancy(root: Path, dt: date, force: bool) -> Path:
-    # Compute RE by base_state_before + outs_before using available runs_scored_on_play
-    fmt = storage_format()
-    dt_str = dt.isoformat()
+    """Season-to-date run expectancy (RE24) per league.
 
-    if fmt == "parquet":
-        path = root / "fact_plate_appearance" / f"dt={dt_str}"
-        if not path_exists(path):
-            return _write_gold_table(root, "run_expectancy", dt, [], force)
-        import duckdb
-        con = duckdb.connect()
-        con.execute(f"CREATE OR REPLACE VIEW pa AS SELECT * FROM read_parquet('{path}/*.parquet')")
-        rows = con.execute(
-            """
-            SELECT
-              base_state_before,
-              outs_before,
-              AVG(COALESCE(runs_scored_on_play, 0)) AS exp_runs
-            FROM pa
-            WHERE base_state_before IS NOT NULL AND outs_before IS NOT NULL
-            GROUP BY 1,2
-            """
-        ).fetchall()
+    exp_runs is the average number of runs scored from a base/out state to the
+    end of the half-inning, over every completed half-inning of that league's
+    season through dt. Each date stores its own totals in run_expectancy_daily,
+    so a date's table is the sum of the season's daily rows up to it, whatever
+    order dates were rebuilt in.
+    """
+    pas = _read_gold_snapshot(root, "fact_plate_appearance", dt)
+    _write_gold_table(root, "run_expectancy_daily", dt, _run_expectancy_daily_rows(pas, dt), force)
 
-    else:
-        from pyspark.sql import SparkSession
-        from pyspark.sql import functions as F
-
-        spark = SparkSession.builder.getOrCreate()
-        base = root / "fact_plate_appearance"
-        if not path_exists(base):
-            return _write_gold_table(root, "run_expectancy", dt, [], force)
-
-        df = spark.read.format("delta").load(spark_path(base)).where(f"dt = '{dt_str}'")
-        df = df.where("base_state_before IS NOT NULL AND outs_before IS NOT NULL")
-        rows = [
-            (r["base_state_before"], r["outs_before"], r["exp_runs"])
-            for r in df.groupBy("base_state_before", "outs_before")
-            .agg(F.avg(F.coalesce("runs_scored_on_play", F.lit(0))).alias("exp_runs"))
-            .collect()
-        ]
-
-    out_rows = [{"base_state": r[0], "outs": r[1], "exp_runs": float(r[2]), "dt": dt_str} for r in rows]
+    totals: Dict[tuple, List[int]] = {}
+    for r in _read_gold_range(root, "run_expectancy_daily", date(dt.year, 1, 1), dt):
+        s = totals.setdefault((r["league_code"], int(r["base_state"]), int(r["outs"])), [0, 0])
+        s[0] += int(r["pa_count"] or 0)
+        s[1] += int(r["runs"] or 0)
+    out_rows = [
+        {"league_code": league, "league_id": _league_id_for_code(league), "season_year": dt.year,
+         "base_state": base, "outs": outs, "pa_count": n, "runs": runs,
+         "exp_runs": round(runs / n, 4), "dt": dt.isoformat()}
+        for (league, base, outs), (n, runs) in sorted(totals.items())
+        if n
+    ]
     return _write_gold_table(root, "run_expectancy", dt, out_rows, force)
 
 

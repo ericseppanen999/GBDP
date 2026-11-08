@@ -234,6 +234,7 @@ def _expected_gold_tables() -> List[str]:
         "fact_boxscore_pitching",
         "fact_standings",
         "run_expectancy",
+        "run_expectancy_daily",
         "breakout_candidates",
         "feature_player_rolling_30d",
         "audit_pipeline_runs",

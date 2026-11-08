@@ -97,7 +97,20 @@ def player_stats(player_id: str, window: str | None = None, as_of: Date | None =
 
 @app.get("/run-expectancy")
 def run_expectancy(league: str | None = None, season: int | None = None, as_of: Date | None = None):
-    return query("run_expectancy", dt=_dt(as_of))
+    """Season-to-date RE24: expected runs to the end of the inning per base/out state.
+
+    base_state is a bitmask (1 = runner on first, 2 = second, 4 = third).
+    With a season and no as_of, returns that season's latest table.
+    """
+    filters: List[Filter] = _league_filter(league)
+    if season is not None:
+        filters.append(("season_year", "eq", season))
+    if season is not None and as_of is None:
+        # 24 states x leagues x every date of the season; the default 1000 would truncate it.
+        rows = query("run_expectancy", filters=filters, all_dts=True, limit=100_000)
+        last = max((r["dt"] for r in rows), default=None)
+        return [r for r in rows if r["dt"] == last]
+    return query("run_expectancy", dt=_dt(as_of), filters=filters)
 
 
 @app.get("/breakout-candidates")
