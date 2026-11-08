@@ -138,7 +138,10 @@ Add `--semantic-layer` to apply the semantic layer to those tables afterwards (s
 
 `configs/semantic_layer.yaml` becomes table/column COMMENTs, `v_*` views and
 `mv_*` metric views in `gbdp.gold_gbdp`. It is not part of the nightly; run it
-after a gold rebuild or a YAML change:
+after a gold rebuild or a YAML change. It has not been applied to production
+yet, and `mv_batting`, `mv_run_expectancy` and `mv_team_games` can't be until
+the gold rebuild adds `run_expectancy_daily`, `runs_to_end_of_inning` and
+`fact_game.game_type`:
 
 1. Edit the YAML, then `python scripts/build_semantic_layer.py` and commit
    `docs/semantic_layer_uc.sql` (a test fails while it is stale).
