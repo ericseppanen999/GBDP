@@ -134,3 +134,7 @@ CREATE TABLE IF NOT EXISTS gbdp.gold_gbdp.audit_pipeline_runs USING DELTA;
 CREATE TABLE IF NOT EXISTS gbdp.gold_gbdp.audit_stage_runs USING DELTA;
 CREATE TABLE IF NOT EXISTS gbdp.gold_gbdp.audit_quality USING DELTA;
 CREATE TABLE IF NOT EXISTS gbdp.gold_gbdp.audit_schema USING DELTA;
+CREATE TABLE IF NOT EXISTS gbdp.gold_gbdp.run_expectancy_daily USING DELTA;
+
+-- Semantic layer (table/column comments, v_* views, mv_* metric views):
+-- run docs/semantic_layer_uc.sql, or `gbdp semantic-layer` (the gbdp_semantic_layer bundle task).

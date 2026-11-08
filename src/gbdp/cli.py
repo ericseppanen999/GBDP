@@ -276,7 +276,50 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["managed", "external"],
         help="UC mode: managed writes tables (serverless) or external LOCATION tables",
     )
+    uc_p.add_argument(
+        "--semantic-layer",
+        action="store_true",
+        help="After registering, apply the semantic layer (comments, views, metric views) to the gold schema",
+    )
+
+    sl_p = sub.add_parser(
+        "semantic-layer",
+        help="Apply configs/semantic_layer.yaml to Unity Catalog: table/column comments, views, metric views",
+    )
+    sl_p.add_argument("--catalog", default=None, help="UC catalog (default: GBDP_UC_CATALOG or gbdp)")
+    sl_p.add_argument("--schema", default=None, help="UC gold schema (default: GBDP_UC_GOLD_SCHEMA or gold_gbdp)")
+    sl_p.add_argument("--uc-mode", choices=["managed", "external"], default=None,
+                      help="How the gold tables were registered (default: GBDP_UC_MODE or managed)")
+    sl_p.add_argument("--sql-out", default=None, help="Write the SQL to this file instead of applying it")
     return parser
+
+
+def _semantic_layer(catalog: str | None, schema: str | None, uc_mode: str | None, sql_out: str | None = None) -> None:
+    """Apply (or write) the semantic layer's Unity Catalog DDL. Exits 1 if any statement failed."""
+    from gbdp.semantic import layer as semantic
+    from gbdp.semantic import uc as semantic_uc
+    from gbdp.utils.logging import get_logger
+
+    catalog = catalog or os.getenv("GBDP_UC_CATALOG") or "gbdp"
+    schema = schema or os.getenv("GBDP_UC_GOLD_SCHEMA") or "gold_gbdp"
+    uc_mode = uc_mode or os.getenv("GBDP_UC_MODE") or "managed"
+    if uc_mode == "serverless":
+        uc_mode = "managed"
+    sl = semantic.load()
+    if sql_out:
+        Path(sql_out).write_text(semantic_uc.sql_script(sl, catalog, schema, uc_mode), encoding="utf-8")
+        print(f"wrote {sql_out}")
+        return
+    from pyspark.sql import SparkSession
+
+    result = semantic_uc.apply(SparkSession.builder.getOrCreate(), sl, catalog, schema, uc_mode,
+                               logger=get_logger("gbdp.semantic"))
+    print(f"semantic layer on {catalog}.{schema}: {len(result.applied)} applied, "
+          f"{len(result.skipped)} skipped, {len(result.failed)} failed")
+    for line in result.failed:
+        print(f"FAILED {line}")
+    if result.failed:
+        raise SystemExit(1)
 
 
 def main() -> None:
@@ -379,6 +422,13 @@ def main() -> None:
             )
         else:
             register_uc_tables_from_env()
+        if args.semantic_layer:
+            # register-uc creates LOCATION tables over the delta files, which
+            # keep their original column names (2b, not c_2b).
+            _semantic_layer(args.catalog or os.getenv("GBDP_UC_CATALOG"),
+                            args.gold_schema if args.catalog else os.getenv("GBDP_UC_GOLD_SCHEMA"), "external")
+    if args.cmd == "semantic-layer":
+        _semantic_layer(args.catalog, args.schema, args.uc_mode, args.sql_out)
 
 
 def _purge_stale() -> None:

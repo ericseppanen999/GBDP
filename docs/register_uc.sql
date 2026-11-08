@@ -31,3 +31,6 @@ CREATE TABLE IF NOT EXISTS gbdp.gold_gbdp.audit_schema USING DELTA LOCATION '/Vo
 
 -- Bronze requests (optional)
 CREATE TABLE IF NOT EXISTS gbdp.bronze_gbdp.requests USING PARQUET LOCATION '/Volumes/gbdp/bronze_gbdp/bronze_vol/gbdp/bronze/requests';
+
+-- Semantic layer (table/column comments, v_* views, mv_* metric views):
+-- run docs/semantic_layer_uc.sql after the tables exist, or `gbdp register-uc ... --semantic-layer`.
