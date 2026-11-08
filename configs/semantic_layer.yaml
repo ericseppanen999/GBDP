@@ -109,7 +109,12 @@ tables:
     description: One row per completed plate appearance, MLB (from Statcast) and NPB (reconstructed from play-by-play text).
     grain: one row per pa_id
     columns:
-      event_type: Canonical outcome (e.g. HR, 1B, BB, K, OUT) -- mapped from source-specific vocab.
+      event_type: >
+        Canonical outcome mapped from source-specific vocab: 1B, 2B, 3B, HR, BB,
+        HBP, K, OUT, ERROR, FC, SF (sacrifice fly), SH (sacrifice bunt), DP, TP,
+        INT (catcher's interference), TRUNCATED (inning ended on the bases
+        mid-PA; not a plate appearance), UNKNOWN. SF, SH, BB, HBP and INT are
+        not at-bats; OBP's denominator is AB + BB + HBP + SF.
       base_state_before / base_state_after: Integer-encoded baserunner state (0-7, bitmask of 1B/2B/3B occupied).
       outs_before / outs_after: 0-3.
       runs_scored_on_play: Runs on this play. Null for NPB.

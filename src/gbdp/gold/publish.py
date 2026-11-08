@@ -920,7 +920,19 @@ def _statcast_runs_on_play(first: Dict[str, Any], last: Dict[str, Any]) -> int |
 
 
 # Only used for a game's final PA, which has no next PA to read the outs from.
-_EVENT_OUTS = {"OUT": 1, "K": 1, "SAC": 1, "DP": 2, "TP": 3}
+_EVENT_OUTS = {"OUT": 1, "K": 1, "SF": 1, "SH": 1, "DP": 2, "TP": 3}
+
+
+def _final_pa_outs(raw_event: Any, event_type: str) -> int:
+    """Outs recorded on a game's final PA. The event type alone undercounts a
+    sacrifice or strikeout that is also a double/triple play (sac_fly_double_play
+    maps to SF, strikeout_double_play to K), so the raw Statcast event decides."""
+    raw = str(raw_event or "").upper()
+    if "TRIPLE_PLAY" in raw:
+        return 3
+    if "DOUBLE_PLAY" in raw:
+        return 2
+    return _EVENT_OUTS.get(event_type, 0)
 
 
 def _statcast_plate_appearances(pitches: List[Dict[str, Any]], dt: date, bridge: Dict[tuple, str]) -> List[Dict[str, Any]]:
@@ -947,7 +959,7 @@ def _statcast_plate_appearances(pitches: List[Dict[str, Any]], dt: date, bridge:
             next_first = ordered[i + 1][0] if i + 1 < len(ordered) else None
             if next_first is None:
                 # Last PA of the game. Usually the third out, but a walk-off isn't.
-                outs_after = min(3, (outs_before or 0) + _EVENT_OUTS.get(event_type, 0))
+                outs_after = min(3, (outs_before or 0) + _final_pa_outs(last.get("events"), event_type))
                 base_after = 0 if outs_after == 3 else None
             elif (next_first.get("inning"), next_first.get("inning_topbot")) == (first.get("inning"), first.get("inning_topbot")):
                 outs_after = next_first.get("outs_when_up")
@@ -1571,12 +1583,16 @@ def _map_event_type(value: Any) -> str:
         return "2B"
     if v in {"TRIPLE", "3B"}:
         return "3B"
+    # Sacrifices before double plays: sac_fly_double_play is a sacrifice fly
+    # (not an at-bat), not a DP. SF counts in OBP's denominator, SH does not.
+    if v.startswith("SAC_FLY"):
+        return "SF"
+    if v.startswith("SAC_BUNT"):
+        return "SH"
     if "TRIPLE_PLAY" in v:
         return "TP"
     if "DOUBLE_PLAY" in v:
         return "DP"
-    if v.startswith("SAC"):
-        return "SAC"
     if "FIELDERS_CHOICE" in v:
         return "FC"
     if "INTERF" in v:  # catcher_interf: batter awarded first
@@ -1611,14 +1627,16 @@ def _map_retrosheet_event(r: Dict[str, Any]) -> str:
         return "HBP"
     if _is_one("k"):
         return "K"
+    # A sacrifice stays a sacrifice (not an at-bat) when the batter also reaches
+    # on an error or a fielder's choice, or a runner is doubled off (rule 9.08).
+    if _is_one("sf"):
+        return "SF"
+    if _is_one("sh"):
+        return "SH"
     if _is_one("roe"):
         return "ERROR"
     if _is_one("fc"):
         return "FC"
-    if _is_one("sf"):
-        return "SAC"
-    if _is_one("sh"):
-        return "SAC"
     if _is_one("gdp"):
         return "DP"
     if _is_one("tp"):

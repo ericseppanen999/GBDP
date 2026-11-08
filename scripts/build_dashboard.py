@@ -77,7 +77,7 @@ SELECT p.primary_name AS batter,
        count_if(event_type = 'BB') AS bb,
        count_if(event_type = 'K') AS k,
        round(count_if(event_type IN ('1B', '2B', '3B', 'HR'))
-             / nullif(count_if(event_type NOT IN ('BB', 'HBP', 'SAC')), 0), 3) AS avg
+             / nullif(count_if(event_type NOT IN ('BB', 'HBP', 'SF', 'SH')), 0), 3) AS avg
 FROM {G}.fact_plate_appearance pa JOIN p ON p.player_id = pa.batter_id
 WHERE pa.source = 'mlb_statcast'
 GROUP BY p.primary_name

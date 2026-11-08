@@ -403,7 +403,9 @@ Canonical PA fact for any league that has at-bat outcomes.
 
 ### 8.1 Event normalization (REQUIRED)
 Define a canonical event enum that all sources map into:
-- `BB`, `HBP`, `K`, `HR`, `1B`, `2B`, `3B`, `OUT`, `ERROR`, `FC`, `SAC`, `DP`, `TP`, `UNKNOWN`
+- `BB`, `HBP`, `K`, `HR`, `1B`, `2B`, `3B`, `OUT`, `ERROR`, `FC`, `SF`, `SH`, `DP`, `TP`, `INT`, `TRUNCATED`, `UNKNOWN`
+- `SF` is a sacrifice fly and `SH` a sacrifice bunt. Neither is an at-bat; official OBP counts `SF` in its denominator but not `SH`. A sacrifice fly on which a runner is doubled off is `SF`, not `DP`.
+- `INT` is catcher's interference (batter awarded first, not an at-bat). `TRUNCATED` is a PA cut off when the inning ended on the bases; it is not a plate appearance.
 
 Rules:
 - If a source provides finer-grained events, store raw in Silver and map to canonical in Gold.
