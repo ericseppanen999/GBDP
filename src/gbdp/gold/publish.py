@@ -267,7 +267,36 @@ def publish_gold(start: str, end: str, root: Path | None = None, force: bool = F
         logger.info("gold_publish dt=%s (%d/%d)", d.isoformat(), i, len(days))
         outputs.extend(_publish_for_date(root, d, force))
         logger.info("gold_publish dt=%s done (%.1fs)", d.isoformat(), time.monotonic() - t0)
+    if days:
+        outputs.extend(_refresh_run_expectancy_after(root, days[-1], force))
     return outputs
+
+
+def _gold_dates(root: Path, table: str, start: date, end: date) -> List[date]:
+    """dt partitions of a gold table within [start, end]."""
+    base = root / table
+    if not path_exists(base):
+        return []
+    if storage_format() == "parquet":
+        return [d for d in daterange(start, end) if path_exists(base / f"dt={d.isoformat()}")]
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
+
+    spark = SparkSession.builder.getOrCreate()
+    rows = (spark.read.format("delta").load(spark_path(base))
+            .where((F.col("dt") >= start.isoformat()) & (F.col("dt") <= end.isoformat()))
+            .select("dt").distinct().collect())
+    return sorted(date.fromisoformat(r["dt"]) for r in rows)
+
+
+def _refresh_run_expectancy_after(root: Path, last: date, force: bool) -> List[Path]:
+    """Season-to-date RE for dates after `last` sums daily rows that may just
+    have changed, so rebuild those dates' tables from run_expectancy_daily
+    (cheap: no PA reads). Fixes CR-006."""
+    later = _gold_dates(root, "run_expectancy_daily", last + timedelta(days=1), date(last.year, 12, 31))
+    if later:
+        logger.info("run_expectancy: refreshing %d later date(s) after %s", len(later), last.isoformat())
+    return [_write_run_expectancy_from_daily(root, d, force) for d in later]
 
 
 def _publish_for_date(root: Path, dt: date, force: bool) -> List[Path]:
@@ -558,6 +587,17 @@ def _write_dim_team(root: Path, dt: date, bridge: Dict[tuple, str], force: bool)
     for r in rows:
         if r["team_id"] not in dedup or r.get("team_abbrev"):
             dedup[r["team_id"]] = r
+    # A day without a team list (failed fetch) must not blank abbreviation and
+    # city: SCD2 would close the good version and open a null one (fixes CR-004).
+    missing = [r for r in dedup.values() if not r.get("team_abbrev") or not r.get("home_city")]
+    if missing:
+        prev_dt = _latest_dt_before(root, "dim_team", dt)
+        if prev_dt and prev_dt.year == dt.year:
+            known = {t["team_id"]: t for t in _read_gold_snapshot(root, "dim_team", prev_dt) if t.get("is_current")}
+            for r in missing:
+                k = known.get(r["team_id"]) or {}
+                r["team_abbrev"] = r.get("team_abbrev") or k.get("team_abbrev")
+                r["home_city"] = r.get("home_city") or k.get("home_city")
     scd_rows = _apply_scd2(
         root, "dim_team", dt, list(dedup.values()), key_field="team_id", attr_fields=["team_name", "team_abbrev", "home_city", "league_id"]
     )
@@ -758,6 +798,10 @@ def _fact_game_from_silver(root: Path, dt: date, source: str, league_code: str, 
                 "away_team_id": away_team,
                 "venue": r.get("venue"),
                 "status": r.get("status") or r.get("game_state_name") or "unknown",
+                # MLB statsapi gameType (R regular, S spring, E exhibition, A All-Star,
+                # F wild card, D division, L league, W World Series); NPB's game type
+                # name as given (セ・リーグ公式戦, クライマックスシリーズ, ...).
+                "game_type": r.get("game_type") or r.get("game_type_name"),
                 "home_score": r.get("home_score"),
                 "away_score": r.get("away_score"),
                 "dt": dt.isoformat(),
@@ -1341,12 +1385,15 @@ def _write_run_expectancy(root: Path, dt: date, force: bool) -> Path:
     exp_runs is the average number of runs scored from a base/out state to the
     end of the half-inning, over every completed half-inning of that league's
     season through dt. Each date stores its own totals in run_expectancy_daily,
-    so a date's table is the sum of the season's daily rows up to it, whatever
-    order dates were rebuilt in.
+    so a date's table is the sum of the season's daily rows up to it; after a
+    rebuild, publish_gold refreshes every later date of the season too.
     """
     pas = _read_gold_snapshot(root, "fact_plate_appearance", dt)
     _write_gold_table(root, "run_expectancy_daily", dt, _run_expectancy_daily_rows(pas, dt), force)
+    return _write_run_expectancy_from_daily(root, dt, force)
 
+
+def _write_run_expectancy_from_daily(root: Path, dt: date, force: bool) -> Path:
     totals: Dict[tuple, List[int]] = {}
     for r in _read_gold_range(root, "run_expectancy_daily", date(dt.year, 1, 1), dt):
         s = totals.setdefault((r["league_code"], int(r["base_state"]), int(r["outs"])), [0, 0])
@@ -1809,6 +1856,12 @@ def _apply_scd2(
     attr_fields: List[str],
 ) -> List[Dict[str, Any]]:
     prev_dt = _latest_dt_before(root, table, dt)
+    # A key missing from today's rows is carried forward as current, so a
+    # snapshot from another season would keep every entity of that season
+    # current forever: 2026-05-13 picked up the 2024-05-18 test-day snapshot.
+    # Each season's dims start from its own data (fixes CR-002).
+    if prev_dt and prev_dt.year != dt.year:
+        prev_dt = None
     if not prev_dt:
         for r in new_rows:
             r["valid_from_dt"] = dt.isoformat()

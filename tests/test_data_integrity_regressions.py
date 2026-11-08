@@ -671,11 +671,13 @@ def test_permanent_stage_errors_are_not_retried(monkeypatch, tmp_path):
     assert len(calls) == 1
 
 
-def test_only_lossless_casts_are_applied():
+def test_only_widening_casts_are_applied():
     types = pytest.importorskip("pyspark.sql.types")
     from gbdp.catalog.managed_publish import _lossless_cast
 
-    assert _lossless_cast(types.StringType(), types.LongType())
+    # CR-001: never into a placeholder's STRING, never bigint into DOUBLE.
+    assert not _lossless_cast(types.StringType(), types.LongType())
+    assert not _lossless_cast(types.DoubleType(), types.LongType())
     assert _lossless_cast(types.LongType(), types.IntegerType())
     assert _lossless_cast(types.DoubleType(), types.NullType())
     assert not _lossless_cast(types.LongType(), types.StringType())

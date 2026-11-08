@@ -22,8 +22,9 @@ CATALOG = "gbdp"
 GOLD = f"{CATALOG}.gold_gbdp"
 SILVER_VOL = f"/Volumes/{CATALOG}/silver_gbdp/silver_vol/gbdp/silver"
 
-# MLB regular season + postseason. Outside it, empty days are expected.
-SEASON_MONTHS = range(4, 10)
+# Late-March openers through the October postseason. No-game days inside it
+# (All-Star break, NPB Mondays, rainouts) come from the schedules, not dates.
+SEASON_MONTHS = range(3, 11)
 
 
 class Warehouse:
@@ -185,18 +186,67 @@ def check_bronze(wh: Warehouse, rep: Report, start: str) -> None:
         rep.line("FAIL" if bad_status or thin or missing else "PASS", f"bronze {source}/{entity}", detail)
 
 
+def _game_days(wh: Warehouse, start: str) -> dict:
+    """Dates each league actually played, from bronze schedules (CR-009, CR-011)."""
+    def played(path, expr):
+        return {d for d, n in wh.query(f"""
+            SELECT dt, max_by(n, mt) FROM (
+              SELECT regexp_extract(_metadata.file_path, 'dt=([0-9-]+)', 1) AS dt,
+                     _metadata.file_modification_time AS mt, {expr} AS n
+              FROM read_files('{path}', format => 'json'))
+            WHERE dt >= '{start}' GROUP BY dt""") if int(n or 0) > 0}
+
+    return {
+        "MLB": played(f"{BRONZE_VOL}/raw/mlb_statsapi/schedule", "CAST(get_json_object(body_text, '$.totalGames') AS INT)"),
+        "NPB": played(f"{BRONZE_VOL}/raw/npb_spaia/games",
+                      "size(filter(from_json(body_text, 'array<struct<gameStateName:string>>'), g -> g.gameStateName <> '試合中止'))"),
+    }
+
+
 def check_daily_counts(wh: Warehouse, rep: Report, start: str) -> None:
+    """Every day a league played must have games, PAs (and MLB pitches) in gold.
+
+    Driven by the schedules, so a day missing from every gold table still shows
+    up (CR-009), and NPB-only days aren't failed for having no MLB pitches (CR-011).
+    """
+    days = _game_days(wh, start)
+    counts = {}
+    for table, src_filter in (("fact_game", "source IN ('mlb_statsapi', 'npb_spaia')"),
+                              ("fact_plate_appearance", "source IN ('mlb_statcast', 'npb_spaia')"),
+                              ("fact_pitch", "source = 'mlb_statcast'")):
+        for dt, source, n in wh.query(f"SELECT dt, source, count(*) FROM {GOLD}.{table} WHERE dt >= '{start}' AND {src_filter} GROUP BY 1, 2"):
+            counts[(table, "MLB" if source.startswith("mlb") else "NPB", dt)] = int(n)
+    for league, tables in (("MLB", ("fact_game", "fact_plate_appearance", "fact_pitch")),
+                           ("NPB", ("fact_game", "fact_plate_appearance"))):
+        missing = sorted(d for d in days[league] for t in tables if not counts.get((t, league, d)))
+        missing = sorted(set(missing))
+        rep.line("FAIL" if missing else "PASS", f"{league} game days loaded in gold",
+                 f"{len(days[league])} game days; missing games/PAs{'/pitches' if league == 'MLB' else ''}: "
+                 f"{missing[:6] or 'none'}" + (f" (+{len(missing) - 6})" if len(missing) > 6 else ""))
+
+
+def check_npb_pa_per_game(wh: Warehouse, rep: Report, start: str) -> None:
+    """NPB PAs per played game, every date (CR-005): the old builder made ~400."""
     rows = wh.query(f"""
-        WITH g AS (SELECT dt, count(*) n FROM {GOLD}.fact_game WHERE dt >= '{start}' GROUP BY dt),
-             p AS (SELECT dt, count(*) n FROM {GOLD}.fact_plate_appearance WHERE dt >= '{start}' GROUP BY dt),
-             x AS (SELECT dt, count(*) n FROM {GOLD}.fact_pitch WHERE dt >= '{start}' GROUP BY dt)
-        SELECT coalesce(g.dt, p.dt, x.dt) dt, coalesce(g.n, 0), coalesce(p.n, 0), coalesce(x.n, 0)
-        FROM g FULL OUTER JOIN p ON g.dt = p.dt FULL OUTER JOIN x ON coalesce(g.dt, p.dt) = x.dt
-        ORDER BY 1""")
-    empty = [r[0] for r in rows if date.fromisoformat(r[0]).month in SEASON_MONTHS and (int(r[1]) == 0 or int(r[2]) == 0 or int(r[3]) == 0)]
-    total = len(rows)
-    detail = f"{total} dates; in-season dates missing games/PAs/pitches: {empty or 'none'}"
-    rep.line("FAIL" if empty else "PASS", "daily games / PAs / pitches", detail)
+        WITH g AS (SELECT dt, count(*) n FROM {GOLD}.fact_game WHERE dt >= '{start}' AND source = 'npb_spaia'
+                     AND status NOT LIKE '%中止%' GROUP BY dt),
+             p AS (SELECT dt, count_if(event_type <> 'TRUNCATED') n FROM {GOLD}.fact_plate_appearance
+                   WHERE dt >= '{start}' AND source = 'npb_spaia' GROUP BY dt)
+        SELECT g.dt, p.n / g.n FROM g JOIN p ON g.dt = p.dt""")
+    bad = sorted(d for d, r in rows if not 55 <= float(r or 0) <= 100)
+    rep.line("FAIL" if bad else "PASS", "NPB PAs per game in 55..100",
+             f"{len(rows)} dates; outside: {bad[:6] or 'none'}" + (f" (+{len(bad) - 6})" if len(bad) > 6 else ""))
+
+
+def check_npb_players_only(wh: Warehouse, rep: Report) -> None:
+    """No current NPB dim_player row may be a coach or manager (CR-002)."""
+    (n,), = wh.query(f"""
+        WITH staff AS (
+          SELECT DISTINCT player_id FROM {_silver('npb_spaia', 'rosters')}
+          WHERE dt = (SELECT max(dt) FROM {GOLD}.dim_player) AND role IS NOT NULL AND role <> 'player')
+        SELECT count(*) FROM {GOLD}.dim_player d JOIN staff s ON d.source_player_id = s.player_id
+        WHERE d.dt = (SELECT max(dt) FROM {GOLD}.dim_player) AND d.is_current AND d.source = 'npb_spaia'""")
+    rep.line("FAIL" if int(n) else "PASS", "dim_player NPB: players only", f"{n} current coach/manager rows")
 
 
 def check_pa_per_game(wh: Warehouse, rep: Report, start: str) -> None:
@@ -356,10 +406,15 @@ def check_quality_results(wh: Warehouse, rep: Report, start: str) -> None:
         GROUP BY 1, 2 ORDER BY 3 DESC""")
     if not rows:
         rep.line("PASS", "quality checks", "no failed checks recorded")
+    # The pipeline's hard invariants are failures here too (CR-010).
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+    from gbdp.quality.checks import _HARD_CHECKS
+
     for check, table, ndates, dts in rows:
         dts = dts.split(",")
         shown = ", ".join(dts[:6]) + (f" (+{len(dts) - 6} more)" if len(dts) > 6 else "")
-        rep.line("WARN", f"quality: {check} {table}".strip(), f"failed on {ndates} date(s): {shown}")
+        rep.line("FAIL" if check in _HARD_CHECKS else "WARN", f"quality: {check} {table}".strip(),
+                 f"failed on {ndates} date(s): {shown}")
 
 
 def main() -> int:
@@ -378,6 +433,8 @@ def main() -> int:
         lambda: check_bronze(wh, rep, args.start),
         lambda: check_daily_counts(wh, rep, args.start),
         lambda: check_pa_per_game(wh, rep, args.start),
+        lambda: check_npb_pa_per_game(wh, rep, args.start),
+        lambda: check_npb_players_only(wh, rep),
         lambda: check_pa_teams(wh, rep, args.start),
         lambda: check_uniqueness(wh, rep, args.start),
         lambda: check_dim_player_current(wh, rep),

@@ -246,7 +246,7 @@ def _publish_bronze_parsed(spark, dt: date, catalog: str, schema: str, errors: L
             part = entity_dir / f"dt={dt_str}"
             if not path_exists(part):
                 continue
-            df = spark.read.format("parquet").load(spark_path(part))
+            df = _latest_fetch(spark.read.format("parquet").load(spark_path(part)))
             from pyspark.sql import functions as F
             if "dt" not in df.columns:
                 df = df.withColumn("dt", F.lit(dt_str))
@@ -256,6 +256,22 @@ def _publish_bronze_parsed(spark, dt: date, catalog: str, schema: str, errors: L
                 df = df.withColumn("entity", F.lit(entity))
             full_name = f"{catalog}.{schema}.{source}_{entity}"
             _try_write(spark, df, full_name, dt, errors)
+
+
+def _latest_fetch(df):
+    """Only the newest fetch of a dt, the rule silver's read_bronze_rows uses.
+
+    A refetched date holds every fetch side by side (files are named by
+    checksum): publishing them all put NPB's 110x roster copies and undated
+    MLB rosters into UC beside the good ones (fixes CR-016).
+    """
+    if "response_checksum" not in df.columns or "ingested_at_utc" not in df.columns:
+        return df
+    from pyspark.sql import functions as F
+
+    newest = (df.where(F.col("response_checksum").isNotNull())
+              .orderBy(F.col("ingested_at_utc").desc()).select("response_checksum").limit(1).collect())
+    return df.where(F.col("response_checksum") == newest[0][0]) if newest else df
 
 
 def _publish_bronze_requests(spark, dt: date, catalog: str, schema: str, errors: List[str]) -> None:
@@ -348,19 +364,21 @@ def _write_managed(spark, df, full_name: str, dt: date) -> None:
 def _lossless_cast(target, incoming) -> bool:
     """True when every value of type `incoming` survives a cast to `target`."""
     from pyspark.sql.types import (
-        AtomicType, ByteType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType,
+        ByteType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType,
     )
 
+    # Only genuine widenings. Casting into STRING (or bigint into DOUBLE) made
+    # correct data take a placeholder table's wrong type and hid the clash
+    # forever; such a table must be rebuilt instead, and the clash stays loud
+    # (fixes CR-001).
     if isinstance(incoming, NullType):
         return True
-    if isinstance(target, StringType):
-        return isinstance(incoming, AtomicType)
     if isinstance(target, LongType):
         return isinstance(incoming, (IntegerType, ShortType, ByteType))
+    if isinstance(target, IntegerType):
+        return isinstance(incoming, (ShortType, ByteType))
     if isinstance(target, DoubleType):
-        # LongType is exact up to 2^53, far past any ID or count here. Confirmed
-        # live: kbo_api_games was born DOUBLE from a sparse fetch, later bigint.
-        return isinstance(incoming, (FloatType, IntegerType, LongType, ShortType, ByteType))
+        return isinstance(incoming, (FloatType, IntegerType, ShortType, ByteType))
     return False
 
 
