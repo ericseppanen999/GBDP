@@ -16,6 +16,29 @@ from gbdp.utils.io import (
 from gbdp.utils.time import daterange, parse_date
 
 
+# Retrosheet gameinfo.gametype -> MLB statsapi gameType. "playoff" is a
+# tie-breaker game, which MLB counts in the regular season, so R. "championship"
+# is a pre-1950 championship series (Negro League World Series and the like),
+# with no statsapi equivalent: P, postseason.
+_RETRO_GAME_TYPES = {
+    "regular": "R",
+    "playoff": "R",
+    "exhibition": "E",
+    "allstar": "A",
+    "wildcard": "F",
+    "divisionseries": "D",
+    "lcs": "L",
+    "worldseries": "W",
+    "championship": "P",
+}
+
+
+def retrosheet_game_type(value: Any) -> str | None:
+    if value is None or str(value).strip() == "":
+        return None
+    return _RETRO_GAME_TYPES.get(str(value).strip().lower())
+
+
 def normalize_retrosheet(
     entity: str, start: str, end: str, root: Path | None = None, force: bool = False
 ) -> List[Path]:
@@ -45,6 +68,10 @@ def _normalize_entity(root: Path, entity: str, dt: date, force: bool) -> Path:
                 "away_score": _as_int(r.get("vruns")),
                 "venue": r.get("site"),
                 "status": "final" if r.get("hruns") and r.get("vruns") else "unknown",
+                # gameinfo.gametype mapped to MLB statsapi's gameType codes, so
+                # fact_game.game_type means the same for both MLB sources.
+                "game_type": retrosheet_game_type(r.get("gametype")),
+                "game_type_name": r.get("gametype"),
             }
             if include_partition_cols:
                 row["dt"] = dt.isoformat()

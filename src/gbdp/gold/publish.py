@@ -789,6 +789,12 @@ def _write_fact_game(root: Path, dt: date, bridge: Dict[tuple, str], force: bool
     return _write_gold_table(root, "fact_game", dt, rows, force)
 
 
+# KBO SR_ID (series) -> MLB-style game type. 0 regular season, 1 exhibition,
+# 9 All-Star are certain; 3/4/5/7 are the postseason rounds (wild card, semi-
+# playoff, playoff, Korean Series), mapped to "P" until checked against data.
+_KBO_SERIES = {"0": "R", "1": "E", "9": "A", "3": "P", "4": "P", "5": "P", "7": "P"}
+
+
 def _fact_game_from_silver(root: Path, dt: date, source: str, league_code: str, bridge: Dict[tuple, str]):
     rows = []
     for r in _read_silver(root, source, "games", dt):
@@ -809,9 +815,15 @@ def _fact_game_from_silver(root: Path, dt: date, source: str, league_code: str, 
                 "venue": r.get("venue"),
                 "status": r.get("status") or r.get("game_state_name") or "unknown",
                 # MLB statsapi gameType (R regular, S spring, E exhibition, A All-Star,
-                # F wild card, D division, L league, W World Series); NPB's game type
-                # name as given (セ・リーグ公式戦, クライマックスシリーズ, ...).
-                "game_type": r.get("game_type") or r.get("game_type_name"),
+                # F wild card, D division, L league, W World Series); Retrosheet's
+                # gametype mapped to the same codes in silver (plus P for its
+                # pre-1950 championship series); NPB's game type name as given
+                # (セ・リーグ公式戦, クライマックスシリーズ, ...); kbo_api from its SR_ID
+                # series code (R/E/A, P for every postseason round). The local
+                # indy/kbo/lmb files pass a game_type field through if they carry
+                # one; they have no other source for it, so it is null otherwise.
+                "game_type": r.get("game_type") or r.get("game_type_name")
+                or (_KBO_SERIES.get(str(r.get("sr_id"))) if source == "kbo_api" else None),
                 "home_score": r.get("home_score"),
                 "away_score": r.get("away_score"),
                 "dt": dt.isoformat(),

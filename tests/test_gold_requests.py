@@ -164,3 +164,44 @@ def test_kbo_api_players_and_teams_get_dimension_rows_matching_the_facts(lake):
         facts = [r for r in read_parquet_rows(gold / table / f"dt={DAY}") if r["source"] == "kbo_api"]
         assert facts and all(r["player_id"] in players for r in facts), table
         assert all(r["team_id"] in teams for r in facts), table
+
+
+def test_fact_game_type_for_kbo_api_retrosheet_and_local_sources(lake):
+    from gbdp.silver import retrosheet
+    from gbdp.utils.io import read_parquet_rows
+
+    bronze, silver, gold = lake
+    _kbo_silver(silver)
+    # Retrosheet: silver maps gameinfo.gametype to statsapi codes.
+    _parquet(bronze / "parsed", "retrosheet_local", "gameinfo", DAY, [
+        {"gid": "NYA202606100", "date": "20260610", "hometeam": "NYA", "visteam": "BOS",
+         "hruns": "5", "vruns": "3", "site": "NYC21", "gametype": "regular"},
+        {"gid": "NYA202606101", "date": "20260610", "hometeam": "NYA", "visteam": "BOS",
+         "hruns": "2", "vruns": "1", "site": "NYC21", "gametype": "worldseries"},
+    ])
+    retrosheet._normalize_entity(silver, "gameinfo", date.fromisoformat(DAY), True)
+    # A local source passes game_type through when its file carries one.
+    _parquet(silver, "lmb_local", "games", DAY, [
+        {"game_id": "L1", "home_team_id": "MTY", "away_team_id": "TIJ", "game_type": "R"},
+        {"game_id": "L2", "home_team_id": "MEX", "away_team_id": "OAX"},
+    ])
+    publish._write_fact_game(gold, date.fromisoformat(DAY), {}, True)
+    got = {(r["source"], r["source_game_id"]): r["game_type"]
+           for r in read_parquet_rows(gold / "fact_game" / f"dt={DAY}")}
+    assert got[("kbo_api", "20260610LGOB0")] == "R"
+    assert got[("kbo_api", "20260610LGOB2")] == "P"   # SR_ID 7: Korean Series
+    assert got[("retrosheet_local", "NYA202606100")] == "R"
+    assert got[("retrosheet_local", "NYA202606101")] == "W"
+    assert got[("lmb_local", "L1")] == "R"
+    assert got[("lmb_local", "L2")] is None
+
+
+@pytest.mark.parametrize("raw,code", [
+    ("regular", "R"), ("Regular", "R"), ("playoff", "R"), ("exhibition", "E"), ("allstar", "A"),
+    ("wildcard", "F"), ("divisionseries", "D"), ("lcs", "L"), ("worldseries", "W"),
+    ("championship", "P"), ("", None), (None, None),
+])
+def test_retrosheet_game_types(raw, code):
+    from gbdp.silver.retrosheet import retrosheet_game_type
+
+    assert retrosheet_game_type(raw) == code
