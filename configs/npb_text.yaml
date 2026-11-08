@@ -40,7 +40,8 @@ positions:
 
 # Result text -> event type. Checked IN ORDER and the first match wins, so
 # compound results ("bunt attempt, but grounded out") must come before the
-# words they contain.
+# words they contain. A phrase matches as a substring; "*" in a phrase matches
+# any text between its parts, in order.
 events:
   # A sacrifice fly that also doubles a runner off is still a sacrifice fly
   # (not an at-bat), as Statcast's sac_fly_double_play is, so it comes first.
@@ -56,6 +57,14 @@ events:
     phrases: [三塁打, スリーベース]                    # triple
   - event: 2B
     phrases: [二塁打, ツーベース]                      # double
+  # A two-strike bunt (スリーバント) that fails, foul or missed, is a strikeout
+  # (CR-021), so it comes before the failed-bunt outs.
+  - event: K
+    phrases: [スリーバント*失敗, スリーバントを試みるも*ファウル, スリーバントを試みるも*空振り]
+  # A squeeze on which the runner is thrown out at home is a fielder's choice
+  # and an at-bat, not a sacrifice (CR-022).
+  - event: FC
+    phrases: [スクイズ*本塁*アウト, スクイズ*本塁*封殺, スクイズ*ホーム*アウト]
   # A failed bunt is an out, so these come before SH.
   - event: OUT
     phrases: [送りバント失敗, スクイズ失敗, バント失敗, 送りバントを試みるも, スクイズを試みるも]
@@ -65,7 +74,9 @@ events:
   # Only wording that says the bunt succeeded, so a hit or an out after a
   # bunt stance (送りバントの構えから…) still falls through to its own rule.
   - event: SH
-    phrases: [犠打, 送りバント成功, 送りバントを成功, 送りバントを決め, スクイズ成功, スクイズを成功, スクイズを決め, スクイズ、]
+    phrases: [犠打, 送りバント成功, 送りバントを成功, 送りバントを決め, スクイズ成功, スクイズを成功, スクイズを決め,
+              送りバント*悪送球, 送りバント*エラー, 送りバント*失策, 送りバント*野選, 送りバント*フィルダースチョイス,
+              スクイズ*悪送球, スクイズ*エラー, スクイズ*失策, スクイズ*野選, スクイズ*フィルダースチョイス]
   - event: ERROR
     # Reached on error is written as the misplay: error, fumble, ball let
     # through, bad throw, dropped ball.
@@ -86,8 +97,10 @@ events:
     phrases: [死球, デッドボール]                      # hit by pitch
   - event: K
     phrases: [三振, 振り逃げ]                          # strikeout, dropped third strike
+  # A failed bunt attempt, or a swing from a bunt stance (バスター), that isn't
+  # a hit is an at-bat, so these come before the late SH rule (CR-022).
   - event: OUT
-    phrases: [失敗]                                    # failed (bunt) attempt
+    phrases: [失敗, バスター, 構えから]
   - event: SH
     phrases: [送りバント, スクイズ]                     # any other sacrifice bunt or squeeze
   - event: OUT

@@ -1845,8 +1845,8 @@ def _npb_event_type(result: str | None) -> str:
     # Drop the pitch prefix ("6球目:") so its digits and the count can't match.
     text = re.sub(r"^[0-9０-９]+球目[:：]", "", result or "")
     # Checked in order; the first match wins (see configs/npb_text.yaml).
-    for event, words in _npb_text()["events"]:
-        if any(w in text for w in words):
+    for event, pattern in _npb_text()["events"]:
+        if pattern.search(text):
             return event
     return "UNKNOWN"
 

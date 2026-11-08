@@ -48,6 +48,13 @@ def test_header_gives_outs_and_runners(header, expected):
     ("1球目:送りバント成功！打者走者長谷川も廣澤(投)のエラーにより出塁する 満塁", "SH"),
     ("2球目:送りバントを決める、山崎(三)のフィルダースチョイスにより出塁する 一二塁", "SH"),
     ("2球目:スクイズ、捕手の悪送球で一塁セーフ 西 3-2 広 一三塁", "SH"),
+    # CR-021: a failed two-strike bunt is a strikeout.
+    ("スリーバントを試みるも失敗！ 2アウト", "K"),
+    ("3球目:スリーバントを試みるもファウルとなり三振 2アウト一塁", "K"),
+    # CR-022: a bunt-stance swing that is an out is an at-bat, and a squeeze
+    # with the runner out at home is a fielder's choice.
+    ("送りバントの構えからバスターでショートゴロ", "OUT"),
+    ("スクイズ、三塁走者が本塁タッチアウト", "FC"),
     ("5球目:送りバントを試みるもファウルフライとなる 1アウト一塁", "OUT"),
     ("3球目:スクイズ失敗 2アウト一塁", "OUT"),
     ("2球目:送りバントの構えからバスターでセンターへのヒット 一二塁", "1B"),
