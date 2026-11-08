@@ -1630,20 +1630,30 @@ def _npb_text_sec(row: Dict[str, Any]) -> str | None:
     return None if sec is None else str(sec)
 
 
-_NPB_OUTS = {"無死": 0, "一死": 1, "二死": 2}
+@lru_cache(maxsize=None)
+def _npb_text() -> Dict[str, Any]:
+    """configs/npb_text.yaml: what the Japanese phrases in SPAIA's text mean."""
+    import yaml
+
+    with Path("configs/npb_text.yaml").open(encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    cfg["events"] = [(e["event"], tuple(e["phrases"])) for e in cfg["events"]]
+    return cfg
 
 
 def _npb_runner_bits(text: str) -> int:
     """'一二塁' -> 3, '満塁' -> 7, '走者なし' -> 0 (bit 1 = first, 2 = second, 4 = third)."""
-    if "満塁" in text:
+    marks = _npb_text()["runners"]
+    if marks["loaded"] in text:
         return 7
-    return (1 if "一" in text else 0) | (2 if "二" in text else 0) | (4 if "三" in text else 0)
+    return ((1 if marks["first"] in text else 0) | (2 if marks["second"] in text else 0)
+            | (4 if marks["third"] in text else 0))
 
 
 def _npb_state(header: str) -> tuple:
     """'＜1番：名原＞一死一三塁' -> (1, 5). (None, None) if it doesn't parse."""
     body = re.sub(r"^＜[^＞]*＞", "", header or "").strip()
-    outs = _NPB_OUTS.get(body[:2])
+    outs = _npb_text()["outs"].get(body[:2])
     if outs is None:
         return None, None
     return outs, _npb_runner_bits(body[2:])
@@ -1681,35 +1691,11 @@ def _npb_score(text: str, teams: tuple | None) -> List[int] | None:
     return [int(m.group(1)), int(m.group(2))] if m else None
 
 
-# Checked in order: the first match wins, so compound results come first.
-_NPB_EVENTS = [
-    ("TP", ("三重殺", "トリプルプレー")),
-    ("DP", ("併殺", "ダブルプレー")),
-    ("HR", ("本塁打", "ホームラン")),
-    ("3B", ("三塁打", "スリーベース")),
-    ("2B", ("二塁打", "ツーベース")),
-    # Reached on error is written as the misplay: fumble, ball let through, bad throw, drop.
-    ("ERROR", ("失策", "エラー", "ファンブル", "後逸", "悪送球", "落球")),
-    ("FC", ("野選", "フィルダースチョイス")),
-    ("INT", ("打撃妨害",)),  # catcher's interference
-    # "試みるも" = "tried, but": a bunt attempt that became an out ("セーフティバントを
-    # 試みるもピッチャーゴロとなる"). Reaching on an error was matched above.
-    ("OUT", ("試みるも",)),
-    # A safety bunt that reaches is scored a hit (checked against the feed's hit totals).
-    ("1B", ("安打", "ヒット", "セーフティバント", "プッシュバント")),
-    ("BB", ("四球", "フォアボール", "敬遠")),
-    ("HBP", ("死球", "デッドボール")),
-    ("K", ("三振", "振り逃げ")),
-    ("OUT", ("失敗",)),  # a failed bunt is an out, not a sacrifice
-    ("SAC", ("犠打", "犠飛", "送りバント", "スクイズ")),
-    ("OUT", ("アウト", "ゴロ", "フライ", "ライナー", "ファウルフライ")),
-]
-
-
 def _npb_event_type(result: str | None) -> str:
     # Drop the pitch prefix ("6球目:") so its digits and the count can't match.
     text = re.sub(r"^[0-9０-９]+球目[:：]", "", result or "")
-    for event, words in _NPB_EVENTS:
+    # Checked in order; the first match wins (see configs/npb_text.yaml).
+    for event, words in _npb_text()["events"]:
         if any(w in text for w in words):
             return event
     return "UNKNOWN"

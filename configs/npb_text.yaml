@@ -1,0 +1,60 @@
+# Japanese phrases in SPAIA's NPB play-by-play, and what they mean.
+# Used by gold/publish.py to turn play-by-play text into plate appearances.
+#
+# Checked against every May-June 2026 game (156): with these rules, hits per
+# team equal the feed's own totals in all 156. When adding a phrase, re-run
+# that reconciliation (see tests/test_npb_plate_appearances.py).
+
+# PA header prefix ("＜1番：名原＞一死一三塁") -> outs before the PA.
+outs:
+  無死: 0   # no outs
+  一死: 1   # one out
+  二死: 2   # two outs
+
+# Runner marks in a header or result ("一三塁" = first and third).
+runners:
+  loaded: 満塁     # bases loaded
+  first: 一
+  second: 二
+  third: 三
+
+# Result text -> event type. Checked IN ORDER and the first match wins, so
+# compound results ("bunt attempt, but grounded out") must come before the
+# words they contain.
+events:
+  - event: TP
+    phrases: [三重殺, トリプルプレー]                  # triple play
+  - event: DP
+    phrases: [併殺, ダブルプレー]                      # double play
+  - event: HR
+    phrases: [本塁打, ホームラン]                      # home run
+  - event: 3B
+    phrases: [三塁打, スリーベース]                    # triple
+  - event: 2B
+    phrases: [二塁打, ツーベース]                      # double
+  - event: ERROR
+    # Reached on error is written as the misplay: error, fumble, ball let
+    # through, bad throw, dropped ball.
+    phrases: [失策, エラー, ファンブル, 後逸, 悪送球, 落球]
+  - event: FC
+    phrases: [野選, フィルダースチョイス]              # fielder's choice
+  - event: INT
+    phrases: [打撃妨害]                                # catcher's interference
+  - event: OUT
+    # "試みるも" = "tried, but": a bunt attempt that became an out.
+    phrases: [試みるも]
+  - event: 1B
+    # A safety or push bunt that reaches is scored a hit.
+    phrases: [安打, ヒット, セーフティバント, プッシュバント]
+  - event: BB
+    phrases: [四球, フォアボール, 敬遠]                # walk, intentional walk
+  - event: HBP
+    phrases: [死球, デッドボール]                      # hit by pitch
+  - event: K
+    phrases: [三振, 振り逃げ]                          # strikeout, dropped third strike
+  - event: OUT
+    phrases: [失敗]                                    # failed (bunt) attempt
+  - event: SAC
+    phrases: [犠打, 犠飛, 送りバント, スクイズ]        # sacrifice bunt / fly, squeeze
+  - event: OUT
+    phrases: [アウト, ゴロ, フライ, ライナー, ファウルフライ]  # out, grounder, fly, liner
