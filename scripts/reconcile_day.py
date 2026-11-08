@@ -19,6 +19,9 @@ from pathlib import Path
 import requests
 
 HITS = {"1B", "2B", "3B", "HR"}
+# Games that were played to a result. "Completed Early" (rain-shortened) and
+# "Game Over" have real box scores too and were silently skipped (CR-012e).
+PLAYED = {"Final", "Game Over", "Completed Early"}
 
 
 class Report:
@@ -57,7 +60,7 @@ def mlb_truth(day: str) -> dict:
                 "hits": (ls.get("home", {}).get("hits"), ls.get("away", {}).get("hits")),
             }
     for pk, g in games.items():
-        if g["status"] == "Final":
+        if g["status"] in PLAYED:
             box = s.get(f"https://statsapi.mlb.com/api/v1/game/{pk}/boxscore", timeout=30).json()
             bat = [box["teams"][side]["teamStats"]["batting"] for side in ("home", "away")]
             g["pa"] = tuple(b.get("plateAppearances") for b in bat)
@@ -68,7 +71,7 @@ def reconcile_mlb(root: Path, day: str, rep: Report) -> None:
     from gbdp.utils.ids import ulid_from_key
 
     truth = mlb_truth(day)
-    final = {pk: g for pk, g in truth.items() if g["status"] == "Final"}
+    final = {pk: g for pk, g in truth.items() if g["status"] in PLAYED}
     print(f"\nMLB {day}: source has {len(truth)} games, {len(final)} final")
 
     # Bronze: every entity fetched and parsed.
@@ -121,16 +124,19 @@ def reconcile_mlb(root: Path, day: str, rep: Report) -> None:
 
 
 def npb_truth(root: Path, day: str) -> dict:
-    # SPAIA repeats each game's final line on every event; take it from silver's raw JSON.
+    """Final scores from SPAIA's games feed, a separate endpoint from the
+    play-by-play being checked (CR-012d); hits come from the PBP events'
+    embedded box line, the only place SPAIA gives them."""
     finals = {}
+    for g in _rows(root, "silver", "npb_spaia", "games", f"dt={day}"):
+        if g.get("game_id") and "中止" not in str(g.get("game_state_name") or ""):
+            finals[str(g["game_id"])] = {"runs": (g.get("home_score"), g.get("away_score")), "hits": None,
+                                         "state": g.get("game_state_name")}
     for r in _rows(root, "silver", "npb_spaia", "game_pbp", f"dt={day}"):
         raw = json.loads(r.get("raw_event_json") or "{}")
-        if raw.get("GameID"):
-            finals[str(raw["GameID"])] = {
-                "runs": (int(raw["H_R"]), int(raw["V_R"])),
-                "hits": (int(raw["H_H"]), int(raw["V_H"])),
-                "state": raw.get("GameStateID"),
-            }
+        gid = str(raw.get("GameID") or "")
+        if gid in finals and finals[gid]["hits"] is None and raw.get("H_H") not in (None, ""):
+            finals[gid]["hits"] = (int(raw["H_H"]), int(raw["V_H"]))
     return finals
 
 
@@ -142,8 +148,9 @@ def reconcile_npb(root: Path, day: str, rep: Report) -> None:
     for entity in ("games", "rosters", "game_pbp"):
         n = _files(root, "bronze", "parsed", "npb_spaia", entity, f"dt={day}")
         rep.check(n > 0, f"bronze npb_spaia/{entity} parsed", f"{n} file(s)")
-    sg = {str(r["game_id"]) for r in _rows(root, "silver", "npb_spaia", "games", f"dt={day}")}
-    rep.check(set(truth) <= sg, "silver games include every PBP game", f"{len(sg)} games, {len(truth)} with PBP")
+    pbp_games = {str(r["game_id"]) for r in _rows(root, "silver", "npb_spaia", "game_pbp", f"dt={day}") if r.get("game_id")}
+    no_pbp = sorted(set(truth) - pbp_games)
+    rep.check(not no_pbp, "every played NPB game has play-by-play", f"{len(truth)} played; without PBP: {no_pbp[:5] or 'none'}")
     roster = _rows(root, "silver", "npb_spaia", "rosters", f"dt={day}")
     dupes = len(roster) - len({(r["team_id"], r["player_id"]) for r in roster})
     rep.check(dupes == 0 and len(roster) > 0, "silver rosters one row per team+player", f"{len(roster)} rows, {dupes} duplicate(s)")
@@ -156,7 +163,7 @@ def reconcile_npb(root: Path, day: str, rep: Report) -> None:
         agg[gid.get(p["game_id"])]["runs"][side] += p["runs_scored_on_play"] or 0
         agg[gid.get(p["game_id"])]["hits"][side] += p["event_type"] in HITS
     for key, label in (("runs", "runs from PAs = final score"), ("hits", "hits from PAs = feed totals")):
-        bad = [g for g, t in truth.items() if tuple(agg[g][key]) != t[key]]
+        bad = [g for g, t in truth.items() if t[key] is not None and tuple(agg[g][key]) != tuple(t[key])]
         rep.check(not bad, f"gold NPB {label}", f"{len(truth) - len(bad)}/{len(truth)} games"
                   + (f"; {[(g, tuple(agg[g][key]), truth[g][key]) for g in bad[:3]]}" if bad else ""))
     per_game = len(pas) / max(1, len(truth))

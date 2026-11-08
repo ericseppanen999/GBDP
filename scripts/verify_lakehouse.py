@@ -375,10 +375,10 @@ def check_silver_duplicates(wh: Warehouse, rep: Report, start: str) -> None:
 
 def check_against_mlb(wh: Warehouse, rep: Report, days: list) -> None:
     """Production gold vs MLB's own boxscores: PAs, runs and hits per team, per game."""
-    from reconcile_day import mlb_truth
+    from reconcile_day import PLAYED, mlb_truth
 
     for day in days:
-        truth = {pk: g for pk, g in mlb_truth(day).items() if g["status"] == "Final"}
+        truth = {pk: g for pk, g in mlb_truth(day).items() if g["status"] in PLAYED}
         rows = wh.query(f"""
             SELECT g.source_game_id, pa.is_top_inning,
                    count_if(pa.event_type <> 'TRUNCATED') AS pas,
