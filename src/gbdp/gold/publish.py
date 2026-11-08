@@ -1725,10 +1725,12 @@ def _npb_outs_in_result(text: str) -> int | None:
     return int(m.group(1).translate(str.maketrans("０１２３", "0123"))) if m else None
 
 
-def _npb_bases_in_result(text: str) -> int:
+def _npb_bases_in_result(text: str) -> int | None:
     # Results end with where the runners are: "... 1アウト二塁", "... 一二塁", "... 満塁".
+    # No runner text is unknown, not bases empty: a walk-off's last PA reports
+    # nothing, and Statcast writes None in the same case (fixes CR-015).
     m = re.search(r"(満塁|[一二三]+塁)\s*$", text or "")
-    return _npb_runner_bits(m.group(1)) if m else 0
+    return _npb_runner_bits(m.group(1)) if m else None
 
 
 def _npb_score_teams(items: List[Dict[str, Any]]) -> tuple | None:

@@ -30,6 +30,32 @@ def test_mlb_rosters_are_fetched_as_of_the_partition_date():
     assert payload.params["date"] == "2026-06-10"
 
 
+def test_combined_payload_checksum_covers_every_team_not_just_the_last():
+    from gbdp.bronze.writer import RawPayload
+    from gbdp.connectors.base import Partition
+    from gbdp.connectors.mlb_statsapi import MlbStatsApiConnector
+
+    def connector(first_team_roster):
+        class Fake(MlbStatsApiConnector):
+            def http_get(self, url, params):
+                if url.endswith("/teams"):
+                    body = json.dumps({"teams": [{"id": 1}, {"id": 2}]})
+                elif "/teams/1/" in url:
+                    body = json.dumps({"roster": first_team_roster})
+                else:
+                    body = json.dumps({"roster": ["same"]})
+                return RawPayload(source="mlb_statsapi", entity="x", dt="2026-06-10", url=url, params=params,
+                                  status_code=200, fetched_at_utc="t", checksum=f"sub-{hash(body)}",
+                                  content_type="application/json", body_text=body)
+        return Fake(None, None, "https://statsapi.mlb.com/api/v1")
+
+    part = Partition(dt="2026-06-10", entity="rosters", keys={})
+    a = connector(["Judge"]).fetch_partition(part)
+    b = connector(["Judge", "Soto"]).fetch_partition(part)
+    # Only team 1 (not the last) changed; the two payloads must not share a filename.
+    assert a.checksum != b.checksum
+
+
 def test_a_bridge_miss_still_gets_the_deterministic_canonical_id():
     assert publish._canonical({}, "player", "mlb_statsapi", 665862) == ulid_from_key("player:source:mlb_statsapi:665862")
     assert publish._canonical({("player", "mlb_statsapi", "1"): "OVERRIDE"}, "player", "mlb_statsapi", 1) == "OVERRIDE"

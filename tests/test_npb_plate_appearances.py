@@ -143,6 +143,16 @@ def test_npb_roster_directory_splits_players_from_staff(tmp_path, monkeypatch):
     assert names == {"上沢　直之", "捕手　一郎"}
 
 
+def test_a_walk_off_with_no_runner_text_has_unknown_bases_after():
+    rows = [
+        _ev(1, 1, "6", "＜5番：度会＞一死三塁", inning=9, top="2"),
+        _ev(2, 1, "1", "2球目:サヨナラ犠牲フライ 2アウト", inning=9, top="2"),
+    ]
+    pa, = publish._reconstruct_npb_pa(rows, date(2026, 6, 10), {})
+    assert pa["outs_after"] == 2
+    assert pa["base_state_after"] is None
+
+
 def test_runs_from_a_walk_off_row_go_to_the_pa_in_progress():
     rows = [
         _ev(1, 1, "15", "9回裏 デ7-7楽　DeNAは5番度会からの攻撃", inning=9, top="2"),

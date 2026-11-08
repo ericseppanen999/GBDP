@@ -69,7 +69,7 @@ class MlbStatsApiConnector(BaseConnector):
                     }
                 )
             body_text = json.dumps(all_records, ensure_ascii=True)
-            checksum = raw.checksum if teams else self._checksum_empty(body_text)
+            checksum = self._checksum_empty(body_text)
             return RawPayload(
                 source=self.source,
                 entity="rosters",
@@ -151,7 +151,7 @@ class MlbStatsApiConnector(BaseConnector):
                     }
                 )
             body_text = json.dumps(all_records, ensure_ascii=True)
-            checksum = last_raw.checksum if last_raw else self._checksum_empty(body_text)
+            checksum = self._checksum_empty(body_text)
             return RawPayload(
                 source=self.source,
                 entity="boxscore",
