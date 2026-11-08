@@ -143,7 +143,17 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                 total_games = con.execute("SELECT COUNT(*) FROM games").fetchone()[0]
             else:
                 total_games = _spark_distinct_count(root / "fact_game", dt_str, "game_id")
-            if _exists_for_check("fact_pitch") and total_games > 0:
+            # Statcast covers MLB only, and only games that were played: the
+            # denominator was every game of every league (15 MLB of 21 games =
+            # "71%" on a day every MLB game had its pitches).
+            mlb_final = "source = 'mlb_statsapi' AND lower(status) LIKE 'final%'"
+            if fmt == "parquet":
+                total_mlb = con.execute(
+                    f"SELECT COUNT(DISTINCT game_id) FROM read_parquet('{game_path}/*.parquet') WHERE {mlb_final}"
+                ).fetchone()[0]
+            else:
+                total_mlb = _spark_distinct_count(root / "fact_game", dt_str, "game_id", where=mlb_final)
+            if _exists_for_check("fact_pitch") and total_mlb > 0:
                 pitch_path = root / "fact_pitch" / f"dt={dt_str}"
                 if fmt == "parquet":
                     con.execute(
@@ -152,7 +162,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                     with_pitch = con.execute("SELECT COUNT(*) FROM pitches").fetchone()[0]
                 else:
                     with_pitch = _spark_distinct_count(root / "fact_pitch", dt_str, "game_id")
-                pct = with_pitch / total_games
+                pct = min(1.0, with_pitch / total_mlb)
                 results.append(
                     {
                         "check": "pitch_coverage",
@@ -368,10 +378,12 @@ def _spark_count(table_root: Path, dt_str: str) -> int:
     return _spark_load_dt(table_root, dt_str).count()
 
 
-def _spark_distinct_count(table_root: Path, dt_str: str, col: str) -> int:
+def _spark_distinct_count(table_root: Path, dt_str: str, col: str, where: str | None = None) -> int:
     df = _spark_load_dt(table_root, dt_str)
     if col not in df.columns:
         return 0
+    if where:
+        df = df.where(where)
     return df.select(col).distinct().count()
 
 

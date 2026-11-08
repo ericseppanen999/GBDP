@@ -218,6 +218,12 @@ def _normalize_player_bios(root: Path, dt: date, force: bool) -> Path:
         for p in people:
             row = {
                     "player_id": _as_str(p.get("id")),
+                    # The season list covers every player on a 40-man roster, not
+                    # just today's 26 active, so identity and dim_player read
+                    # players from here too.
+                    "player_name": p.get("fullName"),
+                    "position": (p.get("primaryPosition") or {}).get("abbreviation"),
+                    "team_id": _as_str((p.get("currentTeam") or {}).get("id")),
                     "dob": p.get("birthDate"),
                     "height_cm": _height_to_cm(p.get("height")),
                     "weight_kg": _pounds_to_kg(p.get("weight")),

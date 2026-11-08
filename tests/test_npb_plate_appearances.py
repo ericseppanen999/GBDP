@@ -90,12 +90,24 @@ def test_a_half_inning_becomes_plate_appearances_with_state_and_runs():
     assert all(p["is_top_inning"] for p in pas)
 
 
-def test_a_header_without_a_result_is_not_a_plate_appearance():
+def test_an_inning_ending_on_the_bases_is_a_truncated_row_with_the_third_out():
     rows = [
         _ev(1, 1, "6", "＜1番：名原＞二死一塁"),
         _ev(2, 1, "3", "一塁走者名原:盗塁失敗 3アウト"),
     ]
-    assert publish._reconstruct_npb_pa(rows, date(2026, 6, 10), {}) == []
+    pa, = publish._reconstruct_npb_pa(rows, date(2026, 6, 10), {})
+    assert (pa["event_type"], pa["outs_before"], pa["outs_after"], pa["base_state_after"]) == ("TRUNCATED", 2, 3, 0)
+
+
+def test_a_result_less_header_mid_inning_is_dropped():
+    rows = [
+        _ev(1, 1, "6", "＜1番：名原＞無死走者なし"),       # batter replaced mid-count
+        _ev(2, 2, "6", "＜1番：代打＞無死走者なし"),
+        _ev(3, 2, "1", "1球目:サードゴロ 1アウト"),
+        _ev(4, 3, "6", "＜2番：菊池＞一死走者なし"),
+        _ev(5, 3, "1", "1球目:サードゴロ 2アウト"),
+    ]
+    assert [p["event_type"] for p in publish._reconstruct_npb_pa(rows, date(2026, 6, 10), {})] == ["OUT", "OUT"]
 
 
 def test_runs_from_a_walk_off_row_go_to_the_pa_in_progress():

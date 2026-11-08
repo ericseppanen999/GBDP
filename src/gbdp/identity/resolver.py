@@ -133,6 +133,27 @@ def _collect_player_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
                 "league_code": "MLB",
             }
         )
+    # MLB season player list: everyone on a 40-man roster this season. Active
+    # rosters alone missed 68 of 303 batters Statcast saw on 2026-06-10
+    # (injured-list returns, call-ups, players traded since), so 20% of MLB
+    # plate appearances had no batter ID.
+    seen_mlb = {str(r.get("player_id")) for r in mlb_rosters if r.get("player_id")}
+    for r in _read_silver(silver_root(), "mlb_statsapi", "player_bios", dt):
+        source_id = r.get("player_id")
+        if not source_id or str(source_id) in seen_mlb:
+            continue
+        seen_mlb.add(str(source_id))
+        rows.append(
+            {
+                "entity_type": "player",
+                "source": "mlb_statsapi",
+                "source_id": str(source_id),
+                "name": r.get("player_name"),
+                "dob": r.get("dob"),
+                "team_id": r.get("team_id"),
+                "league_code": "MLB",
+            }
+        )
     # Indy rosters silver
     indy_rosters = _read_silver(silver_root(), "indy_local", "rosters", dt)
     for r in indy_rosters:

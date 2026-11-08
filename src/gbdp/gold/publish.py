@@ -572,8 +572,15 @@ def _team_rows_from_game(row: Dict[str, Any], league_code: str, bridge: Dict[tup
 def _write_dim_player(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
     bios = {str(b.get("player_id")): b for b in _read_silver(root, "mlb_statsapi", "player_bios", dt)}
+    on_roster = set()
     for r in _read_silver(root, "mlb_statsapi", "rosters", dt):
+        on_roster.add(str(r.get("player_id")))
         rows.append(_player_row(r, "MLB", bridge, "mlb_statsapi", bios.get(str(r.get("player_id")))))
+    # Season-list players not on today's active rosters (injured list, minors,
+    # recently traded) still appear in Statcast and need a dimension row.
+    for pid, b in bios.items():
+        if pid not in on_roster and b.get("player_name"):
+            rows.append(_player_row(b, "MLB", bridge, "mlb_statsapi", b))
     for r in _read_silver(root, "npb_spaia", "rosters", dt):
         rows.append(_player_row(r, "NPB", bridge, "npb_spaia"))
     for r in _read_silver(root, "indy_local", "rosters", dt):
@@ -683,6 +690,19 @@ def _write_dim_season(root: Path, dt: date, force: bool) -> Path:
 # Fact tables
 # -----------------------------
 
+def _canonical(bridge: Dict[tuple, str], entity: str, source: str, source_id: Any) -> str | None:
+    """Canonical ID for a source ID: the bridge's (which honours manual overrides),
+    else the same deterministic hash identity would assign.
+
+    A bridge miss used to yield None, so every player identity hadn't seen in
+    a game collapsed onto one (game, None) key: fact_boxscore_batting failed
+    uniqueness and 20% of Statcast PAs had no batter on 2026-06-10.
+    """
+    if source_id is None or str(source_id) in ("", "None", "nan"):
+        return None
+    return bridge.get((entity, source, str(source_id))) or ulid_from_key(f"{entity}:source:{source}:{source_id}")
+
+
 def _write_fact_game(root: Path, dt: date, bridge: Dict[tuple, str], force: bool) -> Path:
     rows: List[Dict[str, Any]] = []
     rows.extend(_fact_game_from_silver(root, dt, "mlb_statsapi", "MLB", bridge))
@@ -767,8 +787,8 @@ def _write_fact_transaction(root: Path, dt: date, bridge: Dict[tuple, str], forc
             {
                 "transaction_id": ulid_from_key(f"txn:{r.get('transaction_id')}"),
                 "league_id": _league_id_for_code("MLB"),
-                "team_id": bridge.get(("team", "mlb_statsapi", str(r.get("team_id")))),
-                "player_id": bridge.get(("player", "mlb_statsapi", str(r.get("player_id")))),
+                "team_id": _canonical(bridge, "team", "mlb_statsapi", r.get("team_id")),
+                "player_id": _canonical(bridge, "player", "mlb_statsapi", r.get("player_id")),
                 "transaction_type": r.get("type_desc"),
                 "effective_dt": r.get("date"),
                 "details": r.get("description"),
@@ -790,8 +810,8 @@ def _write_fact_pitch(root: Path, dt: date, bridge: Dict[tuple, str], force: boo
                 "game_id": ulid_from_key(f"game:mlb_statsapi:{game_pk}"),
                 "pa_id": pa_id,
                 "pitch_number_in_pa": r.get("pitch_number"),
-                "pitcher_id": bridge.get(("player", "mlb_statsapi", str(r.get("pitcher_id")))),
-                "batter_id": bridge.get(("player", "mlb_statsapi", str(r.get("batter_id")))),
+                "pitcher_id": _canonical(bridge, "player", "mlb_statsapi", r.get("pitcher_id")),
+                "batter_id": _canonical(bridge, "player", "mlb_statsapi", r.get("batter_id")),
                 "balls_before": r.get("balls"),
                 "strikes_before": r.get("strikes"),
                 "pitch_type": r.get("pitch_type"),
@@ -812,15 +832,17 @@ def _statcast_pa_id(game_pk: Any, at_bat_number: Any) -> str:
     return ulid_from_key(f"pa:mlb_statcast:{game_pk}:{at_bat_number}")
 
 
-def _statcast_runs_on_play(pitch: Dict[str, Any]) -> int | None:
-    # The score fields live only in raw_json. Summing this per game reproduced
-    # the real final score in 13 of 13 games on 2025-04-01.
+def _statcast_runs_on_play(first: Dict[str, Any], last: Dict[str, Any]) -> int | None:
+    # The score fields live only in raw_json. Measured across the whole PA:
+    # runs can score on an earlier pitch (wild pitch, steal of home), and
+    # last-pitch-only lost 2 runs in 15 games on 2026-06-10.
     try:
-        raw = json.loads(pitch.get("raw_json") or "{}")
+        raw_first = json.loads(first.get("raw_json") or "{}")
+        raw_last = json.loads(last.get("raw_json") or "{}")
     except (TypeError, ValueError):
         return None
-    before = _coerce_known_type(raw.get("bat_score"), "long")
-    after = _coerce_known_type(raw.get("post_bat_score"), "long")
+    before = _coerce_known_type(raw_first.get("bat_score"), "long")
+    after = _coerce_known_type(raw_last.get("post_bat_score"), "long")
     if before is None or after is None:
         return None
     return after - before
@@ -870,11 +892,11 @@ def _statcast_plate_appearances(pitches: List[Dict[str, Any]], dt: date, bridge:
                     "is_top_inning": first.get("inning_topbot") == "Top",
                     "batting_team_id": None,
                     "fielding_team_id": None,
-                    "batter_id": bridge.get(("player", "mlb_statsapi", str(last.get("batter_id")))),
-                    "pitcher_id": bridge.get(("player", "mlb_statsapi", str(last.get("pitcher_id")))),
+                    "batter_id": _canonical(bridge, "player", "mlb_statsapi", last.get("batter_id")),
+                    "pitcher_id": _canonical(bridge, "player", "mlb_statsapi", last.get("pitcher_id")),
                     "event_type": event_type,
                     "rbi": None,
-                    "runs_scored_on_play": _statcast_runs_on_play(last),
+                    "runs_scored_on_play": _statcast_runs_on_play(first, last),
                     "outs_on_play": None if outs_before is None or outs_after is None else outs_after - outs_before,
                     "base_state_before": _base_state_from_statcast(first),
                     "outs_before": outs_before,
@@ -911,10 +933,10 @@ def _write_fact_plate_appearance(root: Path, dt: date, bridge: Dict[tuple, str],
                 "game_id": ulid_from_key(f"game:retrosheet_local:{r.get('game_id')}"),
                 "inning": r.get("inning"),
                 "is_top_inning": str(r.get("top_bottom")) in {"0", "Top", "top"},
-                "batting_team_id": bridge.get(("team", "retrosheet_local", str(r.get("batting_team_id")))),
-                "fielding_team_id": bridge.get(("team", "retrosheet_local", str(r.get("pitching_team_id")))),
-                "batter_id": bridge.get(("player", "retrosheet_local", str(r.get("batter_id")))),
-                "pitcher_id": bridge.get(("player", "retrosheet_local", str(r.get("pitcher_id")))),
+                "batting_team_id": _canonical(bridge, "team", "retrosheet_local", r.get("batting_team_id")),
+                "fielding_team_id": _canonical(bridge, "team", "retrosheet_local", r.get("pitching_team_id")),
+                "batter_id": _canonical(bridge, "player", "retrosheet_local", r.get("batter_id")),
+                "pitcher_id": _canonical(bridge, "player", "retrosheet_local", r.get("pitcher_id")),
                 "event_type": event_type,
                 "rbi": r.get("rbi"),
                 "runs_scored_on_play": r.get("runs"),
@@ -999,7 +1021,7 @@ def _write_fact_standings(root: Path, dt: date, bridge: Dict[tuple, str], force:
             {
                 "league_id": _league_id_for_code("NPB"),
                 "season_id": ulid_from_key(f"season:NPB:{dt.year}"),
-                "team_id": bridge.get(("team", "npb_spaia", str(r.get("team_id")))),
+                "team_id": _canonical(bridge, "team", "npb_spaia", r.get("team_id")),
                 "w": r.get("w"),
                 "l": r.get("l"),
                 "t": r.get("t"),
@@ -1018,8 +1040,8 @@ def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str],
         rows.append(
             {
                 "game_id": ulid_from_key(f"game:mlb_statsapi:{r.get('game_id')}"),
-                "team_id": bridge.get(("team", "mlb_statsapi", str(r.get("team_id")))),
-                "player_id": bridge.get(("player", "mlb_statsapi", str(r.get("player_id")))),
+                "team_id": _canonical(bridge, "team", "mlb_statsapi", r.get("team_id")),
+                "player_id": _canonical(bridge, "player", "mlb_statsapi", r.get("player_id")),
                 "ab": r.get("ab"),
                 "h": r.get("h"),
                 "2b": r.get("2b"),
@@ -1115,8 +1137,8 @@ def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str],
         rows.append(
             {
                 "game_id": ulid_from_key(f"game:retrosheet_local:{r.get('game_id')}"),
-                "team_id": bridge.get(("team", "retrosheet_local", str(r.get("team_id")))),
-                "player_id": bridge.get(("player", "retrosheet_local", str(r.get("player_id")))),
+                "team_id": _canonical(bridge, "team", "retrosheet_local", r.get("team_id")),
+                "player_id": _canonical(bridge, "player", "retrosheet_local", r.get("player_id")),
                 "ab": r.get("ab"),
                 "h": r.get("h"),
                 "2b": r.get("2b"),
@@ -1139,8 +1161,8 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
         rows.append(
             {
                 "game_id": ulid_from_key(f"game:mlb_statsapi:{r.get('game_id')}"),
-                "team_id": bridge.get(("team", "mlb_statsapi", str(r.get("team_id")))),
-                "player_id": bridge.get(("player", "mlb_statsapi", str(r.get("player_id")))),
+                "team_id": _canonical(bridge, "team", "mlb_statsapi", r.get("team_id")),
+                "player_id": _canonical(bridge, "player", "mlb_statsapi", r.get("player_id")),
                 "ip": r.get("ip"),
                 "h": r.get("h"),
                 "r": r.get("r"),
@@ -1224,8 +1246,8 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
         rows.append(
             {
                 "game_id": ulid_from_key(f"game:retrosheet_local:{r.get('game_id')}"),
-                "team_id": bridge.get(("team", "retrosheet_local", str(r.get("team_id")))),
-                "player_id": bridge.get(("player", "retrosheet_local", str(r.get("player_id")))),
+                "team_id": _canonical(bridge, "team", "retrosheet_local", r.get("team_id")),
+                "player_id": _canonical(bridge, "player", "retrosheet_local", r.get("player_id")),
                 "ip": r.get("ip"),
                 "h": r.get("h"),
                 "r": r.get("r"),
@@ -1485,6 +1507,10 @@ def _map_event_type(value: Any) -> str:
         return "FC"
     if "INTERF" in v:  # catcher_interf: batter awarded first
         return "INT"
+    if v == "TRUNCATED_PA":
+        # The inning ended on the bases (caught stealing, pickoff) mid-PA. Not a
+        # PA in the box score, but it carries the third out and any runs.
+        return "TRUNCATED"
     if "ERROR" in v:
         return "ERROR"
     if "OUT" in v:
@@ -1569,14 +1595,25 @@ def _reconstruct_npb_pa(rows: List[Dict[str, Any]], dt: date, bridge: Dict[tuple
                 current["score_after"] = list(score)
                 if sec == "1" and current["key"] == key:
                     current["result"] = text
+                # Base-running events state the outs too ("盗塁失敗 3アウト").
+                if sec not in ("0", "6"):
+                    seen = _npb_outs_in_result(text)
+                    if seen is not None:
+                        current["outs_seen"] = seen
         out.extend(_npb_pa_rows(gid, pas, dt, bridge))
     return out
 
 
 def _npb_pa_rows(gid: str, pas: List[Dict[str, Any]], dt: date, bridge: Dict[tuple, str]) -> List[Dict[str, Any]]:
-    # A header with no result is not a PA: the half-inning ended (e.g. caught
-    # stealing) with the batter still up.
-    done = [p for p in pas if p["result"] is not None]
+    # A header with no result is the batter still up when the half-inning (or
+    # game) ended on something else: caught stealing, a pickoff, a walk-off
+    # wild pitch. It stays as a TRUNCATED row when it is the last of its
+    # half-inning, since it carries that third out or the winning run, as
+    # Statcast's truncated_pa does. Anywhere else it is dropped.
+    def last_in_half(i: int) -> bool:
+        return i + 1 >= len(pas) or pas[i + 1]["key"][:2] != pas[i]["key"][:2]
+
+    done = [p for i, p in enumerate(pas) if p["result"] is not None or last_in_half(i)]
     rows = []
     for i, p in enumerate(done):
         r = p["row"]
@@ -1586,6 +1623,13 @@ def _npb_pa_rows(gid: str, pas: List[Dict[str, Any]], dt: date, bridge: Dict[tup
         nxt = done[i + 1] if i + 1 < len(done) else None
         if nxt is not None and nxt["key"][:2] == p["key"][:2]:
             outs_after, base_after = _npb_state(nxt["header"])
+        elif p["result"] is None:
+            # Truncated: the inning ended on the bases if the game went on;
+            # otherwise the game ended here (walk-off) with the outs unchanged.
+            outs_after = p.get("outs_seen")
+            if outs_after is None:
+                outs_after = 3 if nxt is not None else outs_before
+            base_after = 0 if outs_after == 3 else None
         else:
             # Last PA of the half-inning: normally the third out; a walk-off
             # or a game that stopped here says fewer.
@@ -1605,9 +1649,9 @@ def _npb_pa_rows(gid: str, pas: List[Dict[str, Any]], dt: date, bridge: Dict[tup
             "is_top_inning": is_top,
             "batting_team_id": None,
             "fielding_team_id": None,
-            "batter_id": bridge.get(("player", "npb_spaia", str(r.get("play_player_id")))),
+            "batter_id": _canonical(bridge, "player", "npb_spaia", r.get("play_player_id")),
             "pitcher_id": None,
-            "event_type": _npb_event_type(p["result"]),
+            "event_type": "TRUNCATED" if p["result"] is None else _npb_event_type(p["result"]),
             "rbi": None,
             "runs_scored_on_play": runs,
             "outs_on_play": None if outs_before is None or outs_after is None else outs_after - outs_before,

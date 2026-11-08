@@ -26,7 +26,9 @@ def test_event_mapping():
         ("strikeout_double_play", "K"),
         ("intent_walk", "BB"),
         ("field_error", "ERROR"),
-        ("truncated_pa", "UNKNOWN"),
+        # Inning ended on the bases mid-PA: kept (it holds the third out), not a box-score PA.
+        ("truncated_pa", "TRUNCATED"),
+        ("catcher_interf", "INT"),
     ],
 )
 def test_statcast_event_mapping(event, expected):
