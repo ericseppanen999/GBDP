@@ -77,3 +77,90 @@ def test_fresh_dims_empty_is_a_no_op(monkeypatch):
     assert _cli(monkeypatch, ["backfill", "--start", "2026-06-01", "--end", "2026-06-01",
                               "--fresh-dims-before", "", "--stages", "gold_publish"])
     assert os.environ["GBDP_FRESH_DIMS_BEFORE"] == ""
+
+
+# ---- dim_team / dim_player / bridge for kbo_api, and fact_game.game_type ----
+
+@pytest.fixture
+def lake(tmp_path, monkeypatch):
+    bronze, silver, gold = tmp_path / "bronze", tmp_path / "silver", tmp_path / "gold"
+    gold.mkdir()
+    monkeypatch.setenv("GBDP_BRONZE_ROOT", str(bronze))
+    monkeypatch.setenv("GBDP_SILVER_ROOT", str(silver))
+    monkeypatch.setenv("GBDP_GOLD_ROOT", str(gold))
+    monkeypatch.setenv("GBDP_STORAGE_FORMAT", "parquet")
+    monkeypatch.delenv("GBDP_FRESH_DIMS_BEFORE", raising=False)
+    return bronze, silver, gold
+
+
+def _parquet(root, source, entity, day, rows):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    part = root / source / entity / f"dt={day}"
+    part.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist(rows), part / "part-00001.parquet")
+
+
+DAY = "2026-06-10"
+
+
+def _kbo_silver(silver):
+    # A doubleheader: both teams appear in two games; a player both bats and pitches.
+    _parquet(silver, "kbo_api", "games", DAY, [
+        {"game_id": "20260610LGOB0", "home_team_id": "OB", "home_team_name": "Doosan Bears",
+         "away_team_id": "LG", "away_team_name": "LG Twins", "home_score": 3, "away_score": 2,
+         "status": "Final", "sr_id": "0"},
+        {"game_id": "20260610LGOB2", "home_team_id": "OB", "home_team_name": "Doosan Bears",
+         "away_team_id": "LG", "away_team_name": "LG Twins", "home_score": 1, "away_score": 4,
+         "status": "Final", "sr_id": "7"},
+    ])
+    _parquet(silver, "kbo_api", "boxscore_batting", DAY, [
+        {"game_id": "20260610LGOB0", "team_id": "OB", "player_name": "김재환", "ab": 4, "h": 2},
+        {"game_id": "20260610LGOB2", "team_id": "OB", "player_name": "김재환", "ab": 3, "h": 1},
+        {"game_id": "20260610LGOB0", "team_id": "LG", "player_name": "오지환", "ab": 4, "h": 0},
+    ])
+    _parquet(silver, "kbo_api", "boxscore_pitching", DAY, [
+        {"game_id": "20260610LGOB0", "team_id": "LG", "player_name": "오지환", "ip": "1", "h": 0},
+    ])
+
+
+def _resolve(gold):
+    from gbdp.identity import resolver
+    from gbdp.utils.io import read_parquet_rows
+
+    resolver._resolve_for_date(gold, date.fromisoformat(DAY), {}, True)
+    return read_parquet_rows(gold / "bridge_source_ids" / f"dt={DAY}")
+
+
+def test_bridge_has_one_row_per_source_id_per_day(lake):
+    _, silver, gold = lake
+    _kbo_silver(silver)
+    rows = _resolve(gold)
+    keys = [(r["entity_type"], r["source"], r["source_id"], r["dt"]) for r in rows]
+    assert len(keys) == len(set(keys))
+    assert {k[2] for k in keys if k[0] == "team"} == {"OB", "LG"}
+    assert {k[2] for k in keys if k[0] == "player"} == {"김재환", "오지환"}
+
+
+def test_kbo_api_players_and_teams_get_dimension_rows_matching_the_facts(lake):
+    from gbdp.utils.io import read_parquet_rows
+
+    _, silver, gold = lake
+    _kbo_silver(silver)
+    _resolve(gold)
+    d = date.fromisoformat(DAY)
+    bridge = publish._read_gold_bridge(gold, d)
+    publish._write_dim_player(gold, d, bridge, True)
+    publish._write_dim_team(gold, d, bridge, True)
+    publish._write_fact_boxscore_batting(gold, d, bridge, True)
+    publish._write_fact_boxscore_pitching(gold, d, bridge, True)
+
+    players = {r["player_id"]: r for r in read_parquet_rows(gold / "dim_player" / f"dt={DAY}") if r["source"] == "kbo_api"}
+    assert {r["primary_name"] for r in players.values()} == {"김재환", "오지환"}
+    assert all(r["is_current"] and r["valid_from_dt"] == DAY for r in players.values())
+    teams = {r["team_id"] for r in read_parquet_rows(gold / "dim_team" / f"dt={DAY}")}
+    for table in ("fact_boxscore_batting", "fact_boxscore_pitching"):
+        facts = [r for r in read_parquet_rows(gold / table / f"dt={DAY}") if r["source"] == "kbo_api"]
+        assert facts and all(r["player_id"] in players for r in facts), table
+        assert all(r["team_id"] in teams for r in facts), table

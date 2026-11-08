@@ -88,6 +88,15 @@ def _resolve_for_date(root: Path, dt: date, overrides: Dict[tuple, str], force: 
             }
         )
 
+    # One row per (entity_type, source, source_id): team sources come from each
+    # game, so a team playing a doubleheader (or any team, from both its home
+    # and away rows) was listed once per appearance. First occurrence wins;
+    # rows for one key are identical apart from that.
+    unique: Dict[tuple, Dict[str, Any]] = {}
+    for b in bridge_rows:
+        unique.setdefault((b["entity_type"], b["source"], b["source_id"]), b)
+    bridge_rows = list(unique.values())
+
     out_dir = root / "bridge_source_ids" / f"dt={dt.isoformat()}"
     ensure_dir(out_dir)
     out_path = out_dir / "part-00001.parquet"
