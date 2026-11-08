@@ -21,11 +21,13 @@ from verify_lakehouse import BRONZE_VOL, SILVER_VOL, Report, Warehouse  # noqa: 
 #  SQL that counts expected silver rows in one bronze body, or None)
 ENTITIES = [
     ("mlb_statsapi", "games", ["game_id"], "mlb_statsapi/schedule",
-     "size(from_json(body_text, 'struct<dates:array<struct<games:array<string>>>>').dates[0].games)"),
+     # An off day's schedule has no dates at all, so get() rather than [0].
+     "coalesce(size(get(from_json(body_text, 'struct<dates:array<struct<games:array<string>>>>').dates, 0).games), 0)"),
     ("mlb_statsapi", "rosters", ["team_id", "player_id"], "mlb_statsapi/rosters", None),
     ("mlb_statsapi", "teams", ["team_id"], "mlb_statsapi/teams",
      "size(from_json(body_text, 'struct<teams:array<string>>').teams)"),
-    ("mlb_statsapi", "transactions", ["transaction_id"], "mlb_statsapi/transactions",
+    # A trade is one transaction ID with a record per leg (each team / player).
+    ("mlb_statsapi", "transactions", ["transaction_id", "player_id", "team_id"], "mlb_statsapi/transactions",
      "size(from_json(body_text, 'struct<transactions:array<string>>').transactions)"),
     ("mlb_statsapi", "player_bios", ["player_id"], "mlb_statsapi/player_bios",
      "size(from_json(body_text, 'struct<people:array<string>>').people)"),
@@ -37,6 +39,13 @@ ENTITIES = [
     ("npb_spaia", "rosters", ["team_id", "player_id"], "npb_spaia/rosters", None),
     ("npb_spaia", "game_pbp", ["game_id", "event_id"], "npb_spaia/game_pbp", None),
 ]
+# Bronze bodies that hold no records although they are not tiny: SQL giving
+# the record count, used only to tell game days from empty days. Savant's CSV
+# for a day without games is its ~1.8 KB header line alone.
+PRESENCE_SQL = {
+    "mlb_statcast/pitches": "size(filter(split(body_text, '\n'), l -> length(trim(l)) > 0)) - 1",
+}
+
 # Columns that are legitimately sparse: (source/entity, column) -> why.
 SPARSE_OK = {
     ("mlb_statcast/pitches", "events"): "set only on a PA's last pitch",
@@ -73,7 +82,7 @@ def audit_entity(wh: Warehouse, rep: Report, source, entity, key, bronze, expect
     # Dates: silver vs bronze dates whose latest fetch holds data (a no-game
     # day's empty payload correctly yields an empty silver placeholder).
     s_dates = {r[0] for r in wh.query(f"SELECT DISTINCT dt FROM {_src(source, entity)} WHERE {real}")}
-    count_expr = expected_sql or "length(body_text)"
+    count_expr = expected_sql or PRESENCE_SQL.get(name) or "length(body_text)"
     latest = f"""
         SELECT dt, max_by(n, fetched_at_utc) AS n FROM (
           SELECT regexp_extract(_metadata.file_path, 'dt=([0-9-]+)', 1) AS dt, _metadata.file_modification_time AS fetched_at_utc, {count_expr} AS n
@@ -81,7 +90,8 @@ def audit_entity(wh: Warehouse, rep: Report, source, entity, key, bronze, expect
         WHERE {rng} GROUP BY dt"""
     by_date = {d: int(n or 0) for d, n in wh.query(latest)}
     # Without a record count, a body under ~200 bytes is an empty response.
-    b_dates = {d for d, n in by_date.items() if (n > 0 if expected_sql else n > 200)}
+    counted = expected_sql or name in PRESENCE_SQL
+    b_dates = {d for d, n in by_date.items() if (n > 0 if counted else n > 200)}
 
     # Rows vs what bronze says should be there (latest fetch per date).
     count_note = ""
@@ -94,25 +104,36 @@ def audit_entity(wh: Warehouse, rep: Report, source, entity, key, bronze, expect
         if got != exp:
             rep.line("FAIL", f"silver {name} rows = bronze records", f"{got:,} vs {exp:,}")
 
-    # Duplicates on the natural key, within a date.
+    # Duplicates on the natural key, within a date. Byte-identical repeats of
+    # a source record are counted apart from conflicting ones.
     key_sql = ", ".join(key)
-    total, dupes = wh.query(f"""
-        SELECT coalesce(sum(n), 0), coalesce(sum(n - 1), 0) FROM (
-          SELECT count(*) n FROM {_src(source, entity)} WHERE {real} GROUP BY dt, {key_sql})""")[0]
-    total, dupes = int(total), int(dupes)
+    whole = "md5(to_json(struct(" + ", ".join(f"`{c}`" for c in data_cols) + ")))"
+    total, dupes, identical = wh.query(f"""
+        SELECT coalesce(sum(n), 0), coalesce(sum(n - 1), 0), coalesce(sum(n - v), 0) FROM (
+          SELECT count(*) n, count(DISTINCT {whole}) v FROM {_src(source, entity)} WHERE {real} GROUP BY dt, {key_sql})""")[0]
+    total, dupes, identical = int(total), int(dupes), int(identical)
 
     # Null rate of every column.
-    exprs = ", ".join(f"avg(CASE WHEN `{c}` IS NULL OR CAST(`{c}` AS STRING) IN ('', '[]', '{{}}') THEN 1.0 ELSE 0 END)" for c in data_cols)
+    # mergeSchema settles a column on one type; files that wrote it as another
+    # (an all-null day) put the real values in _rescued_data instead.
+    def _val(c: str) -> str:
+        if "_rescued_data" in cols:
+            return f"coalesce(CAST(`{c}` AS STRING), get_json_object(_rescued_data, '$.{c}'))"
+        return f"CAST(`{c}` AS STRING)"
+    exprs = ", ".join(f"avg(CASE WHEN {_val(c)} IS NULL OR {_val(c)} IN ('', '[]', '{{}}') THEN 1.0 ELSE 0 END)" for c in data_cols)
     rates = dict(zip(data_cols, (float(x or 0) for x in wh.query(f"SELECT {exprs} FROM {_src(source, entity)} WHERE {real}")[0])))
     empty_cols = [c for c, r in rates.items() if r >= 0.999 and (name, c) not in SPARSE_OK]
     sparse = {c: r for c, r in rates.items() if 0.2 <= r < 0.999 and (name, c) not in SPARSE_OK}
 
     missing = sorted(b_dates - s_dates)
-    ok = not missing and not dupes and not empty_cols
+    ok = not missing and not (dupes - identical) and not empty_cols
     rep.line("PASS" if ok else "FAIL", f"silver {name}",
-             f"{len(s_dates)} dates (bronze {len(b_dates)}), {total:,} rows{count_note}, {dupes} dupes"
+             f"{len(s_dates)} dates (bronze {len(b_dates)}), {total:,} rows{count_note}, {dupes - identical} dupes"
              + (f"; missing dates {missing[:4]}" if missing else "")
              + (f"; ALL-NULL columns {empty_cols}" if empty_cols else ""))
+    if identical:
+        rep.line("WARN", f"  {name} repeated source records",
+                 f"{identical} byte-identical repeat(s) of a record on its key (deduped downstream)")
     if sparse:
         rep.line("WARN", f"  {name} sparse columns", ", ".join(f"{c} {r:.0%} null" for c, r in sorted(sparse.items(), key=lambda kv: -kv[1])))
 
