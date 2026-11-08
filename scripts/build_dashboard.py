@@ -17,20 +17,27 @@ G = "gbdp.gold_gbdp"
 CUR_PLAYER = f"(SELECT max(dt) FROM {G}.dim_player)"
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "dashboards" / "gbdp_season.lvdash.json"
-SEASON = 2026
 
 sys.path.insert(0, str(ROOT / "src"))
 from gbdp.semantic import layer as semantic  # noqa: E402
-from gbdp.semantic.compile import Filter, MetricRequest, compile_request  # noqa: E402
+from gbdp.semantic.compile import Filter, MetricRequest, SqlExpr, compile_request  # noqa: E402
 from gbdp.semantic.render import databricks_target  # noqa: E402
 
-# Every count on the season page reads only this season's partitions: gold
-# also holds test days from other years (2004-05-18, 2024-05-18).
-IN_SEASON = f"dt >= '{SEASON}-01-01' AND dt < '{SEASON + 1}-01-01'"
+# The season the dashboard shows: the latest year with an MLB regular-season
+# game, so it rolls over when next season's regular season starts (spring
+# training alone doesn't). Gold's test days from other years (2004-05-18,
+# 2024-05-18) are older, so max() skips them. Needs fact_game.game_type, which
+# the gold rebuild adds; --check says so when it is missing.
+SEASON_SQL = (f"SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM {G}.fact_game sg "
+              f"WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R'")
+SEASON = SqlExpr(SEASON_SQL)
+# Every count on the season page reads only that season's partitions.
+IN_SEASON = f"YEAR(CAST(dt AS DATE)) = ({SEASON_SQL})"
 
 DATASETS = {
     "totals": ("Totals", f"""
 SELECT
+  CAST(({SEASON_SQL}) AS STRING) AS season,
   (SELECT count(DISTINCT game_id) FROM {G}.fact_game WHERE {IN_SEASON}) AS games,
   (SELECT count(*) FROM {G}.fact_plate_appearance WHERE {IN_SEASON}) AS plate_appearances,
   (SELECT count(*) FROM {G}.fact_pitch WHERE {IN_SEASON}) AS pitches,
@@ -205,9 +212,13 @@ def chart(name: str, kind: str, dataset: str, x_field: str, x_scale: str, y_fiel
 
 def build() -> dict:
     overview = [
-        text("title", ["# Global Baseball Data Platform: 2026 season",
-                       "MLB and NPB from public feeds, rebuilt nightly on Databricks (bronze → silver → gold, Delta + Unity Catalog)."],
-             0, 0, 6, 2),
+        # Lakeview text widgets and page names are static, so the season itself
+        # is a counter next to the title (a string, so it isn't shown as 2,026).
+        text("title", ["# Global Baseball Data Platform: season to date",
+                       "MLB and NPB from public feeds, rebuilt nightly on Databricks (bronze → silver → gold, Delta + Unity Catalog). "
+                       "The season is the latest year with MLB regular-season games."],
+             0, 0, 5, 2),
+        counter("c_season", "totals", "season", "Season", 5, 0),
         counter("c_games", "totals", "games", "Games", 0, 2),
         counter("c_pas", "totals", "plate_appearances", "Plate appearances", 1, 2),
         counter("c_pitches", "totals", "pitches", "Pitches", 2, 2),
@@ -217,7 +228,7 @@ def build() -> dict:
         table("re24", "run_expectancy",
               [("runners", "Runners", "string"), ("outs_0", "0 outs", "float"), ("outs_1", "1 out", "float"),
                ("outs_2", "2 outs", "float"), ("plate_appearances", "PAs", "integer")],
-              "Run expectancy (RE24), MLB 2026 season to date", 0, 4, 3, 6,
+              "Run expectancy (RE24), MLB season to date", 0, 4, 3, 6,
               "Average runs scored from each base/out state to the end of the inning."),
         table("standings", "standings",
               [("team", "Team", "string"), ("w", "W", "integer"), ("l", "L", "integer"),
@@ -252,7 +263,7 @@ def build() -> dict:
         "datasets": [{"name": k, "displayName": v[0], "queryLines": [line + "\n" for line in v[1].strip().splitlines()]}
                      for k, v in all_datasets().items()],
         "pages": [
-            {"name": "season", "displayName": "2026 season", "layout": overview},
+            {"name": "season", "displayName": "Season", "layout": overview},
             {"name": "quality", "displayName": "Data quality", "layout": quality},
         ],
     }
@@ -264,6 +275,17 @@ def check() -> int:
     import os
 
     wh = Warehouse(os.getenv("GBDP_WAREHOUSE_ID", "a9d3d2589a30ab67"), os.getenv("DATABRICKS_CONFIG_PROFILE"))
+    # Every season-page dataset picks its season from fact_game.game_type, so
+    # before the gold rebuild adds it they would all fail the same way.
+    schema = G.split(".")
+    has_game_type = wh.query(
+        f"SELECT count(*) FROM {schema[0]}.information_schema.columns WHERE table_schema = '{schema[1]}' "
+        f"AND table_name = 'fact_game' AND column_name = 'game_type'")
+    if not has_game_type or str(has_game_type[0][0]) == "0":
+        print(f"FAIL  {G}.fact_game has no game_type yet: rebuild gold first "
+              "(the dashboard's season and season phases come from it)")
+        return 1
+    print(f"OK    season: {wh.query(SEASON_SQL)[0][0]}")
     failed = 0
     for name, (_, sql) in all_datasets().items():
         try:

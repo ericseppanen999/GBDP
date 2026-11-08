@@ -26,8 +26,8 @@ def test_hitters_use_the_governed_pa_and_at_bat_flags():
     sql = _sql("hitters")
     assert "SUM(source.is_pa) AS pa" in sql
     assert "SUM(source.is_hit) / NULLIF(SUM(source.is_ab), 0) AS avg" in sql
-    assert "NOT IN ('BB', 'HBP', 'SAC')" not in sql
-    assert "source.data_source = 'mlb_statcast'" in sql and "source.season_year = 2026" in sql
+    assert "NOT IN ('BB', 'HBP', 'SAC')" not in sql and "NOT IN ('BB', 'HBP', 'SF', 'SH')" not in sql
+    assert "source.data_source = 'mlb_statcast'" in sql and f"source.season_year = ({_builder().SEASON_SQL})" in sql
 
 
 def test_standings_are_regular_season_only():
@@ -79,8 +79,25 @@ def test_totals_count_only_the_season(semantic_gold):
                     f"SELECT * REPLACE ('2024-05-18' AS dt) FROM {table}_copy")
     after = con.execute(_local(mod.all_datasets()["totals"][1])).fetchone()
     assert after == before
-    assert before[0] > 0 and before[-1].startswith("2026-")
-    assert "AND dt < '2027-01-01'" in _sql("daily_coverage") and "AND dt < '2027-01-01'" in _sql("quality")
+    assert before[0] == "2026" and before[1] > 0 and before[-1].startswith("2026-")
+    for dataset in ("daily_coverage", "quality"):
+        assert f"YEAR(CAST(dt AS DATE)) = ({mod.SEASON_SQL})" in _sql(dataset)
+
+
+def test_the_season_rolls_over_with_the_first_regular_season_game(semantic_gold):
+    # The dashboard shows the latest year with an MLB regular-season game:
+    # next year's spring training doesn't move it, its first R game does.
+    from gbdp.serve import db
+
+    mod = _builder()
+    totals = _local(mod.all_datasets()["totals"][1])
+    con = db._duckdb_connection()
+    con.execute("CREATE TABLE fact_game_copy AS SELECT * FROM fact_game")
+    for game_type, season in (("S", "2026"), ("R", "2027")):
+        con.execute(f"CREATE OR REPLACE VIEW fact_game AS SELECT * FROM fact_game_copy UNION ALL BY NAME "
+                    f"SELECT * REPLACE ('2027-03-01' AS dt, '{game_type}' AS game_type) FROM fact_game_copy "
+                    f"WHERE source = 'mlb_statsapi'")
+        assert con.execute(totals).fetchone()[0] == season, game_type
 
 
 def test_pitch_mix_drops_empty_pitch_types(semantic_gold):
@@ -111,3 +128,17 @@ def test_generated_files_are_written_with_lf(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.argv", ["build_semantic_layer.py", "--out", str(tmp_path / "uc.sql")])
     assert sl_mod.main() == 0
     assert b"\r\n" not in (tmp_path / "uc.sql").read_bytes()
+
+
+def test_a_sql_filter_value_needs_the_literal_style():
+    # SqlExpr is for trusted generator code only; a parameterised (API) query refuses it.
+    from gbdp.semantic import layer as semantic
+    from gbdp.semantic.compile import Filter, MetricRequest, SqlExpr, compile_request
+    from gbdp.semantic.layer import SemanticLayerError
+    from gbdp.semantic.render import duckdb_target
+
+    sl = semantic.load()
+    req = MetricRequest(metrics=["pa"], filters=[Filter("season_year", "eq", SqlExpr("SELECT 2026"))])
+    with pytest.raises(SemanticLayerError):
+        compile_request(sl, req, duckdb_target(), param_style="qmark")
+    assert "season_year = (SELECT 2026)" in compile_request(sl, req, duckdb_target(), param_style="literal").sql

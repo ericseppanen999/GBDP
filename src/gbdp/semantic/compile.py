@@ -32,6 +32,14 @@ class Filter:
     value: Any = None
 
 
+@dataclass(frozen=True)
+class SqlExpr:
+    """A filter value that is SQL, not data: the dashboard's "latest season"
+    subquery, say. Only the literal style (trusted code) accepts it; the API
+    builds filters from JSON values and can't make one."""
+    sql: str
+
+
 @dataclass
 class MetricRequest:
     metrics: Sequence[str]
@@ -54,8 +62,8 @@ class CompiledQuery:
 
 
 def _coerce(dim: Dimension, value: Any) -> Any:
-    if value is None:
-        return None
+    if value is None or isinstance(value, SqlExpr):
+        return value
     try:
         if dim.type == "int":
             return int(value)
@@ -75,6 +83,10 @@ class _Params:
         self.style, self.target, self.values = style, target, []  # type: ignore[var-annotated]
 
     def add(self, value: Any) -> str:
+        if isinstance(value, SqlExpr):
+            if self.style != "literal":
+                raise SemanticLayerError("a SQL expression filter value needs the literal parameter style")
+            return f"({value.sql})"
         if self.style == "qmark":
             self.values.append(value)
             return "?"

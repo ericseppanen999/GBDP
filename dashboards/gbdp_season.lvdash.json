@@ -5,12 +5,13 @@
       "displayName": "Totals",
       "queryLines": [
         "SELECT\n",
-        "  (SELECT count(DISTINCT game_id) FROM gbdp.gold_gbdp.fact_game WHERE dt >= '2026-01-01' AND dt < '2027-01-01') AS games,\n",
-        "  (SELECT count(*) FROM gbdp.gold_gbdp.fact_plate_appearance WHERE dt >= '2026-01-01' AND dt < '2027-01-01') AS plate_appearances,\n",
-        "  (SELECT count(*) FROM gbdp.gold_gbdp.fact_pitch WHERE dt >= '2026-01-01' AND dt < '2027-01-01') AS pitches,\n",
+        "  CAST((SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R') AS STRING) AS season,\n",
+        "  (SELECT count(DISTINCT game_id) FROM gbdp.gold_gbdp.fact_game WHERE YEAR(CAST(dt AS DATE)) = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')) AS games,\n",
+        "  (SELECT count(*) FROM gbdp.gold_gbdp.fact_plate_appearance WHERE YEAR(CAST(dt AS DATE)) = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')) AS plate_appearances,\n",
+        "  (SELECT count(*) FROM gbdp.gold_gbdp.fact_pitch WHERE YEAR(CAST(dt AS DATE)) = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')) AS pitches,\n",
         "  (SELECT count(*) FROM gbdp.gold_gbdp.dim_player WHERE is_current AND dt = (SELECT max(dt) FROM gbdp.gold_gbdp.dim_player)) AS players,\n",
-        "  (SELECT count(DISTINCT dt) FROM gbdp.gold_gbdp.fact_game WHERE dt >= '2026-01-01' AND dt < '2027-01-01') AS days_loaded,\n",
-        "  (SELECT max(dt) FROM gbdp.gold_gbdp.fact_game WHERE dt >= '2026-01-01' AND dt < '2027-01-01') AS latest_day\n"
+        "  (SELECT count(DISTINCT dt) FROM gbdp.gold_gbdp.fact_game WHERE YEAR(CAST(dt AS DATE)) = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')) AS days_loaded,\n",
+        "  (SELECT max(dt) FROM gbdp.gold_gbdp.fact_game WHERE YEAR(CAST(dt AS DATE)) = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')) AS latest_day\n"
       ]
     },
     {
@@ -21,7 +22,7 @@
         "       CASE source WHEN 'mlb_statcast' THEN 'MLB (Statcast)' WHEN 'npb_spaia' THEN 'NPB' ELSE source END AS feed,\n",
         "       count(*) AS plate_appearances\n",
         "FROM gbdp.gold_gbdp.fact_plate_appearance\n",
-        "WHERE dt >= '2026-01-01' AND dt < '2027-01-01'\n",
+        "WHERE YEAR(CAST(dt AS DATE)) = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')\n",
         "GROUP BY ALL\n"
       ]
     },
@@ -32,7 +33,7 @@
         "SELECT CAST(dt AS DATE) AS day, `check`, coalesce(`table`, '') AS table_name,\n",
         "       CASE WHEN ok THEN 'pass' ELSE 'fail' END AS result\n",
         "FROM gbdp.gold_gbdp.audit_quality\n",
-        "WHERE dt >= '2026-01-01' AND dt < '2027-01-01'\n"
+        "WHERE YEAR(CAST(dt AS DATE)) = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')\n"
       ]
     },
     {
@@ -61,7 +62,7 @@
         "  SUM(source.pa_count) AS re_pa_count\n",
         "FROM v_run_expectancy_daily AS source\n",
         "WHERE source.league_code = 'MLB'\n",
-        "  AND source.season_year = 2026\n",
+        "  AND source.season_year = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')\n",
         "GROUP BY source.base_state, source.runners, source.outs\n",
         ") matrix\n",
         "GROUP BY runners, base_state\n",
@@ -104,7 +105,7 @@
         "  MAX(source.release_speed) AS max_mph\n",
         "FROM v_pitch AS source\n",
         "WHERE source.pitch_type IS NOT NULL\n",
-        "  AND source.season_year = 2026\n",
+        "  AND source.season_year = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')\n",
         "GROUP BY CASE source.pitch_type WHEN 'FF' THEN '4-seam fastball' WHEN 'SI' THEN 'Sinker' WHEN 'FC' THEN 'Cutter' WHEN 'SL' THEN 'Slider' WHEN 'ST' THEN 'Sweeper' WHEN 'SV' THEN 'Slurve' WHEN 'CU' THEN 'Curveball' WHEN 'KC' THEN 'Knuckle curve' WHEN 'CS' THEN 'Slow curve' WHEN 'CH' THEN 'Changeup' WHEN 'FS' THEN 'Splitter' WHEN 'FO' THEN 'Forkball' WHEN 'SC' THEN 'Screwball' WHEN 'KN' THEN 'Knuckleball' WHEN 'EP' THEN 'Eephus' WHEN 'FA' THEN 'Other fastball' WHEN 'PO' THEN 'Pitchout' ELSE CAST(source.pitch_type AS STRING) END\n",
         "HAVING COUNT(*) >= 50\n",
         "ORDER BY pitches DESC NULLS LAST\n"
@@ -184,7 +185,7 @@
         "FROM v_plate_appearance AS source\n",
         "LEFT JOIN v_player_current AS batter ON source.batter_id = batter.player_id\n",
         "WHERE source.league_code = 'MLB'\n",
-        "  AND source.season_year = 2026\n",
+        "  AND source.season_year = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')\n",
         "  AND source.data_source = 'mlb_statcast'\n",
         "GROUP BY source.batter_id, batter.primary_name\n",
         "HAVING SUM(source.is_pa) >= 20\n",
@@ -254,7 +255,7 @@
         "FROM v_team_game AS source\n",
         "LEFT JOIN v_team_current AS team ON source.team_id = team.team_id\n",
         "WHERE source.league_code = 'MLB'\n",
-        "  AND source.season_year = 2026\n",
+        "  AND source.season_year = (SELECT max(YEAR(CAST(sg.dt AS DATE))) FROM gbdp.gold_gbdp.fact_game sg WHERE sg.source = 'mlb_statsapi' AND sg.game_type = 'R')\n",
         "  AND source.data_source = 'mlb_statsapi'\n",
         "  AND source.season_phase = 'regular'\n",
         "GROUP BY source.team_id, team.team_name\n",
@@ -265,22 +266,62 @@
   "pages": [
     {
       "name": "season",
-      "displayName": "2026 season",
+      "displayName": "Season",
       "layout": [
         {
           "widget": {
             "name": "title",
             "multilineTextboxSpec": {
               "lines": [
-                "# Global Baseball Data Platform: 2026 season",
-                "MLB and NPB from public feeds, rebuilt nightly on Databricks (bronze \u2192 silver \u2192 gold, Delta + Unity Catalog)."
+                "# Global Baseball Data Platform: season to date",
+                "MLB and NPB from public feeds, rebuilt nightly on Databricks (bronze \u2192 silver \u2192 gold, Delta + Unity Catalog). The season is the latest year with MLB regular-season games."
               ]
             }
           },
           "position": {
             "x": 0,
             "y": 0,
-            "width": 6,
+            "width": 5,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "c_season",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "totals",
+                  "fields": [
+                    {
+                      "name": "season",
+                      "expression": "`season`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "season",
+                  "displayName": "Season"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Season"
+              }
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 0,
+            "width": 1,
             "height": 2
           }
         },
@@ -712,7 +753,7 @@
               "withRowNumber": false,
               "frame": {
                 "showTitle": true,
-                "title": "Run expectancy (RE24), MLB 2026 season to date",
+                "title": "Run expectancy (RE24), MLB season to date",
                 "showDescription": true,
                 "description": "Average runs scored from each base/out state to the end of the inning."
               }
