@@ -205,3 +205,20 @@ def test_retrosheet_game_types(raw, code):
     from gbdp.silver.retrosheet import retrosheet_game_type
 
     assert retrosheet_game_type(raw) == code
+
+
+def test_mlb_silver_rosters_one_row_per_team_and_player(tmp_path, monkeypatch):
+    # The roster API listed Soroka twice on the Cubs on 2026-06-19.
+    from gbdp.silver import mlb
+    from gbdp.utils.io import read_parquet_rows
+
+    entry = {"person": {"id": 647336, "fullName": "Michael Soroka"}, "position": {"abbreviation": "P"},
+             "status": {"code": "A", "description": "Active"}}
+    other = {"person": {"id": 1, "fullName": "Other Guy"}, "position": {"abbreviation": "C"}}
+    teams = [{"team_id": 109, "body_text": json.dumps({"roster": [entry, entry, other]})},
+             {"team_id": 112, "body_text": json.dumps({"roster": [entry]})}]
+    monkeypatch.setattr(mlb, "_read_bronze", lambda *a, **k: [{"teams": json.dumps(teams)}])
+    monkeypatch.setenv("GBDP_STORAGE_FORMAT", "parquet")
+    out = mlb._normalize_rosters(tmp_path, date(2026, 6, 19), True)
+    rows = read_parquet_rows(out.parent if out.suffix else out)
+    assert sorted((r["team_id"], r["player_id"]) for r in rows) == [("109", "1"), ("109", "647336"), ("112", "647336")]

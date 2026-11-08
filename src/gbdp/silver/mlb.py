@@ -101,6 +101,9 @@ def _normalize_rosters(root: Path, dt: date, force: bool) -> Path:
     rows = _read_bronze("mlb_statsapi", "rosters", dt, root)
     normalized: List[Dict[str, Any]] = []
     include_partition_cols = include_partition_cols_silver()
+    # The roster API can list one player twice on a team (Soroka, Cubs,
+    # 2026-06-19, byte-identical entries); one row per (team, player).
+    seen: set = set()
     for r in rows:
         teams = r.get("teams")
         if isinstance(teams, str):
@@ -113,6 +116,10 @@ def _normalize_rosters(root: Path, dt: date, force: bool) -> Path:
             roster = payload.get("roster", []) if isinstance(payload, dict) else []
             for p in roster:
                 person = p.get("person", {})
+                key = (team_id, _as_str(person.get("id")))
+                if key in seen:
+                    continue
+                seen.add(key)
                 row = {
                         "team_id": team_id,
                         "player_id": _as_str(person.get("id")),
@@ -268,6 +275,9 @@ def _normalize_teams(root: Path, dt: date, force: bool) -> Path:
     rows = _read_bronze("mlb_statsapi", "teams", dt, root)
     normalized: List[Dict[str, Any]] = []
     include_partition_cols = include_partition_cols_silver()
+    # The roster API can list one player twice on a team (Soroka, Cubs,
+    # 2026-06-19, byte-identical entries); one row per (team, player).
+    seen: set = set()
     for r in rows:
         teams = r.get("teams") or []
         if isinstance(teams, str):
