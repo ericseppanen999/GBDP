@@ -394,11 +394,15 @@ def test_gold_write_delta_only_overwrites_schema_on_first_write():
 def test_npb_pa_reconstruction_handles_mixed_sequence_types():
     from gbdp.gold.publish import _reconstruct_npb_pa
 
-    rows = [
-        {"game_id": "1", "inning": 1, "top_bottom": "1", "play_seq_no": 2, "event_id": "20"},
-        {"game_id": "1", "inning": 1, "top_bottom": "1", "play_seq_no": None, "event_id": "1"},
-    ]
-    assert [r["inning"] for r in _reconstruct_npb_pa(rows, date(2025, 4, 1), {})] == [1, 1]
+    import json
+
+    def row(event_id, sec, text, seq):
+        return {"game_id": "1", "inning": 1, "top_bottom": "1", "play_ab": 1, "play_seq_no": seq,
+                "event_id": event_id, "text_info_text": text,
+                "raw_event_json": json.dumps({"TextInfo_Bat_Text_Sec": sec})}
+
+    rows = [row("20", "1", "1球目:ショートゴロ 1アウト", 2), row(1, "6", "＜1番：名原＞無死走者なし", None)]
+    assert [r["inning"] for r in _reconstruct_npb_pa(rows, date(2025, 4, 1), {})] == [1]
 
 
 # --- Bug 17: bronze from before the type=details fix still holds leaderboard -

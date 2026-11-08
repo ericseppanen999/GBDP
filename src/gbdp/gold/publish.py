@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -1482,6 +1483,8 @@ def _map_event_type(value: Any) -> str:
         return "SAC"
     if "FIELDERS_CHOICE" in v:
         return "FC"
+    if "INTERF" in v:  # catcher_interf: batter awarded first
+        return "INT"
     if "ERROR" in v:
         return "ERROR"
     if "OUT" in v:
@@ -1530,105 +1533,193 @@ def _map_retrosheet_event(r: Dict[str, Any]) -> str:
 # -----------------------------
 
 def _reconstruct_npb_pa(rows: List[Dict[str, Any]], dt: date, bridge: Dict[tuple, str]) -> List[Dict[str, Any]]:
+    """
+    One row per plate appearance from SPAIA's play-by-play, which has one row
+    per pitch or game event. TextInfo_Bat_Text_Sec in the raw event says which:
+    6 = PA header ("＜1番：名原＞無死走者なし": outs and runners before the PA),
+    0 = a pitch, 1 = the PA's result. A PA is (game, inning, half, play_ab).
+    Outs and runners after a PA come from the next PA's header in the same
+    half-inning; runs come from the score SPAIA prints whenever runs score.
+    Before this, every pitch row became a "PA": 63,655 for a month instead of
+    ~13,000, 83% of them UNKNOWN.
+    """
     by_game: Dict[str, List[Dict[str, Any]]] = {}
     for r in rows:
-        gid = str(r.get("game_id") or "")
-        by_game.setdefault(gid, []).append(r)
+        by_game.setdefault(str(r.get("game_id") or ""), []).append(r)
     out: List[Dict[str, Any]] = []
     for gid, items in by_game.items():
-        items.sort(key=lambda x: (x.get("inning") or 0, _npb_event_order(x)))
-        bases = [0, 0, 0]
-        outs = 0
-        last_inning = None
-        last_top = None
+        items = sorted(items, key=_npb_event_order)
+        teams = _npb_score_teams(items)
+        score = [0, 0]  # home, away
+        pas: List[Dict[str, Any]] = []
+        current: Dict[str, Any] | None = None
         for r in items:
-            inning = r.get("inning")
-            top = r.get("top_bottom")
-            if (inning, top) != (last_inning, last_top):
-                bases = [0, 0, 0]
-                outs = 0
-                last_inning, last_top = inning, top
-            text = (r.get("text_info_text") or r.get("text_info_name") or "").lower()
-            event_type, outs_on_play, bases_after = _npb_infer_event(text, bases)
-            base_before = _bases_to_state(bases)
-            outs_before = outs
-            outs = min(3, outs + outs_on_play)
-            base_after = _bases_to_state(bases_after)
-            outs_after = outs
-            bases = bases_after
-            out.append(
-                {
-                    "pa_id": ulid_from_key(f"pa:npb:{gid}:{r.get('event_id') or r.get('play_seq_no')}"),
-                    "game_id": ulid_from_key(f"game:npb_spaia:{gid}"),
-                    "inning": inning,
-                    # 1 = top, 2 = bottom (code 1 is in every 9th inning, 2 only
-                    # when the home team bats). 0 is a non-PA event: unknown.
-                    "is_top_inning": {"1": True, "2": False}.get(str(top)),
-                    "batting_team_id": None,
-                    "fielding_team_id": None,
-                    "batter_id": bridge.get(("player", "npb_spaia", str(r.get("play_player_id")))),
-                    "pitcher_id": None,
-                    "event_type": event_type,
-                    "rbi": None,
-                    "runs_scored_on_play": None,
-                    "outs_on_play": outs_on_play,
-                    "base_state_before": base_before,
-                    "outs_before": outs_before,
-                    "base_state_after": base_after,
-                    "outs_after": outs_after,
-                    "dt": dt.isoformat(),
-                    "source": "npb_spaia",
-                }
-            )
+            sec = _npb_text_sec(r)
+            text = r.get("text_info_text") or ""
+            key = (r.get("inning"), str(r.get("top_bottom")), r.get("play_ab"))
+            if sec == "6":
+                current = {"key": key, "header": text, "result": None, "row": r, "score_before": list(score)}
+                pas.append(current)
+            new_score = _npb_score(text, teams) if sec != "0" else None
+            if new_score:
+                score = new_score
+            # Runs belong to the PA in progress anywhere in its half-inning: a
+            # walk-off's "サヨナラ勝ち！ デ 8-7 楽" row carries a different play_ab.
+            if current is not None and current["key"][:2] == key[:2]:
+                current["score_after"] = list(score)
+                if sec == "1" and current["key"] == key:
+                    current["result"] = text
+        out.extend(_npb_pa_rows(gid, pas, dt, bridge))
     return out
 
 
+def _npb_pa_rows(gid: str, pas: List[Dict[str, Any]], dt: date, bridge: Dict[tuple, str]) -> List[Dict[str, Any]]:
+    # A header with no result is not a PA: the half-inning ended (e.g. caught
+    # stealing) with the batter still up.
+    done = [p for p in pas if p["result"] is not None]
+    rows = []
+    for i, p in enumerate(done):
+        r = p["row"]
+        inning, top, _ = p["key"]
+        is_top = {"1": True, "2": False}.get(top)
+        outs_before, base_before = _npb_state(p["header"])
+        nxt = done[i + 1] if i + 1 < len(done) else None
+        if nxt is not None and nxt["key"][:2] == p["key"][:2]:
+            outs_after, base_after = _npb_state(nxt["header"])
+        else:
+            # Last PA of the half-inning: normally the third out; a walk-off
+            # or a game that stopped here says fewer.
+            outs_after = _npb_outs_in_result(p["result"])
+            outs_after = 3 if outs_after is None else outs_after
+            base_after = 0 if outs_after == 3 else _npb_bases_in_result(p["result"])
+        bat = 1 if is_top else 0  # score is [home, away]; the away team bats in the top
+        runs = None
+        if is_top is not None:
+            runs = p.get("score_after", p["score_before"])[bat] - p["score_before"][bat]
+        rows.append({
+            "pa_id": ulid_from_key(f"pa:npb:{gid}:{inning}:{top}:{p['key'][2]}"),
+            "game_id": ulid_from_key(f"game:npb_spaia:{gid}"),
+            "inning": _coerce_known_type(inning, "long"),
+            # 1 = top, 2 = bottom (code 1 is in every 9th inning, 2 only when the
+            # home team bats).
+            "is_top_inning": is_top,
+            "batting_team_id": None,
+            "fielding_team_id": None,
+            "batter_id": bridge.get(("player", "npb_spaia", str(r.get("play_player_id")))),
+            "pitcher_id": None,
+            "event_type": _npb_event_type(p["result"]),
+            "rbi": None,
+            "runs_scored_on_play": runs,
+            "outs_on_play": None if outs_before is None or outs_after is None else outs_after - outs_before,
+            "base_state_before": base_before,
+            "outs_before": outs_before,
+            "base_state_after": base_after,
+            "outs_after": outs_after,
+            "dt": dt.isoformat(),
+            "source": "npb_spaia",
+        })
+    return rows
+
+
+def _npb_text_sec(row: Dict[str, Any]) -> str | None:
+    try:
+        raw = json.loads(row.get("raw_event_json") or "{}")
+    except (TypeError, ValueError):
+        return None
+    sec = raw.get("TextInfo_Bat_Text_Sec")
+    return None if sec is None else str(sec)
+
+
+_NPB_OUTS = {"無死": 0, "一死": 1, "二死": 2}
+
+
+def _npb_runner_bits(text: str) -> int:
+    """'一二塁' -> 3, '満塁' -> 7, '走者なし' -> 0 (bit 1 = first, 2 = second, 4 = third)."""
+    if "満塁" in text:
+        return 7
+    return (1 if "一" in text else 0) | (2 if "二" in text else 0) | (4 if "三" in text else 0)
+
+
+def _npb_state(header: str) -> tuple:
+    """'＜1番：名原＞一死一三塁' -> (1, 5). (None, None) if it doesn't parse."""
+    body = re.sub(r"^＜[^＞]*＞", "", header or "").strip()
+    outs = _NPB_OUTS.get(body[:2])
+    if outs is None:
+        return None, None
+    return outs, _npb_runner_bits(body[2:])
+
+
+def _npb_outs_in_result(text: str) -> int | None:
+    m = re.search(r"([0-3０-３])アウト", text or "")
+    return int(m.group(1).translate(str.maketrans("０１２３", "0123"))) if m else None
+
+
+def _npb_bases_in_result(text: str) -> int:
+    # Results end with where the runners are: "... 1アウト二塁", "... 一二塁", "... 満塁".
+    m = re.search(r"(満塁|[一二三]+塁)\s*$", text or "")
+    return _npb_runner_bits(m.group(1)) if m else 0
+
+
+def _npb_score_teams(items: List[Dict[str, Any]]) -> tuple | None:
+    """(home, away) one-character team marks from an inning header like '3回裏 西3-2広'."""
+    for r in items:
+        m = re.match(r"\s*(?:試合開始\s*)?\d+回[表裏]\s*(\S)\s*\d+-\d+\s*(\S)", r.get("text_info_text") or "")
+        if m:
+            return m.group(1), m.group(2)
+    return None
+
+
+def _npb_score(text: str, teams: tuple | None) -> List[int] | None:
+    """[home, away] from '西 2-0 広' or '西3-2広', matching only this game's teams.
+
+    Pitch counts ('カウント1-1から') look the same, so the team marks must match.
+    """
+    if not teams or not text:
+        return None
+    home, away = (re.escape(t) for t in teams)
+    m = re.search(rf"{home}\s*(\d+)-(\d+)\s*{away}", text)
+    return [int(m.group(1)), int(m.group(2))] if m else None
+
+
+# Checked in order: the first match wins, so compound results come first.
+_NPB_EVENTS = [
+    ("TP", ("三重殺", "トリプルプレー")),
+    ("DP", ("併殺", "ダブルプレー")),
+    ("HR", ("本塁打", "ホームラン")),
+    ("3B", ("三塁打", "スリーベース")),
+    ("2B", ("二塁打", "ツーベース")),
+    # Reached on error is written as the misplay: fumble, ball let through, bad throw, drop.
+    ("ERROR", ("失策", "エラー", "ファンブル", "後逸", "悪送球", "落球")),
+    ("FC", ("野選", "フィルダースチョイス")),
+    ("INT", ("打撃妨害",)),  # catcher's interference
+    # "試みるも" = "tried, but": a bunt attempt that became an out ("セーフティバントを
+    # 試みるもピッチャーゴロとなる"). Reaching on an error was matched above.
+    ("OUT", ("試みるも",)),
+    # A safety bunt that reaches is scored a hit (checked against the feed's hit totals).
+    ("1B", ("安打", "ヒット", "セーフティバント", "プッシュバント")),
+    ("BB", ("四球", "フォアボール", "敬遠")),
+    ("HBP", ("死球", "デッドボール")),
+    ("K", ("三振", "振り逃げ")),
+    ("OUT", ("失敗",)),  # a failed bunt is an out, not a sacrifice
+    ("SAC", ("犠打", "犠飛", "送りバント", "スクイズ")),
+    ("OUT", ("アウト", "ゴロ", "フライ", "ライナー", "ファウルフライ")),
+]
+
+
+def _npb_event_type(result: str | None) -> str:
+    # Drop the pitch prefix ("6球目:") so its digits and the count can't match.
+    text = re.sub(r"^[0-9０-９]+球目[:：]", "", result or "")
+    for event, words in _NPB_EVENTS:
+        if any(w in text for w in words):
+            return event
+    return "UNKNOWN"
+
+
 def _npb_event_order(row: Dict[str, Any]) -> int:
-    # play_seq_no is an int but the event_id fallback is a string; comparing the
-    # two crashed gold_publish on real data.
-    value = _coerce_known_type(row.get("play_seq_no") or row.get("event_id"), "long")
+    # event_id is SPAIA's global sequence; play_seq_no restarts every
+    # half-inning, so it can't order a game. event_id arrives as a string (Bug 15).
+    value = _coerce_known_type(row.get("event_id"), "long")
     return value or 0
-
-
-def _npb_infer_event(text: str, bases: List[int]) -> tuple[str, int, List[int]]:
-    t = text or ""
-    if "三重殺" in t or "triple play" in t:
-        return "TP", 3, [0, 0, 0]
-    if "併殺" in t or "double play" in t:
-        return "DP", 2, [0, 0, 0]
-    if "本塁打" in t or "ホームラン" in t or "home run" in t:
-        return "HR", 0, [0, 0, 0]
-    if "三塁打" in t or "triple" in t:
-        return "3B", 0, [0, 0, 1]
-    if "二塁打" in t or "double" in t:
-        return "2B", 0, _advance_bases(bases, 2)
-    if "安打" in t or "ヒット" in t or "single" in t:
-        return "1B", 0, _advance_bases(bases, 1)
-    if "四球" in t or "死球" in t or "walk" in t or "hbp" in t:
-        return "BB", 0, _advance_bases(bases, 1)
-    if "犠打" in t or "犠飛" in t or "sacrifice" in t:
-        return "SAC", 1, bases
-    if "アウト" in t or "out" in t or "フライ" in t or "ゴロ" in t:
-        return "OUT", 1, bases
-    return "UNKNOWN", 0, bases
-
-
-def _advance_bases(bases: List[int], bases_taken: int) -> List[int]:
-    b1, b2, b3 = bases
-    if bases_taken == 1:
-        if b1:
-            if b2:
-                b3 = 1
-            b2 = 1
-        b1 = 1
-    elif bases_taken == 2:
-        if b2:
-            b3 = 1
-        if b1:
-            b3 = 1
-        b2 = 1
-        b1 = 0
-    return [b1, b2, b3]
 
 
 def _bases_to_state(bases: List[int]) -> int:
