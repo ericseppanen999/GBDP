@@ -181,7 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--retry-delay", type=float, default=1.0, help="Retry delay seconds")
     run_p.add_argument("--storage-format", choices=["parquet", "delta"], help="Override storage format")
     run_p.add_argument("--chunk", choices=["month"], help="Chunk window for long ranges")
-    run_p.add_argument("--fresh-dims-before", default="", help="Rebuild SCD2 dims from scratch: ignore dim snapshots dated before this date. Pass the FIRST date of the whole rebuild on every step of it; a later chunk passing its own start would erase the history before it.")
+    run_p.add_argument("--fresh-dims-before", default="", help="Rebuild SCD2 dims from scratch: ignore dim snapshots dated before this date. Only the FIRST run of a rebuild passes it, and it must equal that run's start date (refused otherwise); later runs of the rebuild drop the flag and carry dims forward.")
     run_p.add_argument("--bronze-root", help="Override bronze root path")
     run_p.add_argument("--silver-root", help="Override silver root path")
     run_p.add_argument("--gold-root", help="Override gold root path")
@@ -219,7 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_p.add_argument("--retry-delay", type=float, default=1.0, help="Retry delay seconds")
     backfill_p.add_argument("--storage-format", choices=["parquet", "delta"], help="Override storage format")
     backfill_p.add_argument("--chunk", choices=["month"], help="Chunk window for long ranges")
-    backfill_p.add_argument("--fresh-dims-before", default="", help="Rebuild SCD2 dims from scratch: ignore dim snapshots dated before this date. Pass the FIRST date of the whole rebuild on every step of it; a later chunk passing its own start would erase the history before it.")
+    backfill_p.add_argument("--fresh-dims-before", default="", help="Rebuild SCD2 dims from scratch: ignore dim snapshots dated before this date. Only the FIRST run of a rebuild passes it, and it must equal that run's start date (refused otherwise); later runs of the rebuild drop the flag and carry dims forward.")
     backfill_p.add_argument("--bronze-root", help="Override bronze root path")
     backfill_p.add_argument("--silver-root", help="Override silver root path")
     backfill_p.add_argument("--gold-root", help="Override gold root path")
@@ -318,15 +318,6 @@ def main() -> None:
         import uvicorn
 
         uvicorn.run("gbdp.serve.api:app", host=args.host, port=args.port, reload=False)
-    if args.cmd in ("run", "backfill") and args.fresh_dims_before:
-        # Only the run that STARTS the rebuild may start dims fresh: a later
-        # chunk passing its own start would erase the history before it, so
-        # it must drop the flag and carry forward instead (CR-002).
-        if args.start and args.fresh_dims_before != args.start:
-            parser.error(f"--fresh-dims-before {args.fresh_dims_before} must equal --start {args.start}: "
-                         "only the first run of a rebuild starts dims fresh")
-        # Read by gold _apply_scd2 in this same process.
-        os.environ["GBDP_FRESH_DIMS_BEFORE"] = args.fresh_dims_before
     if args.cmd == "run":
         _set_storage_format(args)
         _set_roots(args)
@@ -335,6 +326,7 @@ def main() -> None:
         stages = args.stages.split(",") if args.stages else None
         leagues = args.leagues.split(",") if args.leagues and args.leagues != "all" else None
         start, end = _resolve_window(args.start, args.end, args.window)
+        _apply_fresh_dims(parser, args.fresh_dims_before, start)
         if args.window == "nightly":
             os.environ.setdefault("GBDP_NPB_STATS_LATEST_ONLY", "true")
         run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay, args.chunk, leagues)
@@ -357,6 +349,7 @@ def main() -> None:
         raw_leagues = args.leagues or os.getenv("GBDP_BACKFILL_LEAGUES") or "all"
         leagues = raw_leagues.split(",") if raw_leagues and raw_leagues != "all" else None
         start, end = _resolve_window(raw_start, raw_end, args.window)
+        _apply_fresh_dims(parser, args.fresh_dims_before, start)
         run_pipeline(start, end, args.sources, args.force, stages, args.retries, args.retry_delay, args.chunk, leagues)
     if args.cmd == "purge-stale":
         _set_roots(args)
@@ -484,6 +477,20 @@ def _test_write() -> None:
 
 def _run_pipeline(args: argparse.Namespace) -> None:
     raise RuntimeError("Legacy runner removed. Use `gbdp run` with --stages if needed.")
+
+
+def _apply_fresh_dims(parser: argparse.ArgumentParser, fresh_dims_before: str, start: str) -> None:
+    """Only the run that STARTS a rebuild may start dims fresh: a later chunk
+    passing its own start would erase the history before it, so it must drop
+    the flag and carry forward instead (CR-002). Checked against the resolved
+    start, so --window and backfill's env/default start are covered (CR-018)."""
+    if not fresh_dims_before:
+        return
+    if fresh_dims_before != start:
+        parser.error(f"--fresh-dims-before {fresh_dims_before} must equal the run's start {start}: "
+                     "only the first run of a rebuild starts dims fresh")
+    # Read by gold _apply_scd2 in this same process.
+    os.environ["GBDP_FRESH_DIMS_BEFORE"] = fresh_dims_before
 
 
 def _resolve_window(start: str, end: str, window: str | None) -> tuple[str, str]:

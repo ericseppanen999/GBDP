@@ -37,3 +37,43 @@ def test_final_pa_walk_off_sacrifice_fly_stays_unknown_bases():
     pa, = publish._statcast_plate_appearances([_pitch("sac_fly", 0)], date(2026, 6, 10), {})
     assert pa["outs_after"] == 1
     assert pa["base_state_after"] is None
+
+
+# CR-018: the --fresh-dims-before guard checks the run's RESOLVED start.
+def _cli(monkeypatch, argv):
+    import sys
+
+    from gbdp import cli
+
+    monkeypatch.setenv("GBDP_FRESH_DIMS_BEFORE", "")  # restored afterwards
+    ran = []
+    monkeypatch.setattr(cli, "run_pipeline", lambda *a, **k: ran.append(a))
+    monkeypatch.setattr(sys, "argv", ["gbdp", *argv])
+    cli.main()
+    return ran
+
+
+def test_fresh_dims_guard_uses_the_backfill_env_start(monkeypatch):
+    monkeypatch.setenv("GBDP_BACKFILL_START", "2026-06-01")
+    monkeypatch.setenv("GBDP_BACKFILL_END", "2026-06-30")
+    with pytest.raises(SystemExit) as e:
+        _cli(monkeypatch, ["backfill", "--fresh-dims-before", "2026-05-13", "--stages", "gold_publish"])
+    assert e.value.code == 2
+    monkeypatch.setenv("GBDP_BACKFILL_START", "2026-05-13")
+    assert _cli(monkeypatch, ["backfill", "--fresh-dims-before", "2026-05-13", "--stages", "gold_publish"])
+
+
+def test_fresh_dims_guard_uses_the_window_start(monkeypatch):
+    # --window replaces --start; a flag matching the ignored --start is refused.
+    with pytest.raises(SystemExit) as e:
+        _cli(monkeypatch, ["run", "--start", "2026-05-13", "--end", "2026-05-13", "--window", "yesterday",
+                           "--fresh-dims-before", "2026-05-13", "--stages", "gold_publish"])
+    assert e.value.code == 2
+
+
+def test_fresh_dims_empty_is_a_no_op(monkeypatch):
+    import os
+
+    assert _cli(monkeypatch, ["backfill", "--start", "2026-06-01", "--end", "2026-06-01",
+                              "--fresh-dims-before", "", "--stages", "gold_publish"])
+    assert os.environ["GBDP_FRESH_DIMS_BEFORE"] == ""
