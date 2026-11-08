@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, List
 
 from gbdp.bronze.writer import RawPayload
 from gbdp.connectors.base import BaseConnector, Partition
-from gbdp.utils.time import daterange, parse_date, yyyymmdd
+from gbdp.utils.time import daterange, parse_date, utc_now, yyyymmdd
 
 
 class NpbSpaiaConnector(BaseConnector):
@@ -103,7 +103,7 @@ class NpbSpaiaConnector(BaseConnector):
                 url=f"{self.base_url}/players_by_team",
                 params={"year": year},
                 status_code=200,
-                fetched_at_utc=partition.dt + "T00:00:00Z",
+                fetched_at_utc=utc_now().isoformat(),
                 checksum=checksum,
                 content_type="application/json",
                 body_text=body_text,
@@ -315,7 +315,7 @@ class NpbSpaiaConnector(BaseConnector):
             url=url,
             params=extra_params or {},
             status_code=200,
-            fetched_at_utc=partition.dt + "T00:00:00Z",
+            fetched_at_utc=utc_now().isoformat(),
             checksum=checksum,
             content_type="application/json",
             body_text=body_text,
@@ -373,7 +373,7 @@ class NpbSpaiaConnector(BaseConnector):
             url=url,
             params={"year": year},
             status_code=200,
-            fetched_at_utc=partition.dt + "T00:00:00Z",
+            fetched_at_utc=utc_now().isoformat(),
             checksum=checksum,
             content_type="application/json",
             body_text=body_text,
@@ -407,7 +407,7 @@ class NpbSpaiaConnector(BaseConnector):
             url=url,
             params=extra_params or {},
             status_code=200,
-            fetched_at_utc=partition.dt + "T00:00:00Z",
+            fetched_at_utc=utc_now().isoformat(),
             checksum=checksum,
             content_type="application/json",
             body_text=body_text,

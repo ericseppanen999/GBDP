@@ -91,7 +91,7 @@ BRONZE_VOL = f"/Volumes/{CATALOG}/bronze_gbdp/bronze_vol/gbdp/bronze"
 # Entities every in-season day should have, and the smallest body that counts
 # as real data (an empty schedule or roster response is a few hundred bytes).
 BRONZE_ENTITIES = [
-    ("mlb_statsapi", "schedule", 2_000),
+    ("mlb_statsapi", "schedule", 500),  # the All-Star Game day has a single game
     ("mlb_statsapi", "rosters", 50_000),
     ("mlb_statsapi", "teams", 20_000),
     ("mlb_statsapi", "transactions", 500),
@@ -115,7 +115,7 @@ def check_bronze(wh: Warehouse, rep: Report, start: str) -> None:
             rows = wh.query(f"""
                 WITH f AS (
                   SELECT regexp_extract(_metadata.file_path, 'dt=([0-9-]+)', 1) AS dt,
-                         CAST(status_code AS INT) AS status, fetched_at_utc, length(body_text) AS bytes
+                         CAST(status_code AS INT) AS status, _metadata.file_modification_time AS fetched_at_utc, length(body_text) AS bytes
                   FROM read_files('{path}', format => 'json')
                 ), latest AS (
                   SELECT dt, max_by(status, fetched_at_utc) AS status, max_by(bytes, fetched_at_utc) AS bytes,
@@ -130,13 +130,42 @@ def check_bronze(wh: Warehouse, rep: Report, start: str) -> None:
         in_season = [r for r in rows if date.fromisoformat(r[0]).month in SEASON_MONTHS]
         bad_status = [r[0] for r in rows if r[1] is not None and int(r[1]) != 200]
         thin = [r[0] for r in in_season if int(r[2] or 0) < min_bytes and r[0] not in off_days.get(source, set())]
+        if entity == "schedule" and source == "mlb_statsapi":
+            # MLB no-game days (All-Star break, offseason): totalGames = 0.
+            played = wh.query(f"""
+                SELECT dt, max_by(n, fetched_at_utc) FROM (
+                  SELECT regexp_extract(_metadata.file_path, 'dt=([0-9-]+)', 1) AS dt, _metadata.file_modification_time AS fetched_at_utc,
+                         CAST(get_json_object(body_text, '$.totalGames') AS INT) AS n
+                  FROM read_files('{path}', format => 'json'))
+                WHERE dt >= '{start}' GROUP BY dt""")
+            for src in ("mlb_statsapi", "mlb_statcast"):
+                off_days[src] = {d for d, n in played if int(n or 0) == 0}
+            thin = [d for d in thin if d not in off_days["mlb_statsapi"]]
+        if entity == "rosters" and source == "mlb_statsapi":
+            # A roster fetched without date= is TODAY's roster, whatever dt it
+            # is filed under (fixed in aa8c4a0; older payloads must be refetched).
+            undated = wh.query(f"""
+                SELECT dt FROM (
+                  SELECT regexp_extract(_metadata.file_path, 'dt=([0-9-]+)', 1) AS dt,
+                         max_by(to_json(params), _metadata.file_modification_time) AS p
+                  FROM read_files('{path}', format => 'json') GROUP BY 1)
+                WHERE dt >= '{start}' AND p NOT LIKE '%"date"%' ORDER BY dt""")
+            undated = [r[0] for r in undated]
+            rep.line("FAIL" if undated else "PASS", "bronze mlb_statsapi/rosters dated",
+                     f"latest fetch without date=: {undated[:6] or 'none'}" + (f" (+{len(undated) - 6})" if len(undated) > 6 else ""))
+        if entity == "rosters" and source == "npb_spaia":
+            # The pre-team-ID-fix fetches repeated every roster ~110x; a sane
+            # directory is ~1,400 people, well under 3 MB.
+            big = [r[0] for r in rows if int(r[2] or 0) > 3_000_000]
+            rep.line("FAIL" if big else "PASS", "bronze npb_spaia/rosters not repeated",
+                     f"latest fetch over 3 MB: {big[:6] or 'none'}")
         if entity == "games" and source == "npb_spaia":
             # A day with no game played (Mondays, the All-Star break, or every
             # game rained out: 06-08's only game was 試合中止). Recorded so the
             # other NPB entities skip those days.
             played = wh.query(f"""
                 SELECT dt, max_by(n, fetched_at_utc) FROM (
-                  SELECT regexp_extract(_metadata.file_path, 'dt=([0-9-]+)', 1) AS dt, fetched_at_utc,
+                  SELECT regexp_extract(_metadata.file_path, 'dt=([0-9-]+)', 1) AS dt, _metadata.file_modification_time AS fetched_at_utc,
                          size(filter(from_json(body_text, 'array<struct<gameStateName:string>>'),
                                      g -> g.gameStateName <> '試合中止')) AS n
                   FROM read_files('{path}', format => 'json'))

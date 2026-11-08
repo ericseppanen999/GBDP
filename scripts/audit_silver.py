@@ -76,7 +76,7 @@ def audit_entity(wh: Warehouse, rep: Report, source, entity, key, bronze, expect
     count_expr = expected_sql or "length(body_text)"
     latest = f"""
         SELECT dt, max_by(n, fetched_at_utc) AS n FROM (
-          SELECT regexp_extract(_metadata.file_path, 'dt=([0-9-]+)', 1) AS dt, fetched_at_utc, {count_expr} AS n
+          SELECT regexp_extract(_metadata.file_path, 'dt=([0-9-]+)', 1) AS dt, _metadata.file_modification_time AS fetched_at_utc, {count_expr} AS n
           FROM read_files('{BRONZE_VOL}/raw/{bronze}', format => 'json'))
         WHERE {rng} GROUP BY dt"""
     by_date = {d: int(n or 0) for d, n in wh.query(latest)}

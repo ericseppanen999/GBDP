@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, List
 
 from gbdp.bronze.writer import RawPayload
 from gbdp.connectors.base import BaseConnector, Partition
-from gbdp.utils.time import daterange, parse_date
+from gbdp.utils.time import daterange, parse_date, utc_now
 
 
 class MlbStatsApiConnector(BaseConnector):
@@ -77,7 +77,7 @@ class MlbStatsApiConnector(BaseConnector):
                 url=f"{self.base_url}/teams/{{teamId}}/roster",
                 params=roster_params,
                 status_code=200,
-                fetched_at_utc=raw.fetched_at_utc if teams else partition.dt + "T00:00:00Z",
+                fetched_at_utc=raw.fetched_at_utc if teams else utc_now().isoformat(),
                 checksum=checksum,
                 content_type="application/json",
                 body_text=body_text,
@@ -159,7 +159,7 @@ class MlbStatsApiConnector(BaseConnector):
                 url=f"{self.base_url}/game/{{gamePk}}/boxscore",
                 params={},
                 status_code=200,
-                fetched_at_utc=last_raw.fetched_at_utc if last_raw else partition.dt + "T00:00:00Z",
+                fetched_at_utc=last_raw.fetched_at_utc if last_raw else utc_now().isoformat(),
                 checksum=checksum,
                 content_type="application/json",
                 body_text=body_text,
