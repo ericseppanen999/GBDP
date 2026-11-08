@@ -141,26 +141,13 @@ resources:
               - --http-retries
               - "5"
 
-        # After every publish: table/column comments, views and metric views
-        # from configs/semantic_layer.yaml (a replaced table loses its comments).
-        - task_key: gbdp_semantic_layer
-          description: Apply the semantic layer to the gold schema (comments, v_* views, mv_* metric views)
-          depends_on:
-            - task_key: gbdp_run
-          environment_key: default
-          spark_python_task:
-            python_file: ${workspace.file_path}/dbx_entry.py
-            parameters:
-              - semantic-layer
-              - --catalog
-              - ${var.uc_catalog}
-              - --schema
-              - ${var.gold_schema}
-              - --uc-mode
-              - managed
-
-    # -- Semantic layer only --------------------------------------------------
-    # Run after editing configs/semantic_layer.yaml, without a pipeline run.
+    # -- Semantic layer -------------------------------------------------------
+    # Table/column comments, v_* views and mv_* metric views from
+    # configs/semantic_layer.yaml. Run by hand after a gold rebuild or a YAML
+    # change; it exits 1 if any statement fails. Not in the nightly yet: two
+    # views need columns the production rebuild adds, and a nightly that
+    # fails every night would hide real failures. Check it first with
+    #   python scripts/build_semantic_layer.py --validate-in semantic_check
     gbdp_semantic_layer:
       name: gbdp-semantic-layer
       description: Apply configs/semantic_layer.yaml to Unity Catalog (comments, views, metric views)

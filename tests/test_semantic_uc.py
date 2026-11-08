@@ -125,10 +125,42 @@ def test_cli_writes_the_same_sql(tmp_path):
     assert out.read_text(encoding="utf-8") == _builder().build()
 
 
-def test_the_bundle_applies_the_semantic_layer_after_every_nightly_run():
+def test_the_bundle_has_a_semantic_layer_job_outside_the_nightly():
     bundle = yaml.safe_load(Path("databricks.yml").read_text(encoding="utf-8"))
     jobs = bundle["resources"]["jobs"]
-    task = next(t for t in jobs["gbdp_nightly"]["tasks"] if t["task_key"] == "gbdp_semantic_layer")
-    assert task["depends_on"] == [{"task_key": "gbdp_run"}]
-    assert task["spark_python_task"]["parameters"][0] == "semantic-layer"
-    assert jobs["gbdp_semantic_layer"]["tasks"][0]["spark_python_task"]["parameters"][0] == "semantic-layer"
+    params = jobs["gbdp_semantic_layer"]["tasks"][0]["spark_python_task"]["parameters"]
+    assert params[0] == "semantic-layer" and "${var.gold_schema}" in params
+    # Kept out of the nightly until the rebuild lands (SL-012).
+    assert all(t["task_key"] != "gbdp_semantic_layer" for t in jobs["gbdp_nightly"]["tasks"])
+
+
+def test_validation_creates_only_in_the_scratch_schema():
+    mod = _builder()
+
+    class _Warehouse:
+        def __init__(self):
+            self.sql = []
+
+        def query(self, sql):
+            self.sql.append(sql)
+            if "mv_run_expectancy" in sql and sql.startswith("CREATE"):
+                raise RuntimeError("TABLE_OR_VIEW_NOT_FOUND run_expectancy_daily")
+            return []
+
+    wh, lines = _Warehouse(), []
+    failures = mod.validate("gbdp", "gold_gbdp", "semantic_check", "managed", wh, out=lines.append)
+    assert failures == 1
+    writes = [s for s in wh.sql if not s.startswith("SELECT")]
+    assert writes[0] == "CREATE SCHEMA IF NOT EXISTS gbdp.semantic_check"
+    for s in writes[1:]:
+        assert s.startswith("CREATE OR REPLACE VIEW gbdp.semantic_check."), s.splitlines()[0]
+        assert "COMMENT ON" not in s and "ALTER TABLE" not in s
+    # Views read the real tables and the scratch views.
+    assert "FROM gbdp.gold_gbdp.fact_boxscore_batting" in "\n".join(writes)
+    assert "source: gbdp.semantic_check.v_plate_appearance" in "\n".join(writes)
+    queries = [s for s in wh.sql if s.startswith("SELECT")]
+    assert len(queries) == len(SL.metric_views) - 1 and "MEASURE(`avg`)" in queries[0]
+    import pytest
+
+    with pytest.raises(SystemExit):
+        mod.validate("gbdp", "gold_gbdp", "gold_gbdp", "managed", wh)
