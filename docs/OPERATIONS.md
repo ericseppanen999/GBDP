@@ -148,7 +148,11 @@ the gold rebuild adds `run_expectancy_daily`, `runs_to_end_of_inning` and
 2. Check it in a scratch schema first (creates views only in `gbdp.semantic_check`,
    reads the real tables, writes nothing in the gold schema):
    `python scripts/build_semantic_layer.py --validate-in semantic_check`,
-   then `DROP SCHEMA gbdp.semantic_check CASCADE`.
+   then `DROP SCHEMA gbdp.semantic_check CASCADE`. It ends with the game-type
+   check, which also runs alone, read-only:
+   `python scripts/build_semantic_layer.py --game-types` lists fact_game's
+   game types per source and season phase and fails on any that map to
+   `other` (those games drop out of the regular-season default record).
 3. `databricks bundle run gbdp_semantic_layer --target prod` (or
    `python dbx_entry.py semantic-layer --catalog gbdp --schema gold_gbdp` on a
    cluster). Comments on tables/columns that don't exist yet are skipped; any

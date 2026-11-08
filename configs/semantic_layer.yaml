@@ -146,9 +146,15 @@ vocabularies:
       fact_game.game_type per source. Rules are checked in order and the
       first match wins: values match exactly, suffixes match the end of the
       text, contains matches anywhere (so a sponsor's prefix, as in
-      SMBC日本シリーズ, still maps). The NPB league names are confirmed from
-      silver; the NPB postseason, All-Star and preseason names are not yet,
-      hence contains. A game_type no rule matches is other (kept, never dropped); a
+      SMBC日本シリーズ, still maps). The NPB names are confirmed from silver
+      npb_spaia games, 2026-05-13 to 11-05: セ・リーグ公式戦 and パ・リーグ公式戦
+      and セ・パ交流戦 (interleague) are regular; オールスターゲーム is allstar;
+      日本シリーズ and the four Climax Series stages, written as
+      "セ・リーグ　クライマックスシリーズ　ファーストステージ" (league prefix and
+      stage suffix, U+3000 ideographic spaces), are postseason, which is why
+      those rules use contains. No preseason (オープン戦) or farm game occurs
+      in that range, so the preseason rule is unconfirmed, and farm games
+      (ファーム...) have no rule and are other. A game_type no rule matches is other (kept, never dropped); a
       null game_type (sources without one, and rows published before gold
       had the column) is unknown. Team records default to regular and
       unknown (see mv_team_games).
@@ -158,6 +164,17 @@ vocabularies:
       - {phase: allstar, source: mlb_statsapi, values: [A]}
       - {phase: preseason, source: mlb_statsapi, values: [S]}
       - {phase: exhibition, source: mlb_statsapi, values: [E]}
+      # Retrosheet's gametype, mapped in silver to the statsapi codes (its
+      # tie-breaker "playoff" games are R); P is its pre-1950 championship series.
+      - {phase: regular, source: retrosheet_local, values: [R]}
+      - {phase: postseason, source: retrosheet_local, values: [F, D, L, W, P]}
+      - {phase: allstar, source: retrosheet_local, values: [A]}
+      - {phase: exhibition, source: retrosheet_local, values: [E]}
+      # kbo_api, from its SR_ID series code; P is every postseason round.
+      - {phase: regular, source: kbo_api, values: [R]}
+      - {phase: postseason, source: kbo_api, values: [P]}
+      - {phase: allstar, source: kbo_api, values: [A]}
+      - {phase: exhibition, source: kbo_api, values: [E]}
       - {phase: regular, source: npb_spaia, suffixes: [公式戦], values: [セ・パ交流戦]}
       - {phase: postseason, source: npb_spaia, contains: [クライマックスシリーズ, 日本シリーズ]}
       - {phase: allstar, source: npb_spaia, contains: [オールスター]}
@@ -325,8 +342,12 @@ tables:
         spring, E exhibition, A All-Star, F wild card, D division series, L
         LCS, W World Series); NPB SPAIA's Japanese name (セ・リーグ公式戦 /
         パ・リーグ公式戦 league games, セ・パ交流戦 interleague,
-        クライマックスシリーズ, 日本シリーズ). Null for other sources. See
-        vocabularies.season_phase.
+        クライマックスシリーズ, 日本シリーズ); Retrosheet's gametype as the
+        statsapi codes (tie-breaker playoff games R, P its pre-1950
+        championship series); kbo_api R/E/A from its series code and P for
+        every postseason round. indy/kbo/lmb local files pass a game_type
+        through when they have one, else null. Null too in partitions
+        published before gold had the column. See vocabularies.season_phase.
       status: The source's own status text, see vocabularies.final_status. NPB uses Japanese (試合終了 = final, 試合中止 = called off).
       home_score: Home runs, final or as of the fetch.
       away_score: Away runs, final or as of the fetch.

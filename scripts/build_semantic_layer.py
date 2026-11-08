@@ -14,6 +14,9 @@ tables or columns that don't exist yet.
     # gold tables, touching nothing in gold_gbdp) and query every measure.
     # Uses the SQL warehouse through the `databricks` CLI's auth.
     python scripts/build_semantic_layer.py --validate-in semantic_check
+
+    # Read-only: fact_game's game types per season phase; fails on 'other'.
+    python scripts/build_semantic_layer.py --game-types
 """
 from __future__ import annotations
 
@@ -40,7 +43,6 @@ def validate(catalog: str, schema: str, scratch: str, uc_mode: str, warehouse, o
     """Create every view and metric view in catalog.scratch over catalog.schema's
     tables, then SELECT every measure of every metric view. Returns failures."""
     from gbdp.semantic import uc
-    from gbdp.semantic.render import databricks_target, render
 
     if scratch.lower() in {schema.lower()} | PROTECTED_SCHEMAS:
         raise SystemExit(f"--validate-in must be a scratch schema, not {scratch} "
@@ -69,25 +71,35 @@ def validate(catalog: str, schema: str, scratch: str, uc_mode: str, warehouse, o
             continue
         measures = ", ".join(f"MEASURE(`{m}`) AS `{m}`" for m, x in sl.metrics.items() if x.metric_view == name)
         run(f"query {name}", f"SELECT {measures} FROM {catalog}.{scratch}.{name}")
-    # Game types no season_phase rule knows: their games drop out of the
-    # regular-season default and of every phase but other.
+    failures += check_game_types(sl, catalog, schema, uc_mode, warehouse, out)
+    out(f"{failures} failure(s); drop the scratch schema with: DROP SCHEMA {catalog}.{scratch} CASCADE")
+    return failures
+
+
+def check_game_types(sl, catalog: str, schema: str, uc_mode: str, warehouse, out=print) -> int:
+    """Read-only: print every (source, season_phase, game_type) in fact_game
+    and return 1 if any game_type maps to 'other'. Such games drop out of the
+    regular-season default record and of every phase but other, whichever
+    source they come from (a local file passing through a code no rule knows)."""
+    from gbdp.semantic.render import databricks_target, render
+
     case = render("{{season_phase:game_type:source}}", sl, databricks_target(catalog, schema, uc_mode))
     try:
         rows = warehouse.query(
-            f"SELECT source, game_type, count(*) FROM {catalog}.{schema}.fact_game "
-            f"WHERE source IN ('mlb_statsapi', 'npb_spaia') AND {case} = 'other' GROUP BY ALL ORDER BY 1, 2")
-        if rows:
-            failures += 1
-            out("FAIL  unmapped game types (add them to vocabularies.season_phase):")
-            for source, game_type, n in rows:
-                out(f"        {source} {game_type!r}: {n} row(s)")
-        else:
-            out("OK    every MLB and NPB game_type maps to a season phase")
+            f"SELECT source, {case} AS season_phase, game_type, count(*) FROM {catalog}.{schema}.fact_game "
+            f"GROUP BY ALL ORDER BY 1, 2, 3")
     except RuntimeError as exc:
-        failures += 1
         out(f"FAIL  game type check: {str(exc)[:300]}")
-    out(f"{failures} failure(s); drop the scratch schema with: DROP SCHEMA {catalog}.{scratch} CASCADE")
-    return failures
+        return 1
+    for source, phase, game_type, n in rows:
+        out(f"      {source} {phase}: {game_type!r} ({n} game row(s))")
+    unmapped = [r for r in rows if r[1] == "other"]
+    if unmapped:
+        out("FAIL  unmapped game types (add them to vocabularies.season_phase): "
+            + ", ".join(f"{r[0]} {r[2]!r}" for r in unmapped))
+        return 1
+    out("OK    every game_type maps to a season phase")
+    return 0
 
 
 def main() -> int:
@@ -99,10 +111,12 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="exit 1 if the file differs from what would be written")
     ap.add_argument("--validate-in", metavar="SCRATCH_SCHEMA",
                     help="create the views and metric views in this scratch schema and query them")
+    ap.add_argument("--game-types", action="store_true",
+                    help="read-only: list fact_game's game types by season phase; exit 1 if any is 'other'")
     ap.add_argument("--warehouse", default=None, help="SQL warehouse ID (default: GBDP_WAREHOUSE_ID or the bundle's)")
     ap.add_argument("--profile", default=None, help="databricks CLI profile")
     args = ap.parse_args()
-    if args.validate_in:
+    if args.validate_in or args.game_types:
         import os
 
         sys.path.insert(0, str(ROOT / "scripts"))
@@ -110,6 +124,9 @@ def main() -> int:
 
         wh = Warehouse(args.warehouse or os.getenv("GBDP_WAREHOUSE_ID", "a9d3d2589a30ab67"),
                        args.profile or os.getenv("DATABRICKS_CONFIG_PROFILE"))
+        if args.game_types:
+            sl = semantic.load(ROOT / "configs" / "semantic_layer.yaml")
+            return check_game_types(sl, args.catalog, args.schema, args.uc_mode, wh)
         return 1 if validate(args.catalog, args.schema, args.validate_in, args.uc_mode, wh) else 0
     text = build(args.catalog, args.schema, args.uc_mode)
     if args.check:

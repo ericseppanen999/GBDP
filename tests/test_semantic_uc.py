@@ -145,14 +145,15 @@ def test_validation_creates_only_in_the_scratch_schema():
             self.sql.append(sql)
             if "mv_run_expectancy" in sql and sql.startswith("CREATE"):
                 raise RuntimeError("TABLE_OR_VIEW_NOT_FOUND run_expectancy_daily")
-            if "= 'other'" in sql:
-                return [["npb_spaia", "ファーム", "3"]]
+            if "AS season_phase" in sql:
+                return [["mlb_statsapi", "regular", "R", "10"], ["npb_spaia", "other", "ファーム", "3"]]
             return []
 
     wh, lines = _Warehouse(), []
     failures = mod.validate("gbdp", "gold_gbdp", "semantic_check", "managed", wh, out=lines.append)
     assert failures == 2  # the metric view, and an unmapped game type
-    assert any("'ファーム': 3 row(s)" in line for line in lines)
+    assert any("FAIL  unmapped game types" in line and "npb_spaia 'ファーム'" in line for line in lines)
+    assert any("mlb_statsapi regular: 'R'" in line for line in lines)
     assert any("FROM gbdp.gold_gbdp.fact_game" in s for s in wh.sql)
     writes = [s for s in wh.sql if not s.startswith("SELECT")]
     assert writes[0] == "CREATE SCHEMA IF NOT EXISTS gbdp.semantic_check"
@@ -173,3 +174,20 @@ def test_validation_creates_only_in_the_scratch_schema():
     with pytest.raises(SystemExit):
         mod.validate("gbdp", "my_gold", "my_gold", "managed", wh)
     assert len(wh.sql) == before  # refused before running anything
+
+
+def test_game_type_check_is_read_only_and_covers_every_source():
+    mod = _builder()
+
+    class _Warehouse:
+        sql = []
+
+        def query(self, sql):
+            self.sql.append(sql)
+            return [["kbo_local", "other", "정규", "4"], ["kbo_api", "postseason", "P", "2"]]
+
+    lines = []
+    assert mod.check_game_types(SL, "gbdp", "gold_gbdp", "managed", _Warehouse(), out=lines.append) == 1
+    assert all(s.startswith("SELECT") for s in _Warehouse.sql)
+    assert "WHERE source IN" not in _Warehouse.sql[0]  # every source, not only MLB/NPB
+    assert any("kbo_local '정규'" in line for line in lines)

@@ -349,3 +349,57 @@ def test_mcp_compute_metric(semantic_gold):
     assert "error" in compute_metric(["avg", "era"])
     assert "error" in compute_metric(["avg"], filters=[{"op": "eq"}])
 
+
+def test_season_phase_rules_cover_retrosheet_and_kbo_codes():
+    # SL-019: gold writes Retrosheet's gametype as statsapi codes (plus P for
+    # its pre-1950 championship series) and kbo_api's series as R/E/A/P.
+    from gbdp.gold import publish
+    from gbdp.semantic.render import duckdb_target, render
+    import duckdb
+
+    case = render("{{season_phase:t:s}}", SL, duckdb_target())
+    con = duckdb.connect()
+
+    def phase(t, src):
+        return con.execute(f"SELECT {case} FROM (SELECT ? AS t, ? AS s)", [t, src]).fetchone()[0]
+
+    retro = {"R": "regular", "E": "exhibition", "A": "allstar", "F": "postseason", "D": "postseason",
+             "L": "postseason", "W": "postseason", "P": "postseason"}
+    assert {t: phase(t, "retrosheet_local") for t in retro} == retro
+    kbo = {"R": "regular", "E": "exhibition", "A": "allstar", "P": "postseason"}
+    assert {t: phase(t, "kbo_api") for t in kbo} == kbo
+    # Every code gold writes for these sources is covered.
+    from gbdp.silver import retrosheet
+
+    assert set(publish._KBO_SERIES.values()) <= set(kbo)
+    assert set(retrosheet._RETRO_GAME_TYPES.values()) <= set(retro)
+    # P is not an MLB statsapi code.
+    assert phase("P", "mlb_statsapi") == "other"
+
+
+def test_season_phase_maps_every_confirmed_npb_game_type():
+    # The distinct gameTypeName values in silver npb_spaia/games, 2026-05-13
+    # to 11-05, exactly as fact_game.game_type carries them (the Climax Series
+    # names have U+3000 ideographic spaces), with their distinct game counts.
+    from gbdp.semantic.render import duckdb_target, render
+    import duckdb
+
+    games = {
+        "セ・リーグ公式戦": (285, "regular"),
+        "パ・リーグ公式戦": (272, "regular"),
+        "セ・パ交流戦": (112, "regular"),  # interleague is regular season
+        "オールスターゲーム": (2, "allstar"),
+        "セ・リーグ　クライマックスシリーズ　ファーストステージ": (2, "postseason"),
+        "セ・リーグ　クライマックスシリーズ　ファイナルステージ": (4, "postseason"),
+        "パ・リーグ　クライマックスシリーズ　ファーストステージ": (3, "postseason"),
+        "パ・リーグ　クライマックスシリーズ　ファイナルステージ": (3, "postseason"),
+        "日本シリーズ": (4, "postseason"),
+    }
+    case = render("{{season_phase:t:s}}", SL, duckdb_target())
+    con = duckdb.connect()
+    totals: dict = {}
+    for name, (n, expected) in games.items():
+        got = con.execute(f"SELECT {case} FROM (SELECT ? AS t, 'npb_spaia' AS s)", [name]).fetchone()[0]
+        assert got == expected, name
+        totals[got] = totals.get(got, 0) + n
+    assert totals == {"regular": 669, "allstar": 2, "postseason": 16}
