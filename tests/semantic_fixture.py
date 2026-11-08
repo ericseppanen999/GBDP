@@ -186,6 +186,17 @@ def build_silver(silver: Path) -> None:
         {"game_id": "n2", "game_date": d2.isoformat(), "home_team_id": NPB_HOME, "home_team_name": "西武",
          "away_team_id": NPB_AWAY, "away_team_name": "広島", "home_score": 3, "away_score": 1,
          "game_state_name": "試合終了", "game_type_name": "クライマックスシリーズ"},
+        # The exact SPAIA strings: a called-off league game (never counts),
+        # a Japan Series game and a Pacific League game.
+        {"game_id": "n4", "game_date": d2.isoformat(), "home_team_id": NPB_HOME, "home_team_name": "西武",
+         "away_team_id": NPB_AWAY, "away_team_name": "広島", "home_score": 0, "away_score": 0,
+         "game_state_name": "試合中止", "game_type_name": "セ・リーグ公式戦"},
+        {"game_id": "n5", "game_date": d2.isoformat(), "home_team_id": NPB_HOME, "home_team_name": "西武",
+         "away_team_id": NPB_AWAY, "away_team_name": "広島", "home_score": 2, "away_score": 1,
+         "game_state_name": "試合終了", "game_type_name": "日本シリーズ"},
+        {"game_id": "n6", "game_date": d2.isoformat(), "home_team_id": NPB_HOME, "home_team_name": "西武",
+         "away_team_id": NPB_AWAY, "away_team_name": "広島", "home_score": 1, "away_score": 0,
+         "game_state_name": "試合終了", "game_type_name": "パ・リーグ公式戦"},
         {"game_id": "n3", "game_date": d2.isoformat(), "home_team_id": NPB_HOME, "home_team_name": "西武",
          "away_team_id": NPB_AWAY, "away_team_name": "広島", "home_score": 0, "away_score": 4,
          "game_state_name": "試合終了", "game_type_name": "ファーム交流戦"}])

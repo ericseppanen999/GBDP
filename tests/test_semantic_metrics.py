@@ -170,8 +170,10 @@ def test_team_records_count_each_game_once(semantic_gold):
     assert (bos["wins"], bos["losses"], bos["run_differential"]) == (0, 2, -4)
     # 1001 counts on the day it was first final.
     assert one(["wins"], [("team_abbrev", "eq", "NYY")], start=D1, end=D1)["wins"] == 1
-    npb = run(["ties", "win_pct"], ["team_name"], [("league_code", "eq", "NPB")])
-    assert [(r["ties"], r["win_pct"]) for r in npb] == [(1, None), (1, None)]
+    # NPB regular season: the 2-2 interleague tie and a 1-0 Pacific League
+    # game; the 試合中止 (called off) game never counts.
+    npb = run(["games_played", "ties", "win_pct"], ["team_name"], [("league_code", "eq", "NPB")])
+    assert sorted((r["games_played"], r["ties"], r["win_pct"]) for r in npb) == [(2, 1, 0.0), (2, 1, 1.0)]
 
 
 def test_team_records_default_to_the_regular_season(semantic_gold):
@@ -180,16 +182,19 @@ def test_team_records_default_to_the_regular_season(semantic_gold):
     phases = {(r["league_code"], r["season_phase"]): r["games_played"] for r in run(
         ["games_played"], ["league_code", "season_phase"],
         [("season_phase", "in", ["regular", "postseason", "allstar", "preseason", "exhibition", "other", "unknown"])])}
-    assert phases == {("MLB", "regular"): 4, ("MLB", "allstar"): 2, ("NPB", "regular"): 2,
-                      ("NPB", "postseason"): 2, ("NPB", "other"): 2, ("KBO", "unknown"): 2}
+    assert phases == {("MLB", "regular"): 4, ("MLB", "allstar"): 2, ("NPB", "regular"): 4,
+                      ("NPB", "postseason"): 4, ("NPB", "other"): 2, ("KBO", "unknown"): 2}
     by_default = {r["league_code"]: r["games_played"] for r in run(["games_played"], ["league_code"])}
-    assert by_default == {"MLB": 4, "NPB": 2, "KBO": 2}  # regular, plus unknown (KBO has no game type)
+    assert by_default == {"MLB": 4, "NPB": 4, "KBO": 2}  # regular, plus unknown (KBO has no game type)
     allstar = one(["wins", "runs_scored"], [("team_abbrev", "eq", "NYY"), ("season_phase", "eq", "allstar")])
     assert (allstar["wins"], allstar["runs_scored"]) == (1, 9)
     types = {(r["game_type"], r["season_phase"]) for r in run(
         ["games_played"], ["game_type", "season_phase"], [("season_phase", "ne", "nothing")])}
-    assert types == {("R", "regular"), ("A", "allstar"), ("セ・パ交流戦", "regular"),
-                     ("クライマックスシリーズ", "postseason"), ("ファーム交流戦", "other"), (None, "unknown")}
+    assert types == {("R", "regular"), ("A", "allstar"), ("セ・パ交流戦", "regular"), ("パ・リーグ公式戦", "regular"),
+                     ("クライマックスシリーズ", "postseason"), ("日本シリーズ", "postseason"),
+                     ("ファーム交流戦", "other"), (None, "unknown")}
+    # The called-off game (試合中止, a セ・リーグ公式戦) is in no phase at all.
+    assert ("セ・リーグ公式戦", "regular") not in types
     # The default is listed with the metric.
     assert SL.metric_summary("wins")["default_filters"] == [
         {"dimension": "season_phase", "op": "in", "value": ["regular", "unknown"]}]
@@ -306,7 +311,7 @@ def test_api_lists_describes_and_computes_metrics(semantic_gold):
     # /query still refuses writes, and can read the semantic views.
     assert client.post("/query", json={"sql": "DROP VIEW v_plate_appearance"}).status_code == 400
     rows = client.post("/query", json={"sql": "SELECT count(*) AS n FROM v_team_game"}).json()
-    assert rows == [{"n": 14}]  # 7 finished games (3 MLB, 3 NPB, 1 KBO), two sides each
+    assert rows == [{"n": 18}]  # 9 finished games (3 MLB, 5 NPB, 1 KBO), two sides each
 
 
 def test_metric_query_takes_the_api_token_and_hides_internal_errors(semantic_gold, monkeypatch):
