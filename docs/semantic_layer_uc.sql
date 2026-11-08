@@ -157,9 +157,9 @@ ALTER TABLE gbdp.gold_gbdp.fact_roster ALTER COLUMN `dt` COMMENT 'Roster date.';
 
 ALTER TABLE gbdp.gold_gbdp.fact_roster ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
 
-COMMENT ON TABLE gbdp.gold_gbdp.fact_transaction IS 'MLB transactions (trades, signings, recalls, assignments, injured list) from the MLB Stats API. Grain: one row per transaction_id per dt. Sources: mlb_statsapi. Semantic layer: configs/semantic_layer.yaml.';
+COMMENT ON TABLE gbdp.gold_gbdp.fact_transaction IS 'MLB transactions (trades, signings, recalls, assignments, injured list) from the MLB Stats API. Grain: one row per transaction leg per dt; a trade is one transaction_id with a row for each player and team it moves (a cash leg has no player). Sources: mlb_statsapi. Semantic layer: configs/semantic_layer.yaml.';
 
-ALTER TABLE gbdp.gold_gbdp.fact_transaction ALTER COLUMN `transaction_id` COMMENT 'Canonical ID, hashed from the source\'s transaction ID.';
+ALTER TABLE gbdp.gold_gbdp.fact_transaction ALTER COLUMN `transaction_id` COMMENT 'Canonical ID, hashed from the source\'s transaction ID. Repeats across the legs of one trade; count DISTINCT transaction_id for transactions.';
 
 ALTER TABLE gbdp.gold_gbdp.fact_transaction ALTER COLUMN `league_id` COMMENT 'Always MLB. FK to dim_league.league_id.';
 

@@ -386,15 +386,15 @@ tables:
 
   fact_transaction:
     description: MLB transactions (trades, signings, recalls, assignments, injured list) from the MLB Stats API.
-    grain: one row per transaction_id per dt
-    primary_key: [transaction_id, dt]
+    grain: one row per transaction leg per dt; a trade is one transaction_id with a row for each player and team it moves (a cash leg has no player)
+    primary_key: [transaction_id, player_id, team_id, dt]
     foreign_keys:
       league_id: dim_league.league_id
       team_id: dim_team.team_id
       player_id: dim_player.player_id
     sources: [mlb_statsapi]
     columns:
-      transaction_id: Canonical ID, hashed from the source's transaction ID.
+      transaction_id: Canonical ID, hashed from the source's transaction ID. Repeats across the legs of one trade; count DISTINCT transaction_id for transactions.
       league_id: Always MLB.
       team_id: FK to dim_team, the team that made the transaction.
       player_id: FK to dim_player.
