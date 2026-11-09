@@ -28,7 +28,7 @@ from gbdp.silver.local_boxscore import normalize_local_boxscore
 from gbdp.silver.mlb import normalize_mlb
 from gbdp.silver.npb import normalize_npb
 from gbdp.silver.retrosheet import normalize_retrosheet
-from gbdp.gold.publish import publish_gold
+from gbdp.gold.publish import publish_gold, publish_ml
 from gbdp.pipeline.errors import PermanentStageError
 from gbdp.utils.io import bronze_root, gold_root, ensure_dir, path_exists, write_parquet_table
 from gbdp.utils.logging import get_logger
@@ -62,7 +62,8 @@ def run_pipeline(
     cache = ResponseCache(bronze_root() / "cache")
 
     available = _pipeline_stages()
-    ordered = stages or list(available.keys())
+    # ml_publish only runs when asked for: gold_publish already writes the ML tables.
+    ordered = stages or [s for s in available if s not in _OPT_IN_STAGES]
     results: List[StageResult] = []
     windows = _build_windows(start, end, chunk)
     total_steps = len(ordered) * len(windows)
@@ -123,6 +124,9 @@ def run_pipeline(
     return results
 
 
+_OPT_IN_STAGES = {"ml_publish"}
+
+
 def _pipeline_stages() -> Dict[str, Callable]:
     return {
         "fetch_schedules": _stage_fetch_schedules,
@@ -138,6 +142,7 @@ def _pipeline_stages() -> Dict[str, Callable]:
         "silver_player_bios": _stage_silver_player_bios,
         "identity_resolve": _stage_identity,
         "gold_publish": _stage_gold,
+        "ml_publish": _stage_ml,
         "quality_checks": _stage_quality,
         "audit_report": _stage_audit,
         "register_uc": _stage_register_uc,
@@ -333,6 +338,12 @@ def _stage_identity(start, end, cfg, writer, cache, force, leagues=None):
 
 def _stage_gold(start, end, cfg, writer, cache, force, leagues=None):
     _run_step(f"gold_publish:{start}..{end}", lambda: publish_gold(start, end, force=force))
+
+
+def _stage_ml(start, end, cfg, writer, cache, force, leagues=None):
+    # Not in the default stage list: gold_publish already writes the ML
+    # tables. This backfills them alone over gold published without them.
+    _run_step(f"ml_publish:{start}..{end}", lambda: publish_ml(start, end, force=force))
 
 
 def _stage_quality(start, end, cfg, writer, cache, force, leagues=None):

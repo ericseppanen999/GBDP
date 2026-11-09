@@ -34,6 +34,8 @@ data/
 *.json
 *.json.gz
 !configs/*.json
+# The trained breakout model (scripts/train_breakout.py): versioned with the code that scores it.
+!configs/models/*.json
 
 # Local cache/logs
 cache/

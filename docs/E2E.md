@@ -172,8 +172,9 @@ Silver can be overwritten with `--force`.
 8. `fact_standings`
 
 **Derived**
-1. `run_expectancy`
-2. `breakout_candidates`
+1. `run_expectancy`, `run_expectancy_daily`
+2. `breakout_candidates` (baseline model scores)
+3. ML: `feature_batter_daily`, `ml_split`, `ml_breakout_examples` (see README, ML-ready gold)
 
 Retrosheet and Indy data are mapped into the same canonical tables.
 

@@ -405,17 +405,35 @@ ALTER TABLE gbdp.gold_gbdp.run_expectancy_daily ALTER COLUMN `dt` COMMENT 'Game 
 
 ALTER TABLE gbdp.gold_gbdp.run_expectancy_daily ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
 
-COMMENT ON TABLE gbdp.gold_gbdp.breakout_candidates IS 'Not breakout modeling, despite the name: the day\'s top 20 batters by home runs (then hits) in fact_boxscore_batting. No trend, rate or year-over-year analysis. Grain: up to 20 rows per dt. Sources: fact_boxscore_batting. Semantic layer: configs/semantic_layer.yaml.';
+COMMENT ON TABLE gbdp.gold_gbdp.breakout_candidates IS 'The baseline breakout model\'s top batters per league on each dt: the probability that a batter\'s wOBA over the next horizon_days days beats his baseline-window wOBA by the configured margin (the label of ml_breakout_examples), from a logistic regression trained by scripts/train_breakout.py (artifact and settings in configs/ml.yaml). Uses only data through dt. This table used to hold the day\'s top 20 batters by home runs; hr, h and ab keep that meaning (the day\'s totals), now from plate appearances. Grain: up to model.top_n_per_league (25) rows per league per dt. Sources: ml_breakout_examples. Caveat: Empty for a dt when no usable model artifact exists (none trained, or trained on another feature definition); the reason is in the gold_publish log. A dt is never scored with a stand-in. Caveat: The committed model was trained on the 2025 season (MLB Statcast, NPB SPAIA); see model_version and the README for its evaluation. Probabilities are only as calibrated as that season is like this one. Caveat: Partition...';
 
 ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `player_id` COMMENT 'FK to dim_player.';
 
-ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `hr` COMMENT 'Home runs that day.';
+ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `league_code` COMMENT 'MLB or NPB.';
 
-ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `h` COMMENT 'Hits that day.';
+ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `season_year` COMMENT 'The dt\'s calendar year.';
 
-ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `ab` COMMENT 'At-bats that day.';
+ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `hr` COMMENT 'Home runs on dt (from plate appearances; 0 if he didn\'t bat).';
 
-ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `dt` COMMENT 'Game date.';
+ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `h` COMMENT 'Hits on dt.';
+
+ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `ab` COMMENT 'At-bats on dt.';
+
+ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `score` COMMENT 'Breakout probability over the next horizon_days days, 0-1, rounded to 6 places.';
+
+ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `rank` COMMENT '1 = highest score in the league on dt (ties broken by player_id).';
+
+ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `model_version` COMMENT 'The artifact that scored the row (breakout_logreg-<hash of its coefficients>).';
+
+ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `horizon_days` COMMENT 'Days after dt the prediction covers (configs/ml.yaml breakout.label_days).';
+
+ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `f_base_pa` COMMENT 'PAs in the baseline window ending dt (see ml_breakout_examples).';
+
+ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `f_base_woba` COMMENT 'wOBA in the baseline window ending dt.';
+
+ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `f_recent_woba` COMMENT 'wOBA in the recent window ending dt (null without a wOBA PA).';
+
+ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `dt` COMMENT 'As-of date (scored with data through this date).';
 
 ALTER TABLE gbdp.gold_gbdp.breakout_candidates ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
 
@@ -440,6 +458,128 @@ ALTER TABLE gbdp.gold_gbdp.feature_player_rolling_30d ALTER COLUMN `window_days`
 ALTER TABLE gbdp.gold_gbdp.feature_player_rolling_30d ALTER COLUMN `dt` COMMENT 'Last day of the window.';
 
 ALTER TABLE gbdp.gold_gbdp.feature_player_rolling_30d ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
+
+COMMENT ON TABLE gbdp.gold_gbdp.feature_batter_daily IS 'Each batter\'s counting stats on dt from fact_plate_appearance (the sources in configs/ml.yaml: MLB Statcast and NPB SPAIA). The daily building block of the breakout windows; summing a dt range of it gives that range\'s line. Grain: one row per (player_id, league_code) per dt, for batters with at least one PA. Sources: fact_plate_appearance. Caveat: wOBA terms use one fixed set of weights (configs/ml.yaml) for every league and season, and count intentional walks as walks (the feeds don\'t separate them). Semantic layer: configs/semantic_layer.yaml.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `player_id` COMMENT 'FK to dim_player (fact_plate_appearance.batter_id).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `league_code` COMMENT 'MLB or NPB.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `source` COMMENT 'mlb_statcast or npb_spaia.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `pa` COMMENT 'Plate appearances (TRUNCATED rows excluded).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `ab` COMMENT 'At-bats (vocabularies.event_type.groups.at_bat).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `h` COMMENT 'Hits.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `doubles` COMMENT 'Doubles.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `triples` COMMENT 'Triples.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `hr` COMMENT 'Home runs.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `bb` COMMENT 'Walks.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `hbp` COMMENT 'Hit by pitch.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `so` COMMENT 'Strikeouts.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `sf` COMMENT 'Sacrifice flies (legacy SAC counted here too).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `sh` COMMENT 'Sacrifice bunts.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `woba_den` COMMENT 'wOBA denominator, AB + BB + HBP + SF.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `woba_value` COMMENT 'wOBA numerator, the sum of the weights of his BB, HBP, 1B, 2B, 3B and HR.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `dt` COMMENT 'Game date.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
+
+COMMENT ON TABLE gbdp.gold_gbdp.ml_split IS 'The train / validation / test split of each published dt, by date range (configs/ml.yaml splits), with the cut dates that produced it. Join on dt to split any dt-partitioned table without copying it; v_re_training does this for run expectancy. One row for every dt gold has published, with or without games, so it is also the record of which dates exist: a breakout label is filled only when every day of its window is here. Grain: one row per dt. Sources: configs/ml.yaml. Caveat: Written with the config of the publish that wrote it. If the cut dates move, split_version changes; re-publish to restamp older dates. Semantic layer: configs/semantic_layer.yaml.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_split ALTER COLUMN `split` COMMENT 'train (dt <= train_end), validation (dt <= validation_end) or test. For run-expectancy rows, which look at nothing past their own inning.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_split ALTER COLUMN `breakout_split` COMMENT 'As split, except embargo for as-of dates within embargo_days before a cut, whose breakout label window would reach into the next split.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_split ALTER COLUMN `train_end` COMMENT 'Last train date.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_split ALTER COLUMN `validation_end` COMMENT 'Last validation date.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_split ALTER COLUMN `embargo_days` COMMENT 'Days before each cut that are embargo for breakout rows (= label_days).';
+
+ALTER TABLE gbdp.gold_gbdp.ml_split ALTER COLUMN `split_version` COMMENT 'splits.name plus a hash of the split settings.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_split ALTER COLUMN `dt` COMMENT 'The date.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_split ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
+
+COMMENT ON TABLE gbdp.gold_gbdp.ml_breakout_examples IS 'Breakout prediction training data: one row per batter per as-of dt with features from the days up to and including dt and a label from the days strictly after it. A breakout is wOBA over the label_days days after dt at least margin_woba (0.050) above wOBA over the baseline_days days ending dt, with at least min_label_pa PAs after (configs/ml.yaml: 30-day baseline, 7-day recent window, 14-day label window, 50 and 30 PAs). Train on label_status = labeled rows, split by split. Grain: one row per (player_id, league_code) per as-of dt, for batters with at least min_baseline_pa PAs in the baseline window. Sources: feature_batter_daily, ml_split. Caveat: No leakage: features read feature_batter_daily for dt - baseline_days + 1 .. dt only, labels for dt + 1 .. dt + label_days only (tests/test_ml_breakout.py). Caveat: The label is null (pending) until every day of its window is in ml_split, i.e. published; gold fills it while publishing the window\'s last day. The newest label_days as-of dates are always pending. Ca...';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `player_id` COMMENT 'FK to dim_player.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `league_code` COMMENT 'MLB or NPB.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `season_year` COMMENT 'The as-of dt\'s calendar year.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_base_pa` COMMENT 'PAs in the baseline window (the baseline_days days ending dt).';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_base_woba` COMMENT 'wOBA in the baseline window (feature_batter_daily woba_value / woba_den).';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_base_k_rate` COMMENT 'Strikeouts per PA in the baseline window.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_base_bb_rate` COMMENT 'Walks per PA in the baseline window.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_base_iso` COMMENT 'Isolated power in the baseline window, (2B + 2*3B + 3*HR) / AB.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_base_babip` COMMENT 'BABIP in the baseline window, (H - HR) / (AB - SO - HR + SF); null with no balls in play.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_base_days` COMMENT 'Days with a PA in the baseline window.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_recent_pa` COMMENT 'PAs in the recent window (the recent_days days ending dt).';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_recent_woba` COMMENT 'wOBA in the recent window; null without a wOBA PA.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_league_base_woba` COMMENT 'wOBA of every PA of his league in the baseline window.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_base_woba_vs_league` COMMENT 'f_base_woba - f_league_base_woba.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_day_pa` COMMENT 'PAs on dt.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_day_ab` COMMENT 'At-bats on dt.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_day_h` COMMENT 'Hits on dt.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `f_day_hr` COMMENT 'Home runs on dt.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `baseline_days` COMMENT 'Baseline window length the row was built with.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `recent_days` COMMENT 'Recent window length.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `label_days` COMMENT 'Label window length.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `label_status` COMMENT 'labeled, insufficient_pa (window complete, fewer than min_label_pa PAs; label_breakout null) or pending (window not yet fully published; every label column null).';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `label_window_end` COMMENT 'Last day of the label window, dt + label_days.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `label_pa` COMMENT 'PAs in the label window (null while pending).';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `label_woba` COMMENT 'wOBA in the label window (null while pending or with no wOBA PA).';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `label_woba_delta` COMMENT 'label_woba - f_base_woba.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `label_breakout` COMMENT 'True when label_woba_delta >= margin_woba; null unless label_status = labeled.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `split` COMMENT 'train, validation, test or embargo (ml_split.breakout_split of the as-of dt).';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `split_version` COMMENT 'The split settings the row was stamped with (ml_split.split_version).';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `definition_version` COMMENT 'Hash of configs/ml.yaml\'s breakout settings; rows from another definition are not comparable.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `dt` COMMENT 'As-of date.';
+
+ALTER TABLE gbdp.gold_gbdp.ml_breakout_examples ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
 
 CREATE OR REPLACE VIEW gbdp.gold_gbdp.v_player_current
 COMMENT 'Current version of every player in the latest dim_player snapshot (the newest dt only; a player missing from it is not current, whatever older snapshots say). One row per player_id.'
@@ -625,6 +765,24 @@ SELECT
   CAST(r.dt AS DATE) AS game_date,
   CASE r.base_state WHEN 0 THEN 'Bases empty' WHEN 1 THEN '1st' WHEN 2 THEN '2nd' WHEN 3 THEN '1st & 2nd' WHEN 4 THEN '3rd' WHEN 5 THEN '1st & 3rd' WHEN 6 THEN '2nd & 3rd' WHEN 7 THEN 'Loaded' ELSE CAST(r.base_state AS STRING) END AS runners
 FROM gbdp.gold_gbdp.run_expectancy_daily r;
+
+CREATE OR REPLACE VIEW gbdp.gold_gbdp.v_re_training
+COMMENT 'Run-expectancy training rows: every plate appearance with a known base state, outs (0-2) and runs_to_end_of_inning (the target), with its league and its date\'s train / validation / test split from ml_split. The same rows run_expectancy_daily counts; no data is copied.'
+AS
+SELECT
+  f.pa_id, f.game_id, f.dt,
+  CAST(f.dt AS DATE) AS game_date,
+  YEAR(CAST(f.dt AS DATE)) AS season_year,
+  CASE f.source WHEN 'mlb_statsapi' THEN 'MLB' WHEN 'mlb_statcast' THEN 'MLB' WHEN 'retrosheet_local' THEN 'MLB' WHEN 'npb_spaia' THEN 'NPB' WHEN 'kbo_api' THEN 'KBO' WHEN 'kbo_local' THEN 'KBO' WHEN 'lmb_local' THEN 'LMB' WHEN 'indy_local' THEN 'INDY' END AS league_code,
+  f.source AS data_source,
+  f.inning, f.is_top_inning, f.event_type,
+  f.base_state_before, f.outs_before, f.runs_to_end_of_inning,
+  s.split, s.split_version
+FROM gbdp.gold_gbdp.fact_plate_appearance f
+JOIN gbdp.gold_gbdp.ml_split s ON s.dt = f.dt
+WHERE f.runs_to_end_of_inning IS NOT NULL
+  AND f.base_state_before IS NOT NULL
+  AND f.outs_before BETWEEN 0 AND 2;
 
 CREATE OR REPLACE VIEW gbdp.gold_gbdp.mv_batting
 WITH METRICS

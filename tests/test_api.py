@@ -124,10 +124,20 @@ def test_query_token_is_enforced_when_set(client, monkeypatch):
     assert client.post("/query", json=body, headers={"Authorization": "Bearer s3cret"}).status_code == 200
 
 
-def test_breakout_candidates_selects_its_columns_by_name(client, tmp_path):
-    # Gold may add columns (ML tables); the endpoint keeps its documented shape.
-    row = {"player_id": "p1", "hr": 2, "h": 3, "ab": 4, "ingested_at_utc": "2025-04-02T00:00:00Z", "new_ml_score": 0.9}
-    _write(tmp_path / "gold", "breakout_candidates", "2025-04-02", [row])
+def test_breakout_candidates_serve_the_model_ranked_and_filtered(client, tmp_path):
+    # Columns by name: an extra gold column stays out; league/season filter;
+    # rows come back ranked within league.
+    def row(pid, league, rank, score):
+        return {"player_id": pid, "league_code": league, "season_year": 2025, "rank": rank, "score": score,
+                "model_version": "breakout_logreg-x", "horizon_days": 14, "f_base_pa": 80, "f_base_woba": 0.25,
+                "f_recent_woba": 0.2, "hr": 0, "h": 1, "ab": 4, "ingested_at_utc": "2025-04-02T00:00:00Z",
+                "extra_gold_column": 1}
+    _write(tmp_path / "gold", "breakout_candidates", "2025-04-02",
+           [row("p2", "MLB", 2, 0.6), row("n1", "NPB", 1, 0.7), row("p1", "MLB", 1, 0.8)])
     out = client.get("/breakout-candidates").json()
-    assert out == [{"player_id": "p1", "hr": 2, "h": 3, "ab": 4, "dt": "2025-04-02",
-                    "ingested_at_utc": "2025-04-02T00:00:00Z"}]
+    assert [(r["league_code"], r["rank"], r["player_id"]) for r in out] == [("MLB", 1, "p1"), ("MLB", 2, "p2"), ("NPB", 1, "n1")]
+    from gbdp.serve import api
+
+    assert set(out[0]) == set(api.BREAKOUT_COLUMNS) and out[0]["dt"] == "2025-04-02"
+    assert [r["player_id"] for r in client.get("/breakout-candidates?league=npb").json()] == ["n1"]
+    assert client.get("/breakout-candidates?season=2024").json() == []

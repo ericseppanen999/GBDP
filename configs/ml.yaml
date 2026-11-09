@@ -1,0 +1,69 @@
+# ML-ready gold outputs: the breakout dataset, the time-based splits, and the
+# baseline model that scores breakout_candidates.
+#
+# Read by src/gbdp/ml/config.py (gold/publish.py's ML writers and
+# scripts/train_breakout.py). GBDP_ML_CONFIG points at another file (tests do).
+#
+# Changing `breakout` changes what the features and labels mean: its hash is
+# written to every row (definition_version), and a model trained on another
+# definition is refused when scoring. Changing `splits` changes split_version.
+# Either way, re-publish the ML tables (gold_publish over the season) and
+# retrain.
+
+breakout:
+  # Plate-appearance sources the dataset uses (fact_plate_appearance.source).
+  # Statcast for MLB, SPAIA play-by-play for NPB. Retrosheet is historical and
+  # has its own player IDs, so it stays out unless added here.
+  sources: [mlb_statcast, npb_spaia]
+  # Feature windows, in calendar days ending on (and including) the as-of dt.
+  baseline_days: 30
+  recent_days: 7
+  # Label window: the label_days calendar days strictly after the as-of dt.
+  # Must be shorter than baseline_days (gold refreshes later dates assuming so).
+  label_days: 14
+  # A row exists for a player on an as-of dt only with this many PAs in the
+  # baseline window.
+  min_baseline_pa: 50
+  # The label is null (label_status = insufficient_pa) below this many PAs in
+  # the label window: too few to say anything, and not a "no".
+  min_label_pa: 30
+  # Breakout: label-window wOBA >= baseline wOBA + this.
+  margin_woba: 0.050
+  # wOBA linear weights (FanGraphs' 2024 MLB constants, rounded). One fixed set
+  # for every league and season: the label compares a player with himself, so
+  # the scale cancels; league context is a feature instead.
+  woba_weights:
+    BB: 0.69
+    HBP: 0.72
+    1B: 0.88
+    2B: 1.25
+    3B: 1.58
+    HR: 2.03
+
+splits:
+  # Time-based, by as-of dt: train <= train_end < validation <= validation_end
+  # < test. Breakout rows whose label window crosses a cut (as-of within
+  # label_days before it) are "embargo", in no split, so no training label
+  # overlaps a validation or test date. Run-expectancy rows (one PA, no look
+  # ahead) use the date split without an embargo.
+  #
+  # The committed model was trained on the 2025 season (the data that was
+  # available end to end), so 2026 is entirely out-of-time test data. Move
+  # the cuts and retrain once a 2026 season is in gold.
+  name: v1
+  train_end: "2025-07-15"
+  validation_end: "2025-08-15"
+
+model:
+  # Written by scripts/train_breakout.py, read by gold's breakout_candidates.
+  # No file (or a file trained on another definition) -> breakout_candidates
+  # is empty for the date, with the reason logged.
+  artifact: configs/models/breakout_logreg.json
+  # Rows written to breakout_candidates per league per dt, best score first.
+  top_n_per_league: 25
+  # Training refuses to write a model with fewer labeled rows than this in
+  # train, or fewer positives in train or validation.
+  min_train_rows: 2000
+  min_positives: 50
+  # L2 strengths tried; the one with the best validation log-loss is kept.
+  l2_grid: [0.1, 1.0, 10.0, 100.0]

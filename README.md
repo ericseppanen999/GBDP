@@ -63,8 +63,45 @@ Each day (`dt`) flows through 16 stages: `fetch_*` → `silver_normalize` → `i
 | `fact_roster`, `fact_transaction`, `fact_standings` | team × player × day; transaction; team × day |
 | `fact_boxscore_batting`, `fact_boxscore_pitching` | player × game |
 | `run_expectancy` | league × season × base state × outs, season to date |
-| `feature_player_rolling_30d`, `breakout_candidates` | player × day |
+| `feature_player_rolling_30d` | player × day |
+| `feature_batter_daily`, `ml_breakout_examples`, `ml_split` | ML: batter × day stats; batter × as-of day features + label; day → train/validation/test |
+| `breakout_candidates` | league × day: top batters by the breakout model's score |
 | `audit_quality`, `audit_stage_runs`, `audit_pipeline_runs` | check / stage / run results |
+
+## ML-ready gold
+
+Gold also builds training data for two models, with time-based splits, and scores a baseline breakout model every day. Settings are in [`configs/ml.yaml`](configs/ml.yaml), code in `src/gbdp/ml/`, and every table and column is described in the semantic layer.
+
+| Table / view | What it is |
+|---|---|
+| `feature_batter_daily` | each batter's counting stats per day (PA, AB, H, 2B, 3B, HR, BB, HBP, SO, SF, SH, wOBA numerator/denominator) from `fact_plate_appearance`: MLB Statcast and NPB SPAIA |
+| `ml_breakout_examples` | one row per batter per as-of date: `f_*` features, `label_*` label, `split` |
+| `ml_split` | one row per published date: `split` (train / validation / test), `breakout_split` (the same plus `embargo`), the cut dates and `split_version` |
+| `v_re_training` (view) | run-expectancy training rows: every PA with `base_state_before`, `outs_before`, target `runs_to_end_of_inning`, and its date's `split`. No data copied: `fact_plate_appearance` joined to `ml_split` |
+| `breakout_candidates` | the model's top 25 batters per league per day: `score`, `rank`, `model_version` (plus the old `player_id`, `hr`, `h`, `ab`) |
+
+**Breakout label.** As of date *d*, a batter breaks out when his wOBA over the 14 days after *d* is at least .050 above his wOBA over the 30 days ending *d*. He needs at least 50 PAs in those 30 days to get a row, and at least 30 PAs in the 14 days for a label (`label_status = insufficient_pa` otherwise). wOBA uses one fixed set of linear weights, so league scoring levels cancel and league context is a feature instead. Features read only days up to and including *d*; the label reads only days *d*+1 to *d*+14. Gold fills a label while publishing the last day of its window, and only once every day of the window is in `ml_split` (i.e. published). Until then it is null (`pending`), never partial. `tests/test_ml_breakout.py` shows there is no leakage by changing the data on each side of *d* and checking which columns move.
+
+**Splits.** By as-of date: train ≤ `train_end` < validation ≤ `validation_end` < test. A breakout row whose 14-day label window crosses a cut is `embargo` and belongs to no split, so no training label overlaps a validation or test date. Splits are by date, not by player: the model is used to score the same players on later dates, and holding players out would put future dates in train. Rows of one player on adjacent days share most of their windows. The embargo keeps that overlap from crossing splits, and evaluation also reports a non-overlapping subsample (one as-of date every 14 days). Run expectancy uses the date split without an embargo, since a PA's target ends with its inning.
+
+**Baseline model.** An L2 logistic regression on nine standardized inputs: wOBA vs league, recent-minus-baseline wOBA, K%, BB%, ISO, BABIP, log PA, recent playing time and NPB. It is fit by Newton's method with no dependencies and is deterministic: the same gold gives the same artifact byte for byte. `scripts/train_breakout.py` trains it, choosing L2 on validation log-loss, and writes [`configs/models/breakout_logreg.json`](configs/models/breakout_logreg.json) (coefficients, scaling, data sizes, metrics). Gold's `breakout_candidates` scores with it. When the artifact is missing, or was trained on another feature definition, the table stays empty for that date and the log says why.
+
+Trained on the 2025 season run locally (Statcast and SPAIA, 2025-03-27 to 10-05; cuts 07-15 and 08-15): 64,999 rows, 43,642 of them labeled. Train has 21,990 rows (457 players, as-of 04-06 to 07-01), validation 4,665, test 9,914 (as-of 08-16 to 09-21), and 7,073 are embargoed. About 27% of rows are breakouts.
+
+| | Validation AUC | Validation log-loss | Test AUC | Test log-loss | Test AUC, non-overlapping (871 rows) |
+|---|---:|---:|---:|---:|---:|
+| Logistic regression | 0.761 | 0.499 | 0.754 | 0.502 | 0.761 |
+| Naive (train base rate) | 0.500 | 0.592 | 0.500 | 0.585 | 0.500 |
+| Heuristic: wOBA below league | 0.766 | | 0.740 | | 0.745 |
+| Old placeholder: home runs that day | 0.486 | | 0.491 | | 0.494 |
+
+Read it honestly: most of the signal is regression to the mean. The single biggest coefficient is on wOBA vs league (negative), and that one feature alone gets most of the AUC. A two-week "breakout" is largely a slumping hitter returning to his level. The old top-HR list ranked no better than chance. The committed model has seen only 2025, so all of 2026 is out-of-time test data. Once a 2026 season is in gold, move the cuts and retrain:
+
+```bash
+python scripts/train_breakout.py --gold-root ./data/gold --dry-run   # evaluate
+python scripts/train_breakout.py --gold-root ./data/gold             # write the artifact
+python -m gbdp.cli run --start ... --end ... --stages ml_publish     # rescore: the ML tables only, over published gold
+```
 
 ## Design decisions worth knowing
 
@@ -214,7 +251,7 @@ All three tools only read, so they're safe to run while jobs are running.
 pytest
 ```
 
-The suite has 326 tests (4 more need a local Spark). Most are regression tests named after real production incidents, such as rosters duplicated ~110×, a type clash that blocked publishing, IDs that changed daily, Savant listing the same pitch twice, and two KBO players with the same name merging into one. Each pins the fix so the bug can't come back.
+The suite has 408 tests (4 more need a local Spark). Most are regression tests named after real production incidents, such as rosters duplicated ~110×, a type clash that blocked publishing, IDs that changed daily, Savant listing the same pitch twice, and two KBO players with the same name merging into one. Each pins the fix so the bug can't come back.
 
 ## Known limits
 
@@ -237,8 +274,9 @@ src/gbdp/
   pipeline/     stage runner, windows, retries
   serve/        FastAPI app and the gold query layer
   semantic/     semantic layer: YAML model, SQL compiler, Unity Catalog DDL
-configs/        sources and leagues
-scripts/        reconcile_day.py, reconcile_season.py, verify_lakehouse.py, build_dashboard.py, build_semantic_layer.py
+  ml/           breakout features/labels, splits, the baseline model
+configs/        sources, leagues, ML settings (ml.yaml) and the model artifact
+scripts/        reconcile_day.py, reconcile_season.py, verify_lakehouse.py, build_dashboard.py, build_semantic_layer.py, train_breakout.py, smoke_serve_cloud.py
 docs/           operations runbook, end-to-end walkthrough, UC SQL
 TRD.md          the original technical requirements
 ```

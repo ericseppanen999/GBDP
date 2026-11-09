@@ -68,6 +68,23 @@ _KNOWN_FIELD_TYPES: Dict[str, str] = {
     "height_cm": "double", "weight_kg": "double",
     # fact_standings
     "w": "long", "l": "long", "t": "long", "pct": "string", "gb": "string",
+    # feature_batter_daily (ab, h, hr, bb, so above)
+    "pa": "long", "doubles": "long", "triples": "long", "hbp": "long", "sf": "long", "sh": "long",
+    "woba_den": "long", "woba_value": "double",
+    # ml_breakout_examples: labels are all null on most dates (pending), and
+    # an all-null batch would otherwise infer STRING.
+    "f_base_pa": "long", "f_base_woba": "double", "f_base_k_rate": "double", "f_base_bb_rate": "double",
+    "f_base_iso": "double", "f_base_babip": "double", "f_base_days": "long", "f_recent_pa": "long",
+    "f_recent_woba": "double", "f_league_base_woba": "double", "f_base_woba_vs_league": "double",
+    "f_day_pa": "long", "f_day_ab": "long", "f_day_h": "long", "f_day_hr": "long",
+    "baseline_days": "long", "recent_days": "long", "label_days": "long",
+    "label_status": "string", "label_window_end": "string", "label_pa": "long", "label_woba": "double",
+    "label_woba_delta": "double", "label_breakout": "boolean",
+    "split": "string", "split_version": "string", "definition_version": "string",
+    # ml_split
+    "breakout_split": "string", "train_end": "string", "validation_end": "string", "embargo_days": "long",
+    # breakout_candidates
+    "score": "double", "rank": "long", "model_version": "string", "horizon_days": "long",
 }
 
 
@@ -76,6 +93,8 @@ def _coerce_known_type(value: Any, type_name: str) -> Any:
         return None
     if type_name == "string":
         return str(value)
+    if type_name == "boolean":
+        return bool(value)
     try:
         number = float(value)
         return int(number) if type_name == "long" else number
@@ -271,6 +290,7 @@ def publish_gold(start: str, end: str, root: Path | None = None, force: bool = F
         logger.info("gold_publish dt=%s done (%.1fs)", d.isoformat(), time.monotonic() - t0)
     if days:
         outputs.extend(_refresh_run_expectancy_after(root, days[-1], force))
+        outputs.extend(_refresh_ml_after(root, days[-1], force))
     return outputs
 
 
@@ -301,6 +321,36 @@ def _refresh_run_expectancy_after(root: Path, last: date, force: bool) -> List[P
     return [_write_run_expectancy_from_daily(root, d, force) for d in later]
 
 
+def _ml_steps(root: Path, dt: date, force: bool) -> List[tuple]:
+    # Daily stats, then the split (also the published-dates record the labels
+    # check), then examples, then the scores that read them. They read only
+    # fact_plate_appearance, so ml_publish can run them alone over gold that
+    # is already published.
+    return [
+        ("feature_batter_daily", lambda: _write_feature_batter_daily(root, dt, force)),
+        ("ml_split", lambda: _write_ml_split(root, dt, force)),
+        ("ml_breakout_examples", lambda: _write_ml_breakout_examples(root, dt, force)),
+        ("breakout_candidates", lambda: _write_breakout_candidates(root, dt, force)),
+    ]
+
+
+def publish_ml(start: str, end: str, root: Path | None = None, force: bool = False) -> List[Path]:
+    """The ML tables alone, in date order, over already-published gold: a
+    backfill of the ML outputs without re-publishing every gold table."""
+    root = root or gold_root()
+    outputs: List[Path] = []
+    days = list(daterange(parse_date(start), parse_date(end)))
+    for i, d in enumerate(days, 1):
+        t0 = time.monotonic()
+        logger.info("ml_publish dt=%s (%d/%d)", d.isoformat(), i, len(days))
+        for name, fn in _ml_steps(root, d, force):
+            outputs.append(fn())
+        logger.info("ml_publish dt=%s done (%.1fs)", d.isoformat(), time.monotonic() - t0)
+    if days:
+        outputs.extend(_refresh_ml_after(root, days[-1], force))
+    return outputs
+
+
 def _publish_for_date(root: Path, dt: date, force: bool) -> List[Path]:
     bridge = _read_gold_bridge(root, dt)
 
@@ -318,7 +368,7 @@ def _publish_for_date(root: Path, dt: date, force: bool) -> List[Path]:
         ("fact_boxscore_batting", lambda: _write_fact_boxscore_batting(root, dt, bridge, force)),
         ("fact_boxscore_pitching", lambda: _write_fact_boxscore_pitching(root, dt, bridge, force)),
         ("run_expectancy", lambda: _write_run_expectancy(root, dt, force)),
-        ("breakout_candidates", lambda: _write_breakout_candidates(root, dt, force)),
+        *_ml_steps(root, dt, force),
         ("feature_player_rolling_30d", lambda: _write_feature_player_rolling_30d(root, dt, force)),
         ("fact_contract", lambda: _write_fact_contract(root, dt, force)),
     ]
@@ -431,10 +481,11 @@ def _read_silver_raw(root: Path, source: str, entity: str, dt: date) -> List[Dic
     raise ValueError(f"Unsupported storage format: {fmt}")
 
 
-def _read_gold_snapshot(root: Path, table: str, dt: date) -> List[Dict[str, Any]]:
+def _read_gold_snapshot(root: Path, table: str, dt: date, columns: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """
     Parquet mode: reads root/<table>/dt=YYYY-MM-DD folder.
-    Delta mode: reads ONE delta table at root/<table> and filters dt.
+    Delta mode: reads ONE delta table at root/<table> and filters dt; with
+    `columns`, only those (rows may still carry more in parquet mode).
     """
     dt_str = dt.isoformat()
     fmt = storage_format()
@@ -452,6 +503,8 @@ def _read_gold_snapshot(root: Path, table: str, dt: date) -> List[Dict[str, Any]
         from pyspark.sql import SparkSession
         spark = SparkSession.builder.getOrCreate()
         df = spark.read.format("delta").load(spark_path(base)).where(f"dt = '{dt_str}'")
+        if columns:
+            df = df.select(*columns)
         return [row.asDict() for row in df.collect()]
 
     raise ValueError(f"Unsupported storage format: {fmt}")
@@ -490,9 +543,7 @@ def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any
         ensure_dir(out_dir)
         if path_exists(out_path) and not force:
             return out_path
-        import pyarrow as pa
-        table_data = pa.Table.from_pylist(rows)
-        write_parquet_table(table_data, out_path, force=True)
+        write_parquet_table(_arrow_table(rows), out_path, force=True)
         return out_path
 
     if fmt == "delta":
@@ -506,6 +557,23 @@ def _write_gold_table(root: Path, table: str, dt: date, rows: List[Dict[str, Any
         return table_root_dir
 
     raise ValueError(f"Unsupported storage format: {fmt}")
+
+
+_ARROW_TYPES = {"string": "string", "long": "int64", "double": "float64", "boolean": "bool"}
+
+
+def _arrow_table(rows: List[Dict[str, Any]]):
+    """Rows as an Arrow table. A pinned field that is null in every row gets
+    its pinned type rather than Arrow's null type, so a partition where it
+    happens to be all null (pending labels) unions cleanly with the rest."""
+    import pyarrow as pa
+
+    table = pa.Table.from_pylist(rows)
+    for i, field in enumerate(table.schema):
+        if pa.types.is_null(field.type) and field.name in _KNOWN_FIELD_TYPES:
+            target = pa.type_for_alias(_ARROW_TYPES[_KNOWN_FIELD_TYPES[field.name]])
+            table = table.set_column(i, pa.field(field.name, target), table.column(i).cast(target))
+    return table
 
 
 def _delete_delta_partition(table_root_dir: Path, dt_str: str) -> None:
@@ -1462,54 +1530,179 @@ def _write_run_expectancy_from_daily(root: Path, dt: date, force: bool) -> Path:
     return _write_gold_table(root, "run_expectancy", dt, out_rows, force)
 
 
-def _write_breakout_candidates(root: Path, dt: date, force: bool) -> Path:
-    # Simple heuristic: top 20 HR on dt from boxscore_batting
-    fmt = storage_format()
-    dt_str = dt.isoformat()
+# -----------------------------
+# ML-ready gold: breakout dataset, splits, baseline model scores
+# (definitions in gbdp/ml/, settings in configs/ml.yaml)
+# -----------------------------
 
-    if fmt == "parquet":
-        path = root / "fact_boxscore_batting" / f"dt={dt_str}"
-        if not path_exists(path):
-            return _write_gold_table(root, "breakout_candidates", dt, [], force)
+def _write_feature_batter_daily(root: Path, dt: date, force: bool) -> Path:
+    """Each batter's counting stats on dt, from fact_plate_appearance.
+
+    The carried state for the breakout windows: later steps sum ranges of
+    this small table instead of re-reading plate appearances.
+    """
+    from gbdp.ml.breakout import batter_daily_rows
+    from gbdp.ml.config import ml_config
+
+    pas = _read_gold_snapshot(root, "fact_plate_appearance", dt,
+                              columns=["batter_id", "event_type", "source"])
+    rows = batter_daily_rows(pas, dt, ml_config().breakout, _PA_SOURCE_LEAGUE)
+    return _write_gold_table(root, "feature_batter_daily", dt, rows, force)
+
+
+def _write_ml_split(root: Path, dt: date, force: bool) -> Path:
+    """dt's train/validation/test split and the cut dates that made it.
+
+    Written for every published dt, games or not, so it is also the record
+    of which dates gold has published: a breakout label is filled only when
+    every day of its window is here.
+    """
+    from gbdp.ml.config import breakout_split, date_split, ml_config
+
+    cfg = ml_config()
+    s = cfg.splits
+    row = {"split": date_split(dt, s), "breakout_split": breakout_split(dt, s),
+           "train_end": s.train_end.isoformat(), "validation_end": s.validation_end.isoformat(),
+           "embargo_days": s.embargo_days, "split_version": cfg.split_version}
+    return _write_gold_table(root, "ml_split", dt, [row], force)
+
+
+def _window_sums(root: Path, windows: Dict[str, tuple]) -> List[Dict[str, Any]]:
+    """Run breakout.window_sum_sql over feature_batter_daily for these windows."""
+    from gbdp.ml.breakout import window_sum_sql
+
+    lo = min(a for a, _ in windows.values())
+    hi = max(b for _, b in windows.values())
+    base = root / "feature_batter_daily"
+    if storage_format() == "parquet":
+        files = [f"{base / f'dt={d.isoformat()}'}/*.parquet" for d in daterange(lo, hi)
+                 if path_exists(base / f"dt={d.isoformat()}" / "part-00001.parquet")]
+        if not files:
+            return []
         import duckdb
+
         con = duckdb.connect()
-        con.execute(f"CREATE OR REPLACE VIEW b AS SELECT * FROM read_parquet('{path}/*.parquet')")
-        rows = con.execute(
-            """
-            SELECT player_id, SUM(hr) as hr, SUM(h) as h, SUM(ab) as ab
-            FROM b
-            WHERE player_id IS NOT NULL
-            GROUP BY 1
-            ORDER BY hr DESC, h DESC
-            LIMIT 20
-            """
-        ).fetchall()
+        paths_sql = ", ".join("'" + f.replace("\\", "/") + "'" for f in files)
+        con.execute(f"CREATE OR REPLACE VIEW d AS SELECT * FROM read_parquet([{paths_sql}], "
+                    "union_by_name=true, hive_partitioning=false)")
+        cur = con.execute(window_sum_sql("d", windows))
+        names = [c[0] for c in cur.description]
+        return [dict(zip(names, r)) for r in cur.fetchall()]
+    if not path_exists(base):
+        return []
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
 
-    else:
-        from pyspark.sql import SparkSession
-        from pyspark.sql import functions as F
+    spark = SparkSession.builder.getOrCreate()
+    try:
+        df = spark.read.format("delta").load(spark_path(base))
+    except Exception:
+        return []
+    df.where((F.col("dt") >= lo.isoformat()) & (F.col("dt") <= hi.isoformat())) \
+        .createOrReplaceTempView("gbdp_feature_batter_daily_window")
+    return [r.asDict() for r in spark.sql(window_sum_sql("gbdp_feature_batter_daily_window", windows)).collect()]
 
-        spark = SparkSession.builder.getOrCreate()
-        base = root / "fact_boxscore_batting"
-        if not path_exists(base):
-            return _write_gold_table(root, "breakout_candidates", dt, [], force)
 
-        df = spark.read.format("delta").load(spark_path(base)).where(f"dt = '{dt_str}'")
-        rows = [
-            (r["player_id"], r["hr"], r["h"], r["ab"])
-            for r in df.where("player_id IS NOT NULL")
-            .groupBy("player_id")
-            .agg(F.sum("hr").alias("hr"), F.sum("h").alias("h"), F.sum("ab").alias("ab"))
-            .orderBy(F.col("hr").desc(), F.col("h").desc())
-            .limit(20)
-            .collect()
-        ]
+def _write_ml_breakout_examples(root: Path, dt: date, force: bool) -> Path:
+    """Breakout features and labels: one row per eligible batter per as-of dt.
 
-    out_rows = [
-        {"player_id": r[0], "hr": int(r[1] or 0), "h": int(r[2] or 0), "ab": int(r[3] or 0), "dt": dt_str}
-        for r in rows
-    ]
+    Writes two partitions per step, from one pass over feature_batter_daily:
+    - dt itself: features from the windows ending dt. Its label is filled
+      only if all label_days days after dt are already published (a re-run
+      of an older date); otherwise it is pending.
+    - dt - label_days: its label window ends on dt, so its label is filled
+      now if every day of that window is published.
+    Labels never read past the end of their window, and features never read
+    past their as-of date (tests/test_ml_breakout.py).
+    """
+    from gbdp.ml import breakout as bk
+    from gbdp.ml.config import breakout_split, ml_config
+
+    cfg = ml_config()
+    b = cfg.breakout
+    windows = bk.step_windows(dt, b)
+    sums = _window_sums(root, windows)
+    players = [(r["player_id"], r["league_code"], bk.split_window_sums(r, windows)) for r in sums]
+    as_of_a = dt - timedelta(days=b.label_days)
+    published = set(_gold_dates(root, "ml_split", as_of_a, dt + timedelta(days=b.label_days)))
+
+    def complete(as_of: date) -> bool:
+        start, end = bk.label_window(as_of, b)
+        return all(d in published for d in daterange(start, end))
+
+    out: Path | None = None
+    for prefix, as_of in (("a", as_of_a), ("d", dt)):
+        rows = bk.example_rows(as_of, players, prefix, b, complete(as_of))
+        for r in rows:
+            r["split"] = breakout_split(as_of, cfg.splits)
+            r["split_version"] = cfg.split_version
+            r["definition_version"] = cfg.definition_version
+        # The earlier date is an update (its label is new), so it is written
+        # even without force; the step's own date follows force as usual.
+        if prefix == "a" and not rows and as_of not in published:
+            continue  # before gold's first date: nothing to write or clear
+        out = _write_gold_table(root, "ml_breakout_examples", as_of, rows, force if prefix == "d" else True)
+    return out
+
+
+def _write_breakout_candidates(root: Path, dt: date, force: bool) -> Path:
+    """dt's batters ranked by the baseline model's breakout probability.
+
+    score: P(wOBA over the next label_days days >= baseline wOBA +
+    margin_woba), from the logistic regression in configs/ml.yaml's artifact.
+    No usable artifact means no rows (and the reason logged), never a
+    stand-in score.
+    """
+    from gbdp.ml.config import ml_config
+    from gbdp.ml.model import load_artifact, predict
+
+    cfg = ml_config()
+    examples = _read_gold_snapshot(root, "ml_breakout_examples", dt)
+    if not examples:
+        return _write_gold_table(root, "breakout_candidates", dt, [], force)
+    artifact, why = load_artifact(cfg)
+    if artifact is None:
+        logger.warning("breakout_candidates dt=%s: no rows written: %s", dt.isoformat(), why)
+        return _write_gold_table(root, "breakout_candidates", dt, [], force)
+    by_league: Dict[str, List[Dict[str, Any]]] = {}
+    for e in examples:
+        if e.get("definition_version") != cfg.definition_version:
+            continue  # built under another configs/ml.yaml; re-publish to rescore
+        by_league.setdefault(e["league_code"], []).append(e)
+    out_rows: List[Dict[str, Any]] = []
+    for league in sorted(by_league):
+        scored = sorted(((round(predict(artifact, e), 6), e) for e in by_league[league]),
+                        key=lambda t: (-t[0], t[1]["player_id"]))
+        for rank, (score, e) in enumerate(scored[: cfg.model.top_n_per_league], 1):
+            out_rows.append({
+                "player_id": e["player_id"], "league_code": league, "season_year": e["season_year"],
+                "hr": e["f_day_hr"], "h": e["f_day_h"], "ab": e["f_day_ab"],
+                "score": score, "rank": rank, "model_version": artifact["model_version"],
+                "horizon_days": e["label_days"], "f_base_pa": e["f_base_pa"],
+                "f_base_woba": e["f_base_woba"], "f_recent_woba": e["f_recent_woba"],
+            })
+    if not out_rows:
+        logger.warning("breakout_candidates dt=%s: no rows written: no examples built with definition %s",
+                       dt.isoformat(), cfg.definition_version)
     return _write_gold_table(root, "breakout_candidates", dt, out_rows, force)
+
+
+def _refresh_ml_after(root: Path, last: date, force: bool) -> List[Path]:
+    """Re-publishing dates up to `last` changes the features of the next
+    baseline_days - 1 dates and the labels of as-of dates whose window ends
+    in the next label_days - 1. Redo those dates' examples and scores (cheap:
+    window sums of feature_batter_daily, no PA reads)."""
+    from gbdp.ml.config import ml_config
+
+    b = ml_config().breakout
+    later = _gold_dates(root, "ml_split", last + timedelta(days=1), last + timedelta(days=b.baseline_days - 1))
+    if later:
+        logger.info("ml: refreshing %d later date(s) after %s", len(later), last.isoformat())
+    out: List[Path] = []
+    for d in later:
+        out.append(_write_ml_breakout_examples(root, d, force))
+        out.append(_write_breakout_candidates(root, d, force))
+    return out
 
 
 def _write_feature_player_rolling_30d(root: Path, dt: date, force: bool) -> Path:

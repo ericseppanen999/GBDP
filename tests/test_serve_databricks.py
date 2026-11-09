@@ -293,8 +293,10 @@ def test_run_expectancy_without_season_reads_the_latest(ws, client):
 def test_breakout_candidates_selects_columns_by_name(ws, client):
     ws.responses.append(_ok([("player_id", "STRING"), ("hr", "LONG")], [["p1", "3"]]))
     assert client.get("/breakout-candidates").json() == [{"player_id": "p1", "hr": 3}]
+    from gbdp.serve import api
+
     assert ws.last["statement"].startswith(
-        "SELECT `player_id`, `hr`, `h`, `ab`, `dt`, `ingested_at_utc` FROM `gbdp`.`gold_gbdp`.`breakout_candidates`")
+        "SELECT " + ", ".join(f"`{c}`" for c in api.BREAKOUT_COLUMNS) + " FROM `gbdp`.`gold_gbdp`.`breakout_candidates`")
     assert "SELECT *" not in ws.last["statement"]
 
 

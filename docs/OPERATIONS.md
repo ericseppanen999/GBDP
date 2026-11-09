@@ -117,6 +117,12 @@ Optional league filter:
 --leagues mlb,npb
 ```
 
+ML tables only (`feature_batter_daily`, `ml_split`, `ml_breakout_examples`, `breakout_candidates`), over gold that is already published, e.g. after retraining the model or after a gold rebuild that predates the ML code. `gold_publish` writes them too, so this stage is never in the default list:
+```
+--stages ml_publish
+```
+Run it over the whole range in date order: labels are filled only once every day of their 14-day window is published.
+
 ## 6) Registering UC Tables Manually
 
 If you need to register LOCATION-based tables outside the pipeline (non-serverless):

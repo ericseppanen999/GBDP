@@ -136,13 +136,23 @@ def run_expectancy(league: str | None = None, season: int | None = None, as_of: 
     return query("run_expectancy", dt=_dt(as_of), filters=filters)
 
 
-BREAKOUT_COLUMNS = ("player_id", "hr", "h", "ab", "dt", "ingested_at_utc")
+# The model's output (gold/publish.py _write_breakout_candidates); hr/h/ab are
+# that day's totals, kept from the old heuristic's shape.
+BREAKOUT_COLUMNS = ("player_id", "league_code", "season_year", "rank", "score", "model_version", "horizon_days",
+                    "f_base_pa", "f_base_woba", "f_recent_woba", "hr", "h", "ab", "dt", "ingested_at_utc")
 
 
 @app.get("/breakout-candidates")
 def breakout_candidates(league: str | None = None, season: int | None = None, as_of: Date | None = None):
     # Columns by name: gold may add columns to this table; the endpoint's shape stays.
-    return query("breakout_candidates", dt=_dt(as_of), columns=BREAKOUT_COLUMNS)
+    filters: List[Filter] = []
+    if league:
+        filters.append(("league_code", "eq", league.upper()))
+    if season is not None:
+        filters.append(("season_year", "eq", int(season)))
+    rows = query("breakout_candidates", dt=_dt(as_of), filters=filters, columns=BREAKOUT_COLUMNS)
+    # Ranked within league by the model's score.
+    return sorted(rows, key=lambda r: (str(r.get("league_code") or ""), r.get("rank") if r.get("rank") is not None else 1 << 30))
 
 
 @app.get("/schema")

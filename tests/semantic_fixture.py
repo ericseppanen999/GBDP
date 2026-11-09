@@ -229,6 +229,28 @@ def build_silver(silver: Path) -> None:
          "br1_post": "r1", "br2_post": None, "br3_post": None}])
 
 
+def build_ml_config(tmp: Path) -> Path:
+    """configs/ml.yaml with thresholds a two-day fixture can meet, and a small
+    hand-set model for breakout_candidates to score with (so these tests don't
+    depend on the committed, trained artifact). GBDP_ML_CONFIG must point at
+    tmp/ml.yaml."""
+    import yaml
+
+    from gbdp.ml import breakout, model
+    from gbdp.ml.config import parse
+
+    raw = yaml.safe_load(Path("configs/ml.yaml").read_text(encoding="utf-8"))
+    raw["breakout"].update(min_baseline_pa=1, min_label_pa=1)
+    raw["model"]["artifact"] = str(tmp / "model.json")
+    path = tmp / "ml.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    n = len(breakout.MODEL_INPUTS)
+    art = model.build_artifact(parse(raw), [0.0] * n, [1.0] * n, -1.0, [-1.0] + [0.0] * (n - 1), 1.0,
+                               {"note": "test fixture"}, {})
+    model.write_artifact(tmp / "model.json", art)
+    return path
+
+
 def build_gold(tmp: Path) -> Path:
     """Silver -> identity -> gold for both days. Env vars must point at tmp/silver and tmp/gold."""
     from gbdp.gold.publish import publish_gold
@@ -236,6 +258,7 @@ def build_gold(tmp: Path) -> Path:
 
     silver, gold = tmp / "silver", tmp / "gold"
     gold.mkdir(parents=True, exist_ok=True)
+    build_ml_config(tmp)
     build_silver(silver)
     resolve_identity(DAY1.isoformat(), DAY2.isoformat(), root=gold, force=True)
     publish_gold(DAY1.isoformat(), DAY2.isoformat(), root=gold, force=True)
