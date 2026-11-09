@@ -977,7 +977,18 @@ def _statcast_plate_appearances(pitches: List[Dict[str, Any]], dt: date, bridge:
             event_type = _map_event_type(last.get("events"))
             outs_before = first.get("outs_when_up")
             next_first = ordered[i + 1][0] if i + 1 < len(ordered) else None
-            if next_first is None:
+            half_ends = next_first is None or (next_first.get("inning"), next_first.get("inning_topbot")) != (
+                first.get("inning"), first.get("inning_topbot"))
+            if event_type == "UNKNOWN" and not str(last.get("events") or "").strip() and half_ends and outs_before == 2:
+                # Savant now leaves events blank (not truncated_pa) when the third
+                # out is made on the bases mid-PA: no result, two out, the half
+                # ends. Not a PA in the box score (seen 2026-05-13/14).
+                event_type = "TRUNCATED"
+            if next_first is None and event_type == "TRUNCATED" and outs_before == 2:
+                # Game ends on a base out mid-PA. (A mid-PA walk-off, e.g. a wild
+                # pitch with fewer than two out, falls through below.)
+                outs_after, base_after = 3, 0
+            elif next_first is None:
                 # Last PA of the game. Usually the third out, but a walk-off isn't.
                 outs_after = min(3, (outs_before or 0) + _final_pa_outs(last.get("events"), event_type))
                 base_after = 0 if outs_after == 3 else None

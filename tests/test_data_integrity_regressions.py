@@ -865,3 +865,41 @@ def test_identical_pitches_in_one_at_bat_get_distinct_ids(gold_env):
 
     rows = read_parquet_rows(gold / "fact_pitch" / f"dt={day}")
     assert len({r["pitch_id"] for r in rows}) == 2
+
+
+# --- Savant leaves events blank (not truncated_pa) when the third out is made
+# on the bases mid-PA. 2026-05-13 game 822815 and two 05-14 games counted it as
+# an UNKNOWN PA, one more than MLB's boxscore.
+def test_blank_event_ending_the_half_with_two_out_is_truncated():
+    from gbdp.gold.publish import _statcast_plate_appearances
+
+    rows = _statcast_plate_appearances(
+        [
+            _pitch(1, 1, 5, "Top", 2, on_1b="x"),
+            _pitch(1, 2, 5, "Top", 2, on_1b="x"),  # runner caught stealing: no result
+            _pitch(2, 1, 5, "Bot", 0, "single"),
+            _pitch(3, 1, 9, "Bot", 2, on_1b="x"),  # game ends on a pickoff
+        ],
+        date(2026, 5, 13),
+        {},
+    )
+    cs, single, pickoff = rows
+    assert (cs["event_type"], cs["outs_after"], cs["base_state_after"]) == ("TRUNCATED", 3, 0)
+    assert single["event_type"] == "1B"
+    assert (pickoff["event_type"], pickoff["outs_after"], pickoff["base_state_after"]) == ("TRUNCATED", 3, 0)
+
+
+def test_blank_event_mid_half_or_with_fewer_than_two_out_stays_unknown():
+    from gbdp.gold.publish import _statcast_plate_appearances
+
+    rows = _statcast_plate_appearances(
+        [
+            _pitch(1, 1, 5, "Top", 2),        # blank, but the half goes on: not a base out
+            _pitch(2, 1, 5, "Top", 2, "field_out"),
+            _pitch(3, 1, 9, "Bot", 1, on_1b="x"),  # mid-PA walk-off with one out
+        ],
+        date(2026, 5, 13),
+        {},
+    )
+    assert [r["event_type"] for r in rows] == ["UNKNOWN", "OUT", "UNKNOWN"]
+    assert rows[2]["outs_after"] == 1
