@@ -212,7 +212,7 @@ def _stage_fetch_games(start, end, cfg, writer, cache, force, leagues=None):
     if _allowed(leagues, "npb"):
         npb = NpbSpaiaConnector(writer, cache, cfg["npb_spaia"]["base_url"])
         _run_partitions(npb, npb.list_partitions(start, end, "games"), force, "fetch_games:npb_spaia:games")
-    if "retrosheet_local" in cfg and _allowed(leagues, "mlb"):
+    if "retrosheet_local" in cfg and _allowed_retrosheet(leagues):
         retro = RetrosheetLocalConnector(writer, cache)
         _run_partitions(retro, retro.list_partitions(start, end, "gameinfo"), force, "fetch_games:retrosheet_local:gameinfo")
     if "kbo_local" in cfg and _allowed(leagues, "kbo"):
@@ -232,7 +232,7 @@ def _stage_fetch_pbp(start, end, cfg, writer, cache, force, leagues=None):
     if _allowed(leagues, "npb"):
         npb = NpbSpaiaConnector(writer, cache, cfg["npb_spaia"]["base_url"])
         _run_partitions(npb, npb.list_partitions(start, end, "game_pbp"), force, "fetch_pbp:npb_spaia:game_pbp")
-    if "retrosheet_local" in cfg and _allowed(leagues, "mlb"):
+    if "retrosheet_local" in cfg and _allowed_retrosheet(leagues):
         retro = RetrosheetLocalConnector(writer, cache)
         _run_partitions(retro, retro.list_partitions(start, end, "plays"), force, "fetch_pbp:retrosheet_local:plays")
 
@@ -298,7 +298,7 @@ def _stage_silver(start, end, cfg, writer, cache, force, leagues=None):
             "player_hitting_career",
         ]:
             _run_step(f"silver_normalize:npb:{entity}", lambda entity=entity: normalize_npb(entity, start, end, force=force))
-    if "indy_local" in cfg:
+    if "indy_local" in cfg and _allowed(leagues, "indy"):
         for entity in ["games", "rosters", "boxscore_batting", "boxscore_pitching"]:
             _run_step(f"silver_normalize:indy:{entity}", lambda entity=entity: normalize_indy(entity, start, end, force=force))
     if "kbo_local" in cfg and _allowed(leagues, "kbo"):
@@ -316,7 +316,7 @@ def _stage_silver(start, end, cfg, writer, cache, force, leagues=None):
                 f"silver_normalize:lmb_local:{entity}",
                 lambda entity=entity: normalize_local_boxscore("lmb_local", entity, start, end, force=force),
             )
-    if "retrosheet_local" in cfg:
+    if "retrosheet_local" in cfg and _allowed_retrosheet(leagues):
         for entity in ["allplayers", "gameinfo", "teamstats", "batting", "pitching", "fielding", "plays"]:
             _run_step(f"silver_normalize:retrosheet_local:{entity}", lambda entity=entity: normalize_retrosheet(entity, start, end, force=force))
 
@@ -362,6 +362,12 @@ def _allowed(leagues: Optional[List[str]], league: str) -> bool:
     if not leagues:
         return True
     return league.lower() in {l.lower() for l in leagues}
+
+
+def _allowed_retrosheet(leagues: Optional[List[str]]) -> bool:
+    # Retrosheet is MLB history: it runs with --leagues mlb, or on its own as
+    # "retrosheet" (the name the CLI help lists).
+    return _allowed(leagues, "mlb") or _allowed(leagues, "retrosheet")
 
 
 def _write_stage_audit(root: Path, dt: str, results: List[StageResult], force: bool) -> None:
