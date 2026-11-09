@@ -122,3 +122,12 @@ def test_query_token_is_enforced_when_set(client, monkeypatch):
     assert client.post("/query", json=body).status_code == 401
     assert client.post("/query", json=body, headers={"Authorization": "Bearer nope"}).status_code == 401
     assert client.post("/query", json=body, headers={"Authorization": "Bearer s3cret"}).status_code == 200
+
+
+def test_breakout_candidates_selects_its_columns_by_name(client, tmp_path):
+    # Gold may add columns (ML tables); the endpoint keeps its documented shape.
+    row = {"player_id": "p1", "hr": 2, "h": 3, "ab": 4, "ingested_at_utc": "2025-04-02T00:00:00Z", "new_ml_score": 0.9}
+    _write(tmp_path / "gold", "breakout_candidates", "2025-04-02", [row])
+    out = client.get("/breakout-candidates").json()
+    assert out == [{"player_id": "p1", "hr": 2, "h": 3, "ab": 4, "dt": "2025-04-02",
+                    "ingested_at_utc": "2025-04-02T00:00:00Z"}]

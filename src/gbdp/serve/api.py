@@ -5,7 +5,8 @@ import os
 from datetime import date as Date
 from typing import Any, List, Literal, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from gbdp.semantic.compile import FILTER_OPS, Filter as MetricFilter, MetricRequest
@@ -14,10 +15,25 @@ from gbdp.serve.db import (
     Filter, UnsafeSqlError, compute_metrics, load_semantic_layer, query, run_sql, semantic_layer,
 )
 
+from gbdp.serve.warehouse import WarehouseConfigError, WarehouseError
 from gbdp.utils.logging import get_logger  # noqa: E402
 
 logger = get_logger("gbdp.api")
 app = FastAPI(title="GBDP API", version="0.1.0")
+
+
+@app.exception_handler(WarehouseConfigError)
+async def _warehouse_config_error(request: Request, exc: WarehouseConfigError):
+    logger.error("cloud mode misconfigured: %s", exc)
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+@app.exception_handler(WarehouseError)
+async def _warehouse_error(request: Request, exc: WarehouseError):
+    # Cloud mode only: the warehouse refused or failed a read. The message
+    # comes from Databricks (a missing column, say), never from credentials.
+    logger.error("warehouse error on %s: %s", request.url.path, exc)
+    return JSONResponse(status_code=502, content={"detail": f"warehouse error: {exc}"})
 
 
 def _league_id(code: str | None) -> str | None:
@@ -120,9 +136,13 @@ def run_expectancy(league: str | None = None, season: int | None = None, as_of: 
     return query("run_expectancy", dt=_dt(as_of), filters=filters)
 
 
+BREAKOUT_COLUMNS = ("player_id", "hr", "h", "ab", "dt", "ingested_at_utc")
+
+
 @app.get("/breakout-candidates")
 def breakout_candidates(league: str | None = None, season: int | None = None, as_of: Date | None = None):
-    return query("breakout_candidates", dt=_dt(as_of))
+    # Columns by name: gold may add columns to this table; the endpoint's shape stays.
+    return query("breakout_candidates", dt=_dt(as_of), columns=BREAKOUT_COLUMNS)
 
 
 @app.get("/schema")
@@ -202,6 +222,8 @@ def metric_query(req: MetricQuery):
         return compute_metrics(request)
     except SemanticLayerError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except WarehouseError:
+        raise  # cloud mode: answered by the 502/503 handlers with the warehouse's message
     except Exception:
         # A request the layer accepted that then failed is our problem, not
         # the caller's; the engine's message can carry file paths.

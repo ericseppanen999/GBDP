@@ -100,6 +100,26 @@ curl -X POST localhost:8000/query -H 'Content-Type: application/json' \
 
 `/query` runs read-only SQL over gold (DuckDB, confined to the gold directory). Set `GBDP_API_TOKEN` to require `Authorization: Bearer <token>` on it and on `/metrics/query` before exposing the API beyond localhost.
 
+### Cloud mode (serve from Unity Catalog)
+
+The same API can read the gold tables on Databricks instead of local Parquet. Set the backend and credentials in the environment (see [`.env.example`](.env.example); never put a token in code):
+
+```bash
+export GBDP_SERVE_BACKEND=databricks
+export DATABRICKS_HOST=https://<workspace>.cloud.databricks.com
+export DATABRICKS_TOKEN=...              # SELECT on gbdp.gold_gbdp is enough
+export GBDP_WAREHOUSE_ID=a9d3d2589a30ab67   # default; GBDP_SERVE_CATALOG / GBDP_SERVE_SCHEMA default to gbdp / gold_gbdp
+python -m gbdp.cli serve
+```
+
+Every endpoint returns the same shape as in local mode, including `as_of=` and the 24-hour cache. Under the hood each read is one parameterized `SELECT` sent to the SQL Statement Execution API over HTTPS (values are bound `:p0` parameters, never pasted into SQL). Notes:
+
+- **Views are inlined.** `v_*` views and `/metrics/query` are compiled with their view SQL as CTEs, so they work before the semantic layer is applied to UC. A view that reads a column production gold doesn't have yet fails with the warehouse's error (`/query`: 400, other endpoints: 502).
+- **`/query` stays read-only:** the statement guard (SELECT/WITH only, no write keywords, no file reads), only gold tables (no other catalog/schema, no `information_schema`), the SQL wrapped as `SELECT * FROM (...) LIMIT n` (a write cannot parse inside it) and a `row_limit` on the request. Give the token SELECT only for defence in depth.
+- Managed UC tables rename columns like `2b` to `c_2b`; the table endpoints map them back, `/query` results show the UC names.
+- A table that doesn't exist yet reads as empty, as it does locally. `/health`, `/schema` and `/metrics*` GETs don't touch the warehouse.
+- Check it against production without a token in your shell: `python scripts/smoke_serve_cloud.py` (uses the `databricks` CLI auth, SELECTs only; `--direct` uses `DATABRICKS_HOST`/`DATABRICKS_TOKEN` like the server does).
+
 ### API
 
 | Endpoint | Returns |
