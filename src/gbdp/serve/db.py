@@ -8,6 +8,8 @@ import time
 
 import duckdb
 
+from gbdp.serve import warehouse as wh
+
 from gbdp.utils.io import gold_root, list_dir, storage_format, path_exists, spark_path
 
 # (column, "eq" or "contains", value)
@@ -17,6 +19,26 @@ Filter = Tuple[str, str, Any]
 _CACHE: Dict[tuple, Tuple[float, List[Dict[str, Any]]]] = {}
 _CACHE_TTL_S = 24 * 60 * 60
 
+
+
+def backend() -> str:
+    """GBDP_SERVE_BACKEND: duckdb (default; local gold) or databricks (SQL warehouse over Unity Catalog)."""
+    value = os.getenv("GBDP_SERVE_BACKEND", "duckdb").strip().lower() or "duckdb"
+    if value not in ("duckdb", "databricks"):
+        raise wh.WarehouseConfigError(f"GBDP_SERVE_BACKEND={value!r}; use duckdb or databricks")
+    return value
+
+
+_WAREHOUSE: wh.Warehouse | None = None  # tests and scripts can install a client with set_warehouse
+
+
+def set_warehouse(client: wh.Warehouse | None) -> None:
+    global _WAREHOUSE
+    _WAREHOUSE = client
+
+
+def _warehouse() -> wh.Warehouse:
+    return _WAREHOUSE or wh.Warehouse(wh.WarehouseSettings.from_env())
 
 
 def latest_dt(table: str) -> str | None:
@@ -33,29 +55,111 @@ def query(
     filters: Sequence[Filter] = (),
     limit: int = 1000,
     all_dts: bool = False,
+    columns: Sequence[str] | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Read one gold table. Without dt this reads the latest snapshot, or every
     snapshot with all_dts. Filter values are bound, never pasted into SQL.
+    columns picks columns by name (default: all), so an endpoint keeps its
+    shape when a table gains columns.
     """
+    if backend() == "databricks":
+        return _cached(
+            ("databricks", _cloud_scope(), table, dt, tuple(filters), int(limit), all_dts, tuple(columns or ())),
+            lambda: _query_databricks(table, dt, filters, limit, all_dts, columns),
+        )
     root = gold_root()
     dt = dt or (None if all_dts else latest_dt(table))
     if not path_exists(root / table) or not (dt or all_dts):
         return []
-    key = (str(root), table, dt, tuple(filters), int(limit))
+    key = (str(root), table, dt, tuple(filters), int(limit), tuple(columns or ()))
+    if storage_format() == "parquet":
+        return _cached(key, lambda: _query_parquet(root / table, dt, filters, limit, columns))
+    return _cached(key, lambda: _query_delta(root / table, dt, filters, limit, columns))
+
+
+def _cached(key: tuple, load) -> List[Dict[str, Any]]:
+    """The 24 h cache: one entry per table read (the URL's table, filters and as_of)."""
     now = time.time()
     cached = _CACHE.get(key)
     if cached and (now - cached[0]) < _CACHE_TTL_S:
         return cached[1]
-    if storage_format() == "parquet":
-        rows = _query_parquet(root / table, dt, filters, limit)
-    else:
-        rows = _query_delta(root / table, dt, filters, limit)
+    rows = load()
     _CACHE[key] = (now, rows)
     return rows
 
 
-def _query_parquet(base: Path, dt: str | None, filters: Sequence[Filter], limit: int) -> List[Dict[str, Any]]:
+def _cloud_scope() -> tuple:
+    s = wh.WarehouseSettings.from_env() if _WAREHOUSE is None else _WAREHOUSE.settings
+    return (s.host, s.catalog, s.schema)
+
+
+def _query_databricks(
+    table: str, dt: str | None, filters: Sequence[Filter], limit: int, all_dts: bool,
+    columns: Sequence[str] | None,
+) -> List[Dict[str, Any]]:
+    """The same read as _query_parquet, as one parameterized SELECT on the warehouse.
+
+    Latest-snapshot reads resolve the dt inside the statement
+    (dt = (SELECT max(dt) ...)), so one round trip serves them. A table that
+    doesn't exist yet reads as empty, as it does locally.
+    """
+    client = _warehouse()
+    s = client.settings
+    colname = _uc_column if s.uc_mode in ("managed", "serverless") else (lambda c: c)
+    tbl = s.qualified(table)
+    select = ", ".join(f"`{colname(c)}`" for c in columns) if columns else "*"
+    where: List[str] = []
+    params: List[Any] = []
+
+    def bind(value: Any) -> str:
+        params.append(value)
+        return f":p{len(params) - 1}"
+
+    if dt:
+        where.append(f"`dt` = {bind(dt)}")
+    elif not all_dts:
+        where.append(f"`dt` = (SELECT max(`dt`) FROM {tbl})")
+    for column, op, value in filters:
+        col = f"`{colname(column)}`"
+        if op == "contains":
+            where.append(f"locate({bind(str(value).lower())}, lower({col})) > 0")
+        else:
+            where.append(f"{col} = {bind(value)}")
+    sql = f"SELECT {select} FROM {tbl}"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += f" LIMIT {int(limit)}"
+    try:
+        _, rows = client.execute(sql, wh.named_params(params), limit=limit)
+    except wh.WarehouseError as exc:
+        if exc.table_missing:
+            return []
+        raise
+    return _restore_columns(table, rows, s.uc_mode)
+
+
+def _uc_column(name: str) -> str:
+    from gbdp.semantic.render import uc_managed_column_name
+
+    return uc_managed_column_name(name)
+
+
+def _restore_columns(table: str, rows: List[Dict[str, Any]], uc_mode: str) -> List[Dict[str, Any]]:
+    """Give managed-UC columns back their gold names ("c_2b" -> "2b"), so the
+    response matches the local one. Only columns the semantic layer lists are renamed."""
+    if uc_mode not in ("managed", "serverless") or not rows:
+        return rows
+    t = semantic_layer().tables.get(table)
+    back = {_uc_column(c): c for c in (t.columns if t else ()) if _uc_column(c) != c}
+    if not back:
+        return rows
+    return [{back.get(k, k): v for k, v in r.items()} for r in rows]
+
+
+def _query_parquet(
+    base: Path, dt: str | None, filters: Sequence[Filter], limit: int, columns: Sequence[str] | None = None,
+) -> List[Dict[str, Any]]:
     if dt and not path_exists(base / f"dt={dt}"):
         return []
     glob = str(base / f"dt={dt or '*'}" / "*.parquet")
@@ -68,7 +172,8 @@ def _query_parquet(base: Path, dt: str | None, filters: Sequence[Filter], limit:
         else:
             conditions.append(f'"{column}" = ?')
             params.append(value)
-    sql = "SELECT * FROM read_parquet(?, union_by_name=true, hive_partitioning=false)"
+    select = ", ".join('"' + c.replace('"', '""') + '"' for c in columns) if columns else "*"
+    sql = f"SELECT {select} FROM read_parquet(?, union_by_name=true, hive_partitioning=false)"
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)
     sql += f" LIMIT {int(limit)}"
@@ -77,7 +182,9 @@ def _query_parquet(base: Path, dt: str | None, filters: Sequence[Filter], limit:
     return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
-def _query_delta(base: Path, dt: str | None, filters: Sequence[Filter], limit: int) -> List[Dict[str, Any]]:
+def _query_delta(
+    base: Path, dt: str | None, filters: Sequence[Filter], limit: int, columns: Sequence[str] | None = None,
+) -> List[Dict[str, Any]]:
     try:
         from pyspark.sql import SparkSession
         from pyspark.sql import functions as F
@@ -91,6 +198,8 @@ def _query_delta(base: Path, dt: str | None, filters: Sequence[Filter], limit: i
             df = df.where(F.lower(F.col(column)).contains(str(value).lower()))
         else:
             df = df.where(F.col(column) == value)
+    if columns:
+        df = df.select(*columns)
     return [row.asDict() for row in df.limit(int(limit)).collect()]
 
 
@@ -160,6 +269,8 @@ def run_sql(sql: str, limit: int = 1000) -> List[Dict[str, Any]]:
     """
     assert_read_only_sql(sql)
     stripped = sql.strip().rstrip(";")
+    if backend() == "databricks":
+        return _run_sql_databricks(stripped, limit)
     limited = f"SELECT * FROM ({stripped}) AS _gbdp_query_result LIMIT {int(limit)}"
 
     if storage_format() == "parquet":
@@ -169,6 +280,57 @@ def run_sql(sql: str, limit: int = 1000) -> List[Dict[str, Any]]:
 
     rows = _spark_session_with_views().sql(limited).collect()
     return [row.asDict() for row in rows]
+
+
+# A table named with a catalog, or information_schema, reaches past the gold schema.
+_QUALIFIED_NAME = re.compile(r"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\.\s*[A-Za-z_]\w*")
+
+
+def assert_gold_only_sql(sql: str, catalog: str, schema: str) -> None:
+    """Cloud mode only: the warehouse token may see more than gold, so /query
+    can name gold tables and views bare (or as catalog.schema.table), nothing else."""
+    # String literals are checked too: a false alarm on 'a.b.c' beats a bypass via escapes.
+    bare = sql.replace("`", "")
+    if re.search(r"\binformation_schema\b", bare, re.IGNORECASE):
+        raise UnsafeSqlError("query can only read the gold tables")
+    for m in _QUALIFIED_NAME.finditer(bare):
+        if (m.group(1).lower(), m.group(2).lower()) != (catalog.lower(), schema.lower()):
+            raise UnsafeSqlError(f"query can only read the gold tables in {catalog}.{schema}")
+
+
+def _inline_view_ctes(sql: str, target) -> str:
+    """WITH-clause text defining every semantic-layer view the SQL names, and the
+    views those read. The v_* views exist in Unity Catalog only once the semantic
+    layer has been applied; inlining them as CTEs makes them work either way."""
+    from gbdp.semantic.render import render
+
+    sl = semantic_layer()
+    named = [v for v in sl.views if re.search(rf"\b{re.escape(v)}\b", sql, re.IGNORECASE)]
+    if not named:
+        return ""
+    needed = sl.view_dependencies(named)
+    return ",\n".join(f"{v} AS (\n{render(sl.views[v].sql, sl, target)}\n)" for v in needed)
+
+
+def _databricks_target(settings):
+    from gbdp.semantic.render import databricks_target
+
+    return databricks_target(settings.catalog, settings.schema, settings.uc_mode, inline_views=True)
+
+
+def _run_sql_databricks(stripped: str, limit: int) -> List[Dict[str, Any]]:
+    """/query on the warehouse. Read-only three ways: the statement guard, the
+    SELECT-over-subquery wrapper (an INSERT/DDL can't parse inside it), and a
+    row_limit on the request. Grant the token SELECT only for defence in depth."""
+    client = _warehouse()
+    s = client.settings
+    assert_gold_only_sql(stripped, s.catalog, s.schema)
+    limit = max(1, int(limit))
+    ctes = _inline_view_ctes(stripped, _databricks_target(s))
+    prefix = f"WITH {ctes}\n" if ctes else ""
+    # The newline keeps a trailing -- comment from swallowing the closing paren.
+    statement = f"{prefix}SELECT * FROM (\n{stripped}\n) AS _gbdp_query_result LIMIT {limit}"
+    return client.execute(statement, limit=limit)[1]
 
 
 def _gold_tables() -> List[str]:
@@ -256,7 +418,13 @@ def compute_metrics(request) -> Dict[str, Any]:
     sl = semantic_layer()
     if request.limit is None:
         request.limit = 1000
-    if storage_format() == "parquet":
+    if backend() == "databricks":
+        client = _warehouse()
+        compiled = compile_request(sl, request, _databricks_target(client.settings), param_style="named")
+        _, rows = client.execute(
+            compiled.sql, wh.named_params(compiled.params), limit=request.limit, use_schema=False,
+        )
+    elif storage_format() == "parquet":
         compiled = compile_request(sl, request, duckdb_target(), param_style="qmark")
         cur = _duckdb_connection().execute(compiled.sql, compiled.params)
         cols = [c[0] for c in cur.description]
