@@ -425,10 +425,18 @@ def check_against_mlb(wh: Warehouse, rep: Report, days: list) -> None:
                      f"{len(truth) - len(bad)}/{len(truth)} games" + (f"; e.g. {bad[:3]}" if bad else ""))
 
 
+def _audit_quality() -> str:
+    # quality_checks writes plain parquet, not Delta; UC registers it as a
+    # table at register_uc. Before that (--gold-delta), read the files.
+    if GOLD == _GOLD_DELTA:
+        return f"read_files('{GOLD_VOL}/audit_quality', format => 'parquet', mergeSchema => true)"
+    return f"{GOLD}.audit_quality"
+
+
 def check_quality_results(wh: Warehouse, rep: Report, start: str) -> None:
     rows = wh.query(f"""
         SELECT `check`, coalesce(`table`, ''), count(DISTINCT dt), concat_ws(',', sort_array(collect_set(dt)))
-        FROM {GOLD}.audit_quality WHERE dt >= '{start}' AND NOT ok
+        FROM {_audit_quality()} WHERE dt >= '{start}' AND NOT ok
         GROUP BY 1, 2 ORDER BY 3 DESC""")
     if not rows:
         rep.line("PASS", "quality checks", "no failed checks recorded")
