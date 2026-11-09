@@ -140,7 +140,7 @@ def test_bridge_has_one_row_per_source_id_per_day(lake):
     keys = [(r["entity_type"], r["source"], r["source_id"], r["dt"]) for r in rows]
     assert len(keys) == len(set(keys))
     assert {k[2] for k in keys if k[0] == "team"} == {"OB", "LG"}
-    assert {k[2] for k in keys if k[0] == "player"} == {"김재환", "오지환"}
+    assert {k[2] for k in keys if k[0] == "player"} == {"OB:김재환", "LG:오지환"}
 
 
 def test_kbo_api_players_and_teams_get_dimension_rows_matching_the_facts(lake):
@@ -164,6 +164,49 @@ def test_kbo_api_players_and_teams_get_dimension_rows_matching_the_facts(lake):
         facts = [r for r in read_parquet_rows(gold / table / f"dt={DAY}") if r["source"] == "kbo_api"]
         assert facts and all(r["player_id"] in players for r in facts), table
         assert all(r["team_id"] in teams for r in facts), table
+
+
+def test_same_name_kbo_players_stay_apart_and_unique(lake):
+    # 2026-06-25: 박건우 batted for both LT and NC in one game; Samsung has two
+    # pitchers named 이승현 and both pitched on 2026-08-04.
+    from gbdp.utils.io import read_parquet_rows
+
+    _, silver, gold = lake
+    _parquet(silver, "kbo_api", "games", DAY, [
+        {"game_id": "G1", "home_team_id": "NC", "away_team_id": "LT", "home_score": 1, "away_score": 0, "sr_id": "0"},
+    ])
+    _parquet(silver, "kbo_api", "boxscore_batting", DAY, [
+        {"game_id": "G1", "team_id": "LT", "player_name": "박건우", "ab": 2, "h": 0},
+        {"game_id": "G1", "team_id": "NC", "player_name": "박건우", "ab": 3, "h": 1},
+    ])
+    _parquet(silver, "kbo_api", "boxscore_pitching", DAY, [
+        {"game_id": "G1", "team_id": "NC", "player_name": "이승현", "ip": "4", "h": 1},
+        {"game_id": "G1", "team_id": "NC", "player_name": "이승현", "ip": "1/3", "h": 0},
+    ])
+    bridge_ids = {r["source_id"] for r in _resolve(gold) if r["entity_type"] == "player"}
+    assert bridge_ids == {"LT:박건우", "NC:박건우", "NC:이승현", "NC:이승현#2"}
+    d = date.fromisoformat(DAY)
+    bridge = publish._read_gold_bridge(gold, d)
+    publish._write_dim_player(gold, d, bridge, True)
+    publish._write_fact_boxscore_batting(gold, d, bridge, True)
+    publish._write_fact_boxscore_pitching(gold, d, bridge, True)
+    players = {r["player_id"] for r in read_parquet_rows(gold / "dim_player" / f"dt={DAY}") if r["source"] == "kbo_api"}
+    assert len(players) == 4
+    for table in ("fact_boxscore_batting", "fact_boxscore_pitching"):
+        facts = [r for r in read_parquet_rows(gold / table / f"dt={DAY}") if r["source"] == "kbo_api"]
+        keys = [(r["game_id"], r["player_id"]) for r in facts]
+        assert len(keys) == len(set(keys)) == 2 and {k[1] for k in keys} <= players, table
+
+
+def test_same_name_order_ignores_the_silver_file_path():
+    from gbdp.identity.kbo_keys import kbo_api_player_ids
+
+    a = {"game_id": "G", "team_id": "SS", "player_name": "이승현", "ip": "4", "raw_json": '{"_file_path": "part-2"}'}
+    b = {"game_id": "G", "team_id": "SS", "player_name": "이승현", "ip": "1/3", "raw_json": '{"_file_path": "part-1"}'}
+    first = dict(zip(("a", "b"), kbo_api_player_ids([a, b])))
+    b2, a2 = dict(b, raw_json='{"_file_path": "part-9"}'), dict(a, raw_json='{"_file_path": "part-0"}')
+    second = dict(zip(("b", "a"), kbo_api_player_ids([b2, a2])))
+    assert first == second and set(first.values()) == {"SS:이승현", "SS:이승현#2"}
 
 
 def test_fact_game_type_for_kbo_api_retrosheet_and_local_sources(lake):

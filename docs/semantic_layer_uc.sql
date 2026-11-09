@@ -47,7 +47,7 @@ ALTER TABLE gbdp.gold_gbdp.dim_team ALTER COLUMN `dt` COMMENT 'Snapshot date.';
 
 ALTER TABLE gbdp.gold_gbdp.dim_team ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
 
-COMMENT ON TABLE gbdp.gold_gbdp.dim_player IS 'Player dimension, SCD2. Built each day from active rosters (MLB, NPB and the local sources) plus MLB\'s season player list, which adds players on a 40-man roster but not that day\'s active roster (injured list, minors, recently traded), since Statcast still sees them. NPB rows are players only: the NPB directory\'s managers and coaches are left out. Each dt is a full snapshot of every version known by then. Grain: one row per player_id per version (valid_from_dt), within each dt snapshot. Sources: mlb_statsapi, npb_spaia, indy_local, kbo_local, lmb_local, retrosheet_local. Caveat: Always filter to one dt (normally the latest) and is_current = true, or use the view v_player_current. Caveat: Versions change when primary_name, bats, throws, primary_position or league_id change. Caveat: kbo_api has no roster or player ID; its box-score players are identified by name and have no dim_player row. Caveat: The SCD2 merge keeps a player missing from a day\'s input as current (an off day is not a release), across seasons...';
+COMMENT ON TABLE gbdp.gold_gbdp.dim_player IS 'Player dimension, SCD2. Built each day from active rosters (MLB, NPB and the local sources) plus MLB\'s season player list, which adds players on a 40-man roster but not that day\'s active roster (injured list, minors, recently traded), since Statcast still sees them. NPB rows are players only: the NPB directory\'s managers and coaches are left out. Each dt is a full snapshot of every version known by then. Grain: one row per player_id per version (valid_from_dt), within each dt snapshot. Sources: mlb_statsapi, npb_spaia, indy_local, kbo_local, lmb_local, retrosheet_local. Caveat: Always filter to one dt (normally the latest) and is_current = true, or use the view v_player_current. Caveat: Versions change when primary_name, bats, throws, primary_position or league_id change. Caveat: kbo_api has no roster or player ID. Its box-score players are keyed by team + name, with "#2" for a second same-name player on one team in a game; two same-name teammates can\'t be told apart across games, and a player who changes...';
 
 ALTER TABLE gbdp.gold_gbdp.dim_player ALTER COLUMN `player_id` COMMENT 'Canonical player ID.';
 
@@ -261,7 +261,7 @@ ALTER TABLE gbdp.gold_gbdp.fact_boxscore_batting ALTER COLUMN `game_id` COMMENT 
 
 ALTER TABLE gbdp.gold_gbdp.fact_boxscore_batting ALTER COLUMN `team_id` COMMENT 'FK to dim_team.';
 
-ALTER TABLE gbdp.gold_gbdp.fact_boxscore_batting ALTER COLUMN `player_id` COMMENT 'FK to dim_player. kbo_api players are matched by name; indy/kbo/lmb local rows are null when identity has no match.';
+ALTER TABLE gbdp.gold_gbdp.fact_boxscore_batting ALTER COLUMN `player_id` COMMENT 'FK to dim_player. kbo_api players are keyed by team + name (no source ID); indy/kbo/lmb local rows are null when identity has no match.';
 
 ALTER TABLE gbdp.gold_gbdp.fact_boxscore_batting ALTER COLUMN `ab` COMMENT 'At-bats.';
 
@@ -293,7 +293,7 @@ ALTER TABLE gbdp.gold_gbdp.fact_boxscore_pitching ALTER COLUMN `game_id` COMMENT
 
 ALTER TABLE gbdp.gold_gbdp.fact_boxscore_pitching ALTER COLUMN `team_id` COMMENT 'FK to dim_team.';
 
-ALTER TABLE gbdp.gold_gbdp.fact_boxscore_pitching ALTER COLUMN `player_id` COMMENT 'FK to dim_player. kbo_api pitchers are matched by name.';
+ALTER TABLE gbdp.gold_gbdp.fact_boxscore_pitching ALTER COLUMN `player_id` COMMENT 'FK to dim_player. kbo_api pitchers are keyed by team + name (no source ID).';
 
 ALTER TABLE gbdp.gold_gbdp.fact_boxscore_pitching ALTER COLUMN `ip` COMMENT 'Innings pitched as a STRING, not a decimal. MLB and Retrosheet write "6.1" for 6 1/3 and "6.2" for 6 2/3 innings; kbo_api writes "6", "5 2/3" or "1/3". Never sum or average it as a number: convert to outs first (ip_outs in v_pitching_line does).';
 
@@ -345,7 +345,7 @@ ALTER TABLE gbdp.gold_gbdp.bridge_source_ids ALTER COLUMN `entity_type` COMMENT 
 
 ALTER TABLE gbdp.gold_gbdp.bridge_source_ids ALTER COLUMN `source` COMMENT 'Source system.';
 
-ALTER TABLE gbdp.gold_gbdp.bridge_source_ids ALTER COLUMN `source_id` COMMENT 'The source\'s own ID (for kbo_api players, the player\'s name).';
+ALTER TABLE gbdp.gold_gbdp.bridge_source_ids ALTER COLUMN `source_id` COMMENT 'The source\'s own ID (for kbo_api players, which have none, team + name, e.g. SS:이승현 and SS:이승현#2).';
 
 ALTER TABLE gbdp.gold_gbdp.bridge_source_ids ALTER COLUMN `canonical_id` COMMENT 'The player_id or team_id used in gold.';
 

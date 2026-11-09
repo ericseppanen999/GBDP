@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
+from gbdp.identity.kbo_keys import kbo_api_player_ids
 from gbdp.identity.manual_overrides import load_manual_overrides
 from gbdp.identity.rules import player_match_key, team_match_key
 from gbdp.utils.ids import ulid_from_key
@@ -219,17 +220,18 @@ def _collect_player_sources(root: Path, dt: date) -> List[Dict[str, Any]]:
     # no numeric player ID anywhere in its responses either (checked), so
     # box score appearances (by player_name) are the only source of player
     # identity for this connector. Less robust than a real ID, but functional.
+    # Keyed by team + name (see identity/kbo_keys.py), as gold keys them.
     for entity in ("boxscore_batting", "boxscore_pitching"):
-        for r in _read_silver(silver_root(), "kbo_api", entity, dt):
-            source_id = r.get("player_name")
+        kbo_rows = _read_silver(silver_root(), "kbo_api", entity, dt)
+        for r, source_id in zip(kbo_rows, kbo_api_player_ids(kbo_rows)):
             if not source_id:
                 continue
             rows.append(
                 {
                     "entity_type": "player",
                     "source": "kbo_api",
-                    "source_id": str(source_id),
-                    "name": source_id,
+                    "source_id": source_id,
+                    "name": r.get("player_name"),
                     "dob": None,
                     "team_id": r.get("team_id"),
                     "league_code": "KBO",

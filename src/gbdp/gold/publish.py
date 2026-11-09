@@ -8,6 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from gbdp.identity.kbo_keys import kbo_api_player_ids
 from gbdp.utils.ids import ulid_from_key
 from gbdp.utils.io import (
     ensure_dir,
@@ -656,11 +657,17 @@ def _write_dim_player(root: Path, dt: date, bridge: Dict[tuple, str], force: boo
     for r in _read_silver(root, "kbo_local", "rosters", dt):
         rows.append(_player_row(r, "KBO", bridge, "kbo_local"))
     # kbo_api has no rosters or player IDs; its box-score players are keyed by
-    # name, as fact_boxscore_* keys them, so they need a dimension row too.
-    kbo_names = {r.get("player_name") for entity in ("boxscore_batting", "boxscore_pitching")
-                 for r in _read_silver(root, "kbo_api", entity, dt) if r.get("player_name")}
-    for name in sorted(kbo_names):
-        rows.append(_player_row({"player_id": name, "player_name": name, "dt": dt.isoformat()}, "KBO", bridge, "kbo_api"))
+    # team + name (identity/kbo_keys.py), as fact_boxscore_* keys them, so they
+    # need a dimension row too.
+    kbo_players: Dict[str, str] = {}
+    for entity in ("boxscore_batting", "boxscore_pitching"):
+        kbo_rows = _read_silver(root, "kbo_api", entity, dt)
+        for r, source_id in zip(kbo_rows, kbo_api_player_ids(kbo_rows)):
+            if source_id:
+                kbo_players.setdefault(source_id, r.get("player_name"))
+    for source_id in sorted(kbo_players):
+        rows.append(_player_row({"player_id": source_id, "player_name": kbo_players[source_id], "dt": dt.isoformat()},
+                                "KBO", bridge, "kbo_api"))
     for r in _read_silver(root, "lmb_local", "rosters", dt):
         rows.append(_player_row(r, "LMB", bridge, "lmb_local"))
     for r in _read_silver(root, "retrosheet_local", "rosters", dt):
@@ -1169,14 +1176,14 @@ def _write_fact_boxscore_batting(root: Path, dt: date, bridge: Dict[tuple, str],
                 "source": "mlb_statsapi",
             }
         )
-    for r in _read_silver(root, "kbo_api", "boxscore_batting", dt):
+    kbo_rows = _read_silver(root, "kbo_api", "boxscore_batting", dt)
+    for r, kbo_player in zip(kbo_rows, kbo_api_player_ids(kbo_rows)):
         rows.append(
             {
                 "game_id": ulid_from_key(f"game:kbo_api:{r.get('game_id')}"),
                 "team_id": _canonical(bridge, "team", "kbo_api", r.get("team_id")),
-                # kbo_api exposes no numeric player ID anywhere -- player_name
-                # is the only available bridge key for this source.
-                "player_id": _canonical(bridge, "player", "kbo_api", r.get("player_name")),
+                # kbo_api exposes no player ID: team + name (identity/kbo_keys.py).
+                "player_id": _canonical(bridge, "player", "kbo_api", kbo_player),
                 "ab": r.get("ab"),
                 "h": r.get("h"),
                 "2b": None,
@@ -1288,12 +1295,13 @@ def _write_fact_boxscore_pitching(root: Path, dt: date, bridge: Dict[tuple, str]
                 "source": "mlb_statsapi",
             }
         )
-    for r in _read_silver(root, "kbo_api", "boxscore_pitching", dt):
+    kbo_rows = _read_silver(root, "kbo_api", "boxscore_pitching", dt)
+    for r, kbo_player in zip(kbo_rows, kbo_api_player_ids(kbo_rows)):
         rows.append(
             {
                 "game_id": ulid_from_key(f"game:kbo_api:{r.get('game_id')}"),
                 "team_id": _canonical(bridge, "team", "kbo_api", r.get("team_id")),
-                "player_id": _canonical(bridge, "player", "kbo_api", r.get("player_name")),
+                "player_id": _canonical(bridge, "player", "kbo_api", kbo_player),
                 "ip": r.get("ip"),
                 "h": r.get("h"),
                 "r": r.get("r"),
