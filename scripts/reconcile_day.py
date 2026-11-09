@@ -55,8 +55,13 @@ def mlb_truth(day: str) -> dict:
     for d in sched.get("dates", []):
         for g in d["games"]:
             ls = g.get("linescore", {}).get("teams", {})
+            st = g["status"]
+            # A postponed game is abstractGameState "Final" too (codedGameState
+            # "D"), and its gamePk's boxscore is the makeup game's (823042: rained
+            # out 2026-06-25, played 07-23), so it isn't a game played that day.
+            not_played = st.get("codedGameState") in ("D", "C") or str(st.get("detailedState", "")).startswith(("Postponed", "Cancelled"))
             games[str(g["gamePk"])] = {
-                "status": g["status"].get("abstractGameState"),
+                "status": st.get("detailedState") if not_played else st.get("abstractGameState"),
                 "detail": g["status"].get("detailedState"),
                 "runs": (ls.get("home", {}).get("runs"), ls.get("away", {}).get("runs")),
                 "hits": (ls.get("home", {}).get("hits"), ls.get("away", {}).get("hits")),
