@@ -350,11 +350,26 @@ def test_query_trailing_comment_cannot_swallow_the_wrapper(ws, client):
     "SELECT * FROM gbdp.bronze_gbdp.raw",
     "SELECT * FROM information_schema.tables",
     "SET spark.sql.x = 1",
+    # Two-part schema.table resolves inside the current catalog.
+    "SELECT * FROM bronze_gbdp.kbo_api_games",
+    "SELECT * FROM silver_gbdp.npb_spaia_rosters g JOIN fact_game f ON f.game_id = g.game_id",
+    # Warehouse functions that reach outside the tables.
+    "SELECT secret('gbdp', 'token')",
+    "SELECT try_secret('gbdp', 'token') AS t FROM fact_game",
+    "SELECT http_request(conn => 'x', method => 'GET', path => '/')",
+    "SELECT ai_query('endpoint', 'hi')",
+    "SELECT reflect('java.lang.System', 'getenv', 'DATABRICKS_TOKEN')",
+    "SELECT * FROM list('/Volumes/gbdp')",
 ])
 def test_query_refuses_writes_and_other_schemas(ws, client, sql):
     r = client.post("/query", json={"sql": sql})
     assert r.status_code == 400
     assert ws.calls == []
+
+
+def test_query_alias_dot_column_is_still_allowed(ws, client):
+    sql = "SELECT g.game_id, pa.event_type FROM fact_game g JOIN fact_plate_appearance pa ON pa.game_id = g.game_id"
+    assert client.post("/query", json={"sql": sql}).status_code == 200
 
 
 def test_query_may_name_the_gold_schema_explicitly(ws, client):

@@ -284,6 +284,17 @@ def run_sql(sql: str, limit: int = 1000) -> List[Dict[str, Any]]:
 
 # A table named with a catalog, or information_schema, reaches past the gold schema.
 _QUALIFIED_NAME = re.compile(r"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\.\s*[A-Za-z_]\w*")
+# schema.table inside the current catalog: bronze_gbdp.x resolves next to gold.
+# (alias.column is two-part too, so only schema-looking names are refused.)
+_SCHEMA_NAME = re.compile(r"\b([A-Za-z_]\w*)\s*\.\s*[A-Za-z_]\w*")
+_OTHER_SCHEMAS = re.compile(r"^(\w+_gbdp|default|system|samples|hive_metastore|information_schema)$", re.IGNORECASE)
+# Databricks SQL functions that reach outside the tables: secret scopes, the
+# network, model serving, JVM reflection, file listings.
+_WAREHOUSE_ESCAPES = re.compile(
+    r"\b(secret|try_secret|http_request|ai_\w+|vector_search|reflect|try_reflect|java_method|"
+    r"cloud_files_state|list)\s*\(",
+    re.IGNORECASE,
+)
 
 
 def assert_gold_only_sql(sql: str, catalog: str, schema: str) -> None:
@@ -293,8 +304,13 @@ def assert_gold_only_sql(sql: str, catalog: str, schema: str) -> None:
     bare = sql.replace("`", "")
     if re.search(r"\binformation_schema\b", bare, re.IGNORECASE):
         raise UnsafeSqlError("query can only read the gold tables")
+    if _WAREHOUSE_ESCAPES.search(bare):
+        raise UnsafeSqlError("query can only read the gold tables (no secret, network, AI or reflection functions)")
     for m in _QUALIFIED_NAME.finditer(bare):
         if (m.group(1).lower(), m.group(2).lower()) != (catalog.lower(), schema.lower()):
+            raise UnsafeSqlError(f"query can only read the gold tables in {catalog}.{schema}")
+    for m in _SCHEMA_NAME.finditer(_QUALIFIED_NAME.sub(" ", bare)):
+        if m.group(1).lower() != schema.lower() and _OTHER_SCHEMAS.match(m.group(1)):
             raise UnsafeSqlError(f"query can only read the gold tables in {catalog}.{schema}")
 
 
