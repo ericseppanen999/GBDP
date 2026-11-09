@@ -488,3 +488,26 @@ def test_committed_artifact_matches_the_committed_config():
     assert art is not None, why
     assert art["definition_version"] == cfg.definition_version
     assert art["split_version"] == cfg.split_version
+
+
+def test_ml_publish_is_opt_in_and_registered():
+    import gbdp.pipeline.runner as runner
+
+    assert "ml_publish" in runner._pipeline_stages()
+    assert "ml_publish" in runner._OPT_IN_STAGES
+
+
+def test_publish_ml_runs_only_the_ml_steps(monkeypatch, tmp_path):
+    from datetime import date as _date
+
+    from gbdp.gold import publish
+
+    calls = []
+    for name in ("_write_feature_batter_daily", "_write_ml_split", "_write_ml_breakout_examples", "_write_breakout_candidates"):
+        monkeypatch.setattr(publish, name, lambda root, dt, force, name=name: calls.append((name, dt.isoformat())) or tmp_path)
+    monkeypatch.setattr(publish, "_refresh_ml_after", lambda root, last, force: calls.append(("refresh", last.isoformat())) or [])
+    monkeypatch.setattr(publish, "_write_fact_plate_appearance", lambda *a, **k: (_ for _ in ()).throw(AssertionError("gold table written")))
+    publish.publish_ml("2026-05-13", "2026-05-14", root=tmp_path)
+    assert [c[0] for c in calls] == ["_write_feature_batter_daily", "_write_ml_split", "_write_ml_breakout_examples",
+                                     "_write_breakout_candidates"] * 2 + ["refresh"]
+    assert [c[1] for c in calls[:4]] == ["2026-05-13"] * 4 and calls[-1] == ("refresh", "2026-05-14")

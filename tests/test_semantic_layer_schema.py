@@ -61,7 +61,10 @@ def test_every_described_table_is_written_by_the_code(sl):
 
 
 def test_publish_runs_every_table_writer(sl):
-    steps = re.findall(r'\("(\w+)", lambda', inspect.getsource(publish._publish_for_date))
+    # The ML steps live in _ml_steps, which _publish_for_date splices in.
+    source = inspect.getsource(publish._publish_for_date) + inspect.getsource(publish._ml_steps)
+    assert "*_ml_steps(root, dt, force)" in source
+    steps = re.findall(r'\("(\w+)", lambda', source)
     # run_expectancy_daily is written inside the run_expectancy step.
     assert set(steps) | {"run_expectancy_daily"} == _publish_tables()
 

@@ -321,6 +321,36 @@ def _refresh_run_expectancy_after(root: Path, last: date, force: bool) -> List[P
     return [_write_run_expectancy_from_daily(root, d, force) for d in later]
 
 
+def _ml_steps(root: Path, dt: date, force: bool) -> List[tuple]:
+    # Daily stats, then the split (also the published-dates record the labels
+    # check), then examples, then the scores that read them. They read only
+    # fact_plate_appearance, so ml_publish can run them alone over gold that
+    # is already published.
+    return [
+        ("feature_batter_daily", lambda: _write_feature_batter_daily(root, dt, force)),
+        ("ml_split", lambda: _write_ml_split(root, dt, force)),
+        ("ml_breakout_examples", lambda: _write_ml_breakout_examples(root, dt, force)),
+        ("breakout_candidates", lambda: _write_breakout_candidates(root, dt, force)),
+    ]
+
+
+def publish_ml(start: str, end: str, root: Path | None = None, force: bool = False) -> List[Path]:
+    """The ML tables alone, in date order, over already-published gold: a
+    backfill of the ML outputs without re-publishing every gold table."""
+    root = root or gold_root()
+    outputs: List[Path] = []
+    days = list(daterange(parse_date(start), parse_date(end)))
+    for i, d in enumerate(days, 1):
+        t0 = time.monotonic()
+        logger.info("ml_publish dt=%s (%d/%d)", d.isoformat(), i, len(days))
+        for name, fn in _ml_steps(root, d, force):
+            outputs.append(fn())
+        logger.info("ml_publish dt=%s done (%.1fs)", d.isoformat(), time.monotonic() - t0)
+    if days:
+        outputs.extend(_refresh_ml_after(root, days[-1], force))
+    return outputs
+
+
 def _publish_for_date(root: Path, dt: date, force: bool) -> List[Path]:
     bridge = _read_gold_bridge(root, dt)
 
@@ -338,12 +368,7 @@ def _publish_for_date(root: Path, dt: date, force: bool) -> List[Path]:
         ("fact_boxscore_batting", lambda: _write_fact_boxscore_batting(root, dt, bridge, force)),
         ("fact_boxscore_pitching", lambda: _write_fact_boxscore_pitching(root, dt, bridge, force)),
         ("run_expectancy", lambda: _write_run_expectancy(root, dt, force)),
-        # ML: daily stats, then the split (also the published-dates record the
-        # labels check), then examples, then the scores that read them.
-        ("feature_batter_daily", lambda: _write_feature_batter_daily(root, dt, force)),
-        ("ml_split", lambda: _write_ml_split(root, dt, force)),
-        ("ml_breakout_examples", lambda: _write_ml_breakout_examples(root, dt, force)),
-        ("breakout_candidates", lambda: _write_breakout_candidates(root, dt, force)),
+        *_ml_steps(root, dt, force),
         ("feature_player_rolling_30d", lambda: _write_feature_player_rolling_30d(root, dt, force)),
         ("fact_contract", lambda: _write_fact_contract(root, dt, force)),
     ]
