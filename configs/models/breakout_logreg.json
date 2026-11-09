@@ -1,0 +1,235 @@
+{
+  "coefficients": [
+    -0.99544252,
+    -0.01908222,
+    0.12627919,
+    0.12083385,
+    0.00262541,
+    -0.18557705,
+    0.10370297,
+    0.00337056,
+    0.13408842
+  ],
+  "definition_version": "c4db0fe3",
+  "feature_spec": {
+    "baseline_days": 30,
+    "recent_days": 7,
+    "sources": [
+      "mlb_statcast",
+      "npb_spaia"
+    ],
+    "woba_weights": {
+      "1B": 0.88,
+      "2B": 1.25,
+      "3B": 1.58,
+      "BB": 0.69,
+      "HBP": 0.72,
+      "HR": 2.03
+    }
+  },
+  "feature_spec_hash": "cc6dca25",
+  "inputs": [
+    "base_woba_vs_league",
+    "recent_minus_base_woba",
+    "base_k_rate",
+    "base_bb_rate",
+    "base_iso",
+    "base_babip",
+    "log_base_pa",
+    "recent_pa_share",
+    "is_npb"
+  ],
+  "intercept": -1.17169388,
+  "kind": "logistic_regression",
+  "l2": 0.1,
+  "label_definition": {
+    "baseline_days": 30,
+    "label_days": 14,
+    "margin_woba": 0.05,
+    "min_baseline_pa": 50,
+    "min_label_pa": 30,
+    "recent_days": 7,
+    "sources": [
+      "mlb_statcast",
+      "npb_spaia"
+    ],
+    "woba_weights": {
+      "1B": 0.88,
+      "2B": 1.25,
+      "3B": 1.58,
+      "BB": 0.69,
+      "HBP": 0.72,
+      "HR": 2.03
+    }
+  },
+  "means": [
+    0.01715218,
+    -0.00395814,
+    0.2013336,
+    0.08606001,
+    0.15580632,
+    0.29966268,
+    4.46917203,
+    1.09227699,
+    0.19608913
+  ],
+  "metrics": {
+    "l2": 0.1,
+    "l2_grid": [
+      {
+        "l2": 0.1,
+        "validation_log_loss": 0.499373
+      },
+      {
+        "l2": 1.0,
+        "validation_log_loss": 0.499403
+      },
+      {
+        "l2": 10.0,
+        "validation_log_loss": 0.499655
+      },
+      {
+        "l2": 100.0,
+        "validation_log_loss": 0.5005
+      }
+    ],
+    "test": {
+      "heuristics_auc": {
+        "below_league_baseline": 0.739799,
+        "day_home_runs": 0.491413,
+        "recent_minus_baseline": 0.493336
+      },
+      "model": {
+        "auc": 0.753573,
+        "brier": 0.164522,
+        "log_loss": 0.501817
+      },
+      "naive_base_rate": {
+        "auc": 0.5,
+        "brier": 0.197909,
+        "log_loss": 0.585028
+      },
+      "positive_rate": 0.271636,
+      "positives": 2693,
+      "rows": 9914
+    },
+    "test_non_overlapping": {
+      "heuristics_auc": {
+        "below_league_baseline": 0.744793,
+        "day_home_runs": 0.494131,
+        "recent_minus_baseline": 0.506485
+      },
+      "model": {
+        "auc": 0.760827,
+        "brier": 0.160824,
+        "log_loss": 0.493377
+      },
+      "naive_base_rate": {
+        "auc": 0.5,
+        "brier": 0.196088,
+        "log_loss": 0.581117
+      },
+      "positive_rate": 0.267509,
+      "positives": 233,
+      "rows": 871
+    },
+    "train": {
+      "heuristics_auc": {
+        "below_league_baseline": 0.747292,
+        "day_home_runs": 0.48456,
+        "recent_minus_baseline": 0.493334
+      },
+      "model": {
+        "auc": 0.755015,
+        "brier": 0.167146,
+        "log_loss": 0.505558
+      },
+      "naive_base_rate": {
+        "auc": 0.5,
+        "brier": 0.201315,
+        "log_loss": 0.592342
+      },
+      "positive_rate": 0.279354,
+      "positives": 6143,
+      "rows": 21990
+    },
+    "train_positive_rate": 0.279354,
+    "validation": {
+      "heuristics_auc": {
+        "below_league_baseline": 0.765775,
+        "day_home_runs": 0.486197,
+        "recent_minus_baseline": 0.512348
+      },
+      "model": {
+        "auc": 0.760914,
+        "brier": 0.163311,
+        "log_loss": 0.499373
+      },
+      "naive_base_rate": {
+        "auc": 0.5,
+        "brier": 0.201014,
+        "log_loss": 0.591695
+      },
+      "positive_rate": 0.278671,
+      "positives": 1300,
+      "rows": 4665
+    }
+  },
+  "model_version": "breakout_logreg-a8655b01",
+  "split_version": "v1-085869b5",
+  "splits": {
+    "embargo_days": 14,
+    "name": "v1",
+    "train_end": "2025-07-15",
+    "validation_end": "2025-08-15"
+  },
+  "stds": [
+    0.06043888,
+    0.09888949,
+    0.07069126,
+    0.04175902,
+    0.08132413,
+    0.06425561,
+    0.23588331,
+    0.31221205,
+    0.39703675
+  ],
+  "training_data": {
+    "test": {
+      "as_of_dates": 37,
+      "first_as_of": "2025-08-16",
+      "last_as_of": "2025-09-21",
+      "players": 388,
+      "positives": 2693,
+      "rows": 9914,
+      "rows_by_league": {
+        "MLB": 7495,
+        "NPB": 2419
+      }
+    },
+    "train": {
+      "as_of_dates": 87,
+      "first_as_of": "2025-04-06",
+      "last_as_of": "2025-07-01",
+      "players": 457,
+      "positives": 6143,
+      "rows": 21990,
+      "rows_by_league": {
+        "MLB": 17678,
+        "NPB": 4312
+      }
+    },
+    "validation": {
+      "as_of_dates": 17,
+      "first_as_of": "2025-07-16",
+      "last_as_of": "2025-08-01",
+      "players": 337,
+      "positives": 1300,
+      "rows": 4665,
+      "rows_by_league": {
+        "MLB": 3665,
+        "NPB": 1000
+      }
+    }
+  }
+}

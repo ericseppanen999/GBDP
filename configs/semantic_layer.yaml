@@ -647,20 +647,38 @@ tables:
 
   breakout_candidates:
     description: >
-      Not breakout modeling, despite the name: the day's top 20 batters by
-      home runs (then hits) in fact_boxscore_batting. No trend, rate or
-      year-over-year analysis.
-    grain: up to 20 rows per dt
-    primary_key: [player_id, dt]
+      The baseline breakout model's top batters per league on each dt: the
+      probability that a batter's wOBA over the next horizon_days days beats
+      his baseline-window wOBA by the configured margin (the label of
+      ml_breakout_examples), from a logistic regression trained by
+      scripts/train_breakout.py (artifact and settings in configs/ml.yaml).
+      Uses only data through dt. This table used to hold the day's top 20
+      batters by home runs; hr, h and ab keep that meaning (the day's
+      totals), now from plate appearances.
+    grain: up to model.top_n_per_league (25) rows per league per dt
+    primary_key: [player_id, league_code, dt]
     foreign_keys:
       player_id: dim_player.player_id
-    sources: [fact_boxscore_batting]
+    sources: [ml_breakout_examples]
+    caveats:
+      - Empty for a dt when no usable model artifact exists (none trained, or trained on another feature definition); the reason is in the gold_publish log. A dt is never scored with a stand-in.
+      - The committed model was trained on the 2025 season (MLB Statcast, NPB SPAIA); see model_version and the README for its evaluation. Probabilities are only as calibrated as that season is like this one.
+      - Partitions published before this model existed hold the old home-run list (player_id, hr, h, ab only) until gold is re-published.
     columns:
       player_id: FK to dim_player.
-      hr: Home runs that day.
-      h: Hits that day.
-      ab: At-bats that day.
-      dt: Game date.
+      league_code: MLB or NPB.
+      season_year: The dt's calendar year.
+      hr: Home runs on dt (from plate appearances; 0 if he didn't bat).
+      h: Hits on dt.
+      ab: At-bats on dt.
+      score: Breakout probability over the next horizon_days days, 0-1, rounded to 6 places.
+      rank: 1 = highest score in the league on dt (ties broken by player_id).
+      model_version: The artifact that scored the row (breakout_logreg-<hash of its coefficients>).
+      horizon_days: Days after dt the prediction covers (configs/ml.yaml breakout.label_days).
+      f_base_pa: PAs in the baseline window ending dt (see ml_breakout_examples).
+      f_base_woba: wOBA in the baseline window ending dt.
+      f_recent_woba: wOBA in the recent window ending dt (null without a wOBA PA).
+      dt: As-of date (scored with data through this date).
       ingested_at_utc: When this row was written.
 
   feature_player_rolling_30d:
@@ -680,6 +698,115 @@ tables:
       so: Strikeouts in the window.
       window_days: Always 30.
       dt: Last day of the window.
+      ingested_at_utc: When this row was written.
+
+  feature_batter_daily:
+    description: >
+      Each batter's counting stats on dt from fact_plate_appearance (the
+      sources in configs/ml.yaml: MLB Statcast and NPB SPAIA). The daily
+      building block of the breakout windows; summing a dt range of it gives
+      that range's line.
+    grain: one row per (player_id, league_code) per dt, for batters with at least one PA
+    primary_key: [player_id, league_code, dt]
+    foreign_keys:
+      player_id: dim_player.player_id
+    sources: [fact_plate_appearance]
+    caveats:
+      - wOBA terms use one fixed set of weights (configs/ml.yaml) for every league and season, and count intentional walks as walks (the feeds don't separate them).
+    columns:
+      player_id: FK to dim_player (fact_plate_appearance.batter_id).
+      league_code: MLB or NPB.
+      source: mlb_statcast or npb_spaia.
+      pa: Plate appearances (TRUNCATED rows excluded).
+      ab: At-bats (vocabularies.event_type.groups.at_bat).
+      h: Hits.
+      doubles: Doubles.
+      triples: Triples.
+      hr: Home runs.
+      bb: Walks.
+      hbp: Hit by pitch.
+      so: Strikeouts.
+      sf: Sacrifice flies (legacy SAC counted here too).
+      sh: Sacrifice bunts.
+      woba_den: wOBA denominator, AB + BB + HBP + SF.
+      woba_value: wOBA numerator, the sum of the weights of his BB, HBP, 1B, 2B, 3B and HR.
+      dt: Game date.
+      ingested_at_utc: When this row was written.
+
+  ml_split:
+    description: >
+      The train / validation / test split of each published dt, by date range
+      (configs/ml.yaml splits), with the cut dates that produced it. Join on
+      dt to split any dt-partitioned table without copying it; v_re_training
+      does this for run expectancy. One row for every dt gold has published,
+      with or without games, so it is also the record of which dates exist:
+      a breakout label is filled only when every day of its window is here.
+    grain: one row per dt
+    primary_key: [dt]
+    sources: [configs/ml.yaml]
+    caveats:
+      - Written with the config of the publish that wrote it. If the cut dates move, split_version changes; re-publish to restamp older dates.
+    columns:
+      split: train (dt <= train_end), validation (dt <= validation_end) or test. For run-expectancy rows, which look at nothing past their own inning.
+      breakout_split: As split, except embargo for as-of dates within embargo_days before a cut, whose breakout label window would reach into the next split.
+      train_end: Last train date.
+      validation_end: Last validation date.
+      embargo_days: Days before each cut that are embargo for breakout rows (= label_days).
+      split_version: splits.name plus a hash of the split settings.
+      dt: The date.
+      ingested_at_utc: When this row was written.
+
+  ml_breakout_examples:
+    description: >
+      Breakout prediction training data: one row per batter per as-of dt
+      with features from the days up to and including dt and a label from
+      the days strictly after it. A breakout is wOBA over the label_days days
+      after dt at least margin_woba (0.050) above wOBA over the baseline_days
+      days ending dt, with at least min_label_pa PAs after (configs/ml.yaml:
+      30-day baseline, 7-day recent window, 14-day label window, 50 and 30
+      PAs). Train on label_status = labeled rows, split by split.
+    grain: one row per (player_id, league_code) per as-of dt, for batters with at least min_baseline_pa PAs in the baseline window
+    primary_key: [player_id, league_code, dt]
+    foreign_keys:
+      player_id: dim_player.player_id
+    sources: [feature_batter_daily, ml_split]
+    caveats:
+      - "No leakage: features read feature_batter_daily for dt - baseline_days + 1 .. dt only, labels for dt + 1 .. dt + label_days only (tests/test_ml_breakout.py)."
+      - The label is null (pending) until every day of its window is in ml_split, i.e. published; gold fills it while publishing the window's last day. The newest label_days as-of dates are always pending.
+      - Rows of one player on adjacent days share most of their windows, so they are far from independent; the split's embargo keeps that overlap from crossing train / validation / test.
+      - Re-publishing a date refreshes the following baseline_days - 1 dates, so features and labels stay consistent with the facts.
+    columns:
+      player_id: FK to dim_player.
+      league_code: MLB or NPB.
+      season_year: The as-of dt's calendar year.
+      f_base_pa: PAs in the baseline window (the baseline_days days ending dt).
+      f_base_woba: wOBA in the baseline window (feature_batter_daily woba_value / woba_den).
+      f_base_k_rate: Strikeouts per PA in the baseline window.
+      f_base_bb_rate: Walks per PA in the baseline window.
+      f_base_iso: Isolated power in the baseline window, (2B + 2*3B + 3*HR) / AB.
+      f_base_babip: BABIP in the baseline window, (H - HR) / (AB - SO - HR + SF); null with no balls in play.
+      f_base_days: Days with a PA in the baseline window.
+      f_recent_pa: PAs in the recent window (the recent_days days ending dt).
+      f_recent_woba: wOBA in the recent window; null without a wOBA PA.
+      f_league_base_woba: wOBA of every PA of his league in the baseline window.
+      f_base_woba_vs_league: f_base_woba - f_league_base_woba.
+      f_day_pa: PAs on dt.
+      f_day_ab: At-bats on dt.
+      f_day_h: Hits on dt.
+      f_day_hr: Home runs on dt.
+      baseline_days: Baseline window length the row was built with.
+      recent_days: Recent window length.
+      label_days: Label window length.
+      label_status: labeled, insufficient_pa (window complete, fewer than min_label_pa PAs; label_breakout null) or pending (window not yet fully published; every label column null).
+      label_window_end: Last day of the label window, dt + label_days.
+      label_pa: PAs in the label window (null while pending).
+      label_woba: wOBA in the label window (null while pending or with no wOBA PA).
+      label_woba_delta: label_woba - f_base_woba.
+      label_breakout: True when label_woba_delta >= margin_woba; null unless label_status = labeled.
+      split: train, validation, test or embargo (ml_split.breakout_split of the as-of dt).
+      split_version: The split settings the row was stamped with (ml_split.split_version).
+      definition_version: Hash of configs/ml.yaml's breakout settings; rows from another definition are not comparable.
+      dt: As-of date.
       ingested_at_utc: When this row was written.
 
 audit_tables:
@@ -899,6 +1026,28 @@ views:
         CAST(r.dt AS DATE) AS game_date,
         {{label:base_state:r.base_state}} AS runners
       FROM {{table:run_expectancy_daily}} r
+
+  v_re_training:
+    description: >
+      Run-expectancy training rows: every plate appearance with a known base
+      state, outs (0-2) and runs_to_end_of_inning (the target), with its
+      league and its date's train / validation / test split from ml_split.
+      The same rows run_expectancy_daily counts; no data is copied.
+    sql: |
+      SELECT
+        f.pa_id, f.game_id, f.dt,
+        CAST(f.dt AS DATE) AS game_date,
+        YEAR(CAST(f.dt AS DATE)) AS season_year,
+        {{league_of:f.source}} AS league_code,
+        f.source AS data_source,
+        f.inning, f.is_top_inning, f.event_type,
+        f.base_state_before, f.outs_before, f.runs_to_end_of_inning,
+        s.split, s.split_version
+      FROM {{table:fact_plate_appearance}} f
+      JOIN {{table:ml_split}} s ON s.dt = f.dt
+      WHERE f.runs_to_end_of_inning IS NOT NULL
+        AND f.base_state_before IS NOT NULL
+        AND f.outs_before BETWEEN 0 AND 2
 
 metric_views:
   # One Unity Catalog metric view each (CREATE VIEW ... WITH METRICS). Every

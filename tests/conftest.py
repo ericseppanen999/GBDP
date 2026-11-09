@@ -22,7 +22,8 @@ def _semantic_gold_dirs(tmp_path_factory):
 
     tmp = tmp_path_factory.mktemp("semantic")
     env = {"GBDP_SILVER_ROOT": str(tmp / "silver"), "GBDP_GOLD_ROOT": str(tmp / "gold"),
-           "GBDP_STORAGE_FORMAT": "parquet", "GBDP_DATA_ROOT": str(tmp)}
+           "GBDP_STORAGE_FORMAT": "parquet", "GBDP_DATA_ROOT": str(tmp),
+           "GBDP_ML_CONFIG": str(tmp / "ml.yaml")}
     saved = {k: os.environ.get(k) for k in env}
     os.environ.update(env)
     try:

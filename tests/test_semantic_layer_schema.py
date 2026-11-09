@@ -174,7 +174,7 @@ def test_source_league_matches_the_code(sl, semantic_gold):
 
 
 def test_sources_listed_per_table_are_real(sl):
-    known = set(sl.vocabularies["source_league"].values) | set(sl.tables) | {"configs/leagues.yaml", "generated"}
+    known = set(sl.vocabularies["source_league"].values) | set(sl.tables) | {"configs/leagues.yaml", "configs/ml.yaml", "generated"}
     for t in sl.tables.values():
         assert set(t.sources) <= known, (t.name, set(t.sources) - known)
 
