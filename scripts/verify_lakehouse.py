@@ -114,6 +114,10 @@ BRONZE_ENTITIES = [
     ("npb_spaia", "games", 100),
     ("npb_spaia", "rosters", 50_000),
     ("npb_spaia", "game_pbp", 50_000),
+    # KBO games were missing for 30 May-June dates while box scores were there,
+    # so fact_game and dim_team had no KBO rows for them. Monday is KBO's day off.
+    ("kbo_api", "games", 100),
+    ("kbo_api", "boxscore", 100),
 ]
 
 
