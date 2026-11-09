@@ -169,6 +169,22 @@ After a successful run:
 - `gbdp.gold_gbdp.<table>`
 - `gbdp.gold_gbdp.v_*` and `mv_*` once the semantic layer has been applied (6b)
 
+## 7b) Serving the API from UC (cloud mode)
+
+`python -m gbdp.cli serve` reads local gold by default. With `GBDP_SERVE_BACKEND=databricks` it answers the same endpoints from `gbdp.gold_gbdp.*` through a SQL warehouse (Statement Execution API, bearer token). Settings:
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `GBDP_SERVE_BACKEND` | `duckdb` or `databricks` | `duckdb` |
+| `DATABRICKS_HOST`, `DATABRICKS_TOKEN` | workspace URL and token (environment only) | required |
+| `GBDP_WAREHOUSE_ID` | SQL warehouse | `a9d3d2589a30ab67` |
+| `GBDP_SERVE_CATALOG`, `GBDP_SERVE_SCHEMA` | where the gold tables are | `gbdp`, `gold_gbdp` |
+| `GBDP_SERVE_UC_MODE` | `managed` renames columns like `2b` to `c_2b` | `managed` |
+| `GBDP_SERVE_TIMEOUT_S` | cancel a statement after this long | `120` |
+| `GBDP_API_TOKEN` | bearer token for `/query` and `/metrics/query` | unset |
+
+Use a service principal or token with `USE CATALOG`/`USE SCHEMA`/`SELECT` on the gold schema only; `/query` is also guarded, wrapped in a LIMIT and limited to gold, but the grant is the real boundary. Semantic-layer views are inlined as CTEs, so the API does not need the `v_*` views applied in UC. The warehouse may cold-start (first request after idle takes longer). Smoke check: `python scripts/smoke_serve_cloud.py`.
+
 ## 8) Troubleshooting
 
 If volumes look empty:
