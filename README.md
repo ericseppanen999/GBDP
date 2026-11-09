@@ -22,7 +22,7 @@ $ curl 'localhost:8000/run-expectancy?league=MLB&season=2025'
 | MLB Stats API | MLB | schedules, games and scores, rosters, transactions, player bios (height, weight, birth date, bats/throws) |
 | Baseball Savant (Statcast) | MLB | every pitch: type, velocity, location, count, result; plate appearances and base/out state derived from it |
 | SPAIA | NPB | schedules, games, rosters (with kana names), play-by-play, standings, player stats |
-| KBO | KBO | games and scores |
+| KBO | KBO | games, scores and box scores (batting and pitching lines) |
 | Retrosheet (local files) | MLB, historical | event files: historical play-by-play, rosters, box scores |
 | Local files | Indy, LMB | box scores and rosters |
 
@@ -178,7 +178,15 @@ It prints PASS/WARN/FAIL for:
 - roster sizes, Statcast coverage in silver, and recorded quality failures;
 - production gold reconciled against MLB's boxscores for sample days.
 
-Both tools only read, so they're safe to run while jobs are running.
+**`scripts/reconcile_season.py`** does the same reconciliation for production gold over any date range, game by game, against the MLB Stats API and SPAIA's games feed (a different endpoint from the play-by-play gold is built from):
+
+```bash
+python scripts/reconcile_season.py --start 2026-05-13 --end 2026-11-05 --gold-delta
+```
+
+`--gold-delta` reads gold's Delta tables directly, so a rebuild can be checked before it is published to Unity Catalog.
+
+All three tools only read, so they're safe to run while jobs are running.
 
 ## Tests
 
@@ -186,7 +194,14 @@ Both tools only read, so they're safe to run while jobs are running.
 pytest
 ```
 
-The suite has 181 tests. Most are regression tests named after real production incidents, such as rosters duplicated ~110×, a type clash that blocked publishing, and IDs that changed daily. Each pins the fix so the bug can't come back.
+The suite has 326 tests (4 more need a local Spark). Most are regression tests named after real production incidents, such as rosters duplicated ~110×, a type clash that blocked publishing, IDs that changed daily, Savant listing the same pitch twice, and two KBO players with the same name merging into one. Each pins the fix so the bug can't come back.
+
+## Known limits
+
+- **KBO players have no source ID.** The KBO box score is a rendered table with names only, so players are keyed by team + name, with `#2` for a second same-name player on one team in one game (Samsung has two pitchers named 이승현). Two same-name teammates can't be told apart across games, and a player who changes team gets a new ID.
+- **NPB player bios are empty** apart from kana names: the SPAIA feeds the pipeline reads carry no birth date, height or handedness.
+- **Game type is null for the local Indy, KBO and LMB files** unless a file carries one; those sources have no other place to get it.
+- **Statcast gaps are Statcast's.** A plate appearance that ends with the third out on the bases has no result in Savant's data (it is `TRUNCATED`, not counted as a PA), and Savant occasionally repeats a pitch; silver keeps one row per pitch.
 
 ## Repository layout
 
@@ -201,8 +216,9 @@ src/gbdp/
   catalog/      Unity Catalog registration
   pipeline/     stage runner, windows, retries
   serve/        FastAPI app and the gold query layer
+  semantic/     semantic layer: YAML model, SQL compiler, Unity Catalog DDL
 configs/        sources and leagues
-scripts/        reconcile_day.py, verify_lakehouse.py, build_dashboard.py
+scripts/        reconcile_day.py, reconcile_season.py, verify_lakehouse.py, build_dashboard.py, build_semantic_layer.py
 docs/           operations runbook, end-to-end walkthrough, UC SQL
 TRD.md          the original technical requirements
 ```
