@@ -313,6 +313,11 @@ resources:
           # 10-hour range from identity_resolve after a quality failure on four
           # dates (2026-11-10). The pipeline retries each stage window itself.
           max_retries: 0
+          retry_on_timeout: false
+          # max_retries: 0 alone didn't stop it (a zero is dropped on deploy, and
+          # serverless auto-optimization retries failed tasks by default): it
+          # retried again on 2026-11-10, re-publishing all of gold's UC tables.
+          disable_auto_optimization: true
           spark_python_task:
             python_file: ${workspace.file_path}/dbx_entry.py
             parameters:
