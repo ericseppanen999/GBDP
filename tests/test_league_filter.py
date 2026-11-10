@@ -25,3 +25,22 @@ def test_retrosheet_runs_with_mlb_or_by_name(monkeypatch):
 def test_indy_runs_only_when_asked(monkeypatch):
     assert _silver_steps(monkeypatch, ["indy"]) == {"indy"}
     assert "indy" in _silver_steps(monkeypatch, None)
+
+
+def test_register_uc_gold_publishes_gold_only(monkeypatch):
+    import gbdp.catalog.managed_publish as mp
+
+    calls = []
+    monkeypatch.setenv("GBDP_UC_CATALOG", "gbdp")
+    monkeypatch.setenv("GBDP_UC_MODE", "managed")
+    monkeypatch.setattr(mp, "_spark_session", lambda: object())
+    monkeypatch.setattr(mp, "_ensure_schema", lambda *a: None)
+    for layer in ("gold", "silver", "bronze_parsed", "bronze_requests"):
+        monkeypatch.setattr(mp, f"_publish_{layer}", lambda spark, d, c, s, e, layer=layer: calls.append(layer))
+    monkeypatch.setattr(runner, "_run_step", lambda name, fn: fn())
+    runner._stage_register_uc_gold("2026-05-13", "2026-05-14", {}, None, None, False)
+    assert calls == ["gold", "gold"]
+    calls.clear()
+    runner._stage_register_uc("2026-05-13", "2026-05-13", {}, None, None, False)
+    assert calls == ["gold", "silver", "bronze_parsed", "bronze_requests"]
+    assert "register_uc_gold" in runner._pipeline_stages() and "register_uc_gold" in runner._OPT_IN_STAGES

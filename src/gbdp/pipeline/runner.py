@@ -124,7 +124,7 @@ def run_pipeline(
     return results
 
 
-_OPT_IN_STAGES = {"ml_publish"}
+_OPT_IN_STAGES = {"ml_publish", "register_uc_gold"}
 
 
 def _pipeline_stages() -> Dict[str, Callable]:
@@ -146,6 +146,7 @@ def _pipeline_stages() -> Dict[str, Callable]:
         "quality_checks": _stage_quality,
         "audit_report": _stage_audit,
         "register_uc": _stage_register_uc,
+        "register_uc_gold": _stage_register_uc_gold,
     }
 
 
@@ -354,19 +355,27 @@ def _stage_audit(start, end, cfg, writer, cache, force, leagues=None):
     _run_step(f"audit_report:{end}", lambda: write_run_audit("nightly", end, "ok", force=force))
 
 
-def _stage_register_uc(start, end, cfg, writer, cache, force, leagues=None):
+def _stage_register_uc(start, end, cfg, writer, cache, force, leagues=None, gold_only=False):
     def _do():
         mode = os.getenv("GBDP_UC_MODE", "managed").lower()
         if mode in {"managed", "serverless"}:
             from gbdp.catalog.managed_publish import publish_uc_managed_from_env
 
-            publish_uc_managed_from_env(start, end)
+            publish_uc_managed_from_env(start, end, gold_only=gold_only)
             return
+        if gold_only:
+            raise RuntimeError("register_uc_gold needs GBDP_UC_MODE managed or serverless")
         from gbdp.catalog.uc import register_uc_tables_from_env
 
         register_uc_tables_from_env()
 
-    _run_step(f"register_uc:{start}..{end}", _do)
+    _run_step(f"register_uc{'_gold' if gold_only else ''}:{start}..{end}", _do)
+
+
+def _stage_register_uc_gold(start, end, cfg, writer, cache, force, leagues=None):
+    # Opt-in: gold's UC tables alone, so a long rebuild's readers don't wait
+    # on bronze and silver (~45 min a month). register_uc still does all three.
+    _stage_register_uc(start, end, cfg, writer, cache, force, leagues, gold_only=True)
 
 
 def _allowed(leagues: Optional[List[str]], league: str) -> bool:

@@ -19,7 +19,8 @@ from gbdp.pipeline.errors import PermanentStageError
 from gbdp.utils.time import daterange, parse_date
 
 
-def publish_uc_managed(start: str, end: str, catalog: str, bronze_schema: str, silver_schema: str, gold_schema: str) -> None:
+def publish_uc_managed(start: str, end: str, catalog: str, bronze_schema: str, silver_schema: str, gold_schema: str,
+                       gold_only: bool = False) -> None:
     spark = _spark_session()
     if spark is None:
         return
@@ -31,7 +32,9 @@ def publish_uc_managed(start: str, end: str, catalog: str, bronze_schema: str, s
     # All gold first: an error in a lower layer must not hold back later gold dates.
     for d in days:
         _publish_gold(spark, d, catalog, gold_schema, errors)
-    for d in days:
+    # Gold is ~2 min a month, bronze + silver ~45: gold_only lets what readers
+    # see (dashboard, metric views, API) land first, the lower layers later.
+    for d in ([] if gold_only else days):
         _publish_silver(spark, d, catalog, silver_schema, errors)
         _publish_bronze_parsed(spark, d, catalog, bronze_schema, errors)
         _publish_bronze_requests(spark, d, catalog, bronze_schema, errors)
@@ -62,14 +65,14 @@ def _try_write(spark, df, full_name: str, dt: date, errors: List[str]) -> None:
         errors.append(f"{full_name} dt={dt.isoformat()}: {msg.splitlines()[0][:200]}")
 
 
-def publish_uc_managed_from_env(start: str, end: str) -> None:
+def publish_uc_managed_from_env(start: str, end: str, gold_only: bool = False) -> None:
     catalog = os.getenv("GBDP_UC_CATALOG")
     if not catalog:
         return
     bronze_schema = os.getenv("GBDP_UC_BRONZE_SCHEMA", "bronze_gbdp")
     silver_schema = os.getenv("GBDP_UC_SILVER_SCHEMA", "silver_gbdp")
     gold_schema = os.getenv("GBDP_UC_GOLD_SCHEMA", "gold_gbdp")
-    publish_uc_managed(start, end, catalog, bronze_schema, silver_schema, gold_schema)
+    publish_uc_managed(start, end, catalog, bronze_schema, silver_schema, gold_schema, gold_only=gold_only)
 
 
 def _spark_session():
