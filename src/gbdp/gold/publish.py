@@ -998,17 +998,25 @@ def _statcast_pa_id(game_pk: Any, at_bat_number: Any) -> str:
     return ulid_from_key(f"pa:mlb_statcast:{game_pk}:{at_bat_number}")
 
 
-def _statcast_runs_on_play(first: Dict[str, Any], last: Dict[str, Any]) -> int | None:
+def _statcast_runs_on_play(first: Dict[str, Any], last: Dict[str, Any],
+                           next_first: Dict[str, Any] | None = None) -> int | None:
     # The score fields live only in raw_json. Measured across the whole PA:
     # runs can score on an earlier pitch (wild pitch, steal of home), and
     # last-pitch-only lost 2 runs in 15 games on 2026-06-10.
+    # Up to the next PA of the same half-inning when there is one: a run can
+    # score between PAs with no pitch row (a balk, a wild pickoff throw), and
+    # post_bat_score of the PA before it misses it (823198, 2026-07-11, 3rd
+    # inning: 0 after AB 16, 1 before AB 17). 14 games were a run short.
     try:
         raw_first = json.loads(first.get("raw_json") or "{}")
         raw_last = json.loads(last.get("raw_json") or "{}")
+        raw_next = json.loads(next_first.get("raw_json") or "{}") if next_first else {}
     except (TypeError, ValueError):
         return None
     before = _coerce_known_type(raw_first.get("bat_score"), "long")
-    after = _coerce_known_type(raw_last.get("post_bat_score"), "long")
+    after = _coerce_known_type(raw_next.get("bat_score"), "long") if next_first else None
+    if after is None:
+        after = _coerce_known_type(raw_last.get("post_bat_score"), "long")
     if before is None or after is None:
         return None
     return after - before
@@ -1085,7 +1093,7 @@ def _statcast_plate_appearances(pitches: List[Dict[str, Any]], dt: date, bridge:
                     "pitcher_id": _canonical(bridge, "player", "mlb_statsapi", last.get("pitcher_id")),
                     "event_type": event_type,
                     "rbi": None,
-                    "runs_scored_on_play": _statcast_runs_on_play(first, last),
+                    "runs_scored_on_play": _statcast_runs_on_play(first, last, next_first if not half_ends else None),
                     "outs_on_play": None if outs_before is None or outs_after is None else outs_after - outs_before,
                     "base_state_before": _base_state_from_statcast(first),
                     "outs_before": outs_before,

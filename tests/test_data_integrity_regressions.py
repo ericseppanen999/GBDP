@@ -480,7 +480,8 @@ def test_statcast_pa_state_comes_from_the_next_pa():
             _pitch(1, 2, 1, "Top", 0, "single"),
             _pitch(2, 1, 1, "Top", 0, on_1b="x"),
             _pitch(2, 2, 1, "Top", 0, "home_run", on_1b="x", score=(0, 2)),
-            _pitch(3, 1, 1, "Top", 2, "field_out"),
+            # Statcast carries the score forward: the next batter starts at 2.
+            _pitch(3, 1, 1, "Top", 2, "field_out", score=(2, 2)),
             _pitch(4, 1, 1, "Bot", 0, "walk"),
         ],
         date(2025, 4, 1),
@@ -903,3 +904,36 @@ def test_blank_event_mid_half_or_with_fewer_than_two_out_stays_unknown():
     )
     assert [r["event_type"] for r in rows] == ["UNKNOWN", "OUT", "UNKNOWN"]
     assert rows[2]["outs_after"] == 1
+
+
+# --- 823198, 2026-07-11, top 3rd: a run scored between AB 16 and AB 17 (no
+# pitch row: a balk or a wild pickoff throw). post_bat_score of AB 16 is 0 and
+# bat_score of AB 17 is 1, so measuring each PA to its own last pitch lost it.
+def test_a_run_scoring_between_pas_belongs_to_the_pa_before():
+    from gbdp.gold.publish import _statcast_plate_appearances
+
+    rows = _statcast_plate_appearances(
+        [
+            _pitch(15, 1, 3, "Top", 0, "double", score=(0, 0)),
+            _pitch(16, 1, 3, "Top", 0, "field_out", on_1b=None, score=(0, 0)),  # runner to 3rd
+            _pitch(17, 1, 3, "Top", 1, "single", score=(1, 1)),                # the run is already in
+            _pitch(18, 1, 3, "Top", 1, "field_out", score=(1, 1)),
+            _pitch(19, 1, 3, "Top", 2, "field_out", score=(1, 1)),
+            _pitch(20, 1, 3, "Bot", 0, "walk", score=(0, 0)),
+        ],
+        date(2026, 7, 11),
+        {},
+    )
+    assert [r["runs_scored_on_play"] for r in rows] == [0, 1, 0, 0, 0, 0]
+    assert sum(r["runs_scored_on_play"] for r in rows if r["is_top_inning"]) == 1
+
+
+def test_the_last_pa_of_a_half_still_reads_its_own_post_bat_score():
+    from gbdp.gold.publish import _statcast_plate_appearances
+
+    rows = _statcast_plate_appearances(
+        [_pitch(1, 1, 9, "Bot", 2, "home_run", score=(3, 4)), _pitch(2, 1, 10, "Top", 0, "walk", score=(4, 4))],
+        date(2026, 7, 11),
+        {},
+    )
+    assert rows[0]["runs_scored_on_play"] == 1
