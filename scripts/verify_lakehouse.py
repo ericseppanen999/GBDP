@@ -212,7 +212,12 @@ def _game_days(wh: Warehouse, start: str) -> dict:
             WHERE dt >= '{start}' GROUP BY dt""") if int(n or 0) > 0}
 
     return {
-        "MLB": played(f"{BRONZE_VOL}/raw/mlb_statsapi/schedule", "CAST(get_json_object(body_text, '$.totalGames') AS INT)"),
+        # totalGames counts postponed games too: 10-16's only game was a
+        # rained-out LCS game, so there was nothing to load. D = postponed, C = cancelled.
+        "MLB": played(f"{BRONZE_VOL}/raw/mlb_statsapi/schedule",
+                      "size(filter(from_json(get_json_object(body_text, '$.dates[0].games'), "
+                      "'array<struct<status:struct<codedGameState:string>>>'), "
+                      "g -> g.status.codedGameState NOT IN ('D', 'C')))"),
         "NPB": played(f"{BRONZE_VOL}/raw/npb_spaia/games",
                       "size(filter(from_json(body_text, 'array<struct<gameStateName:string>>'), g -> g.gameStateName <> '試合中止'))"),
     }
@@ -241,15 +246,15 @@ def check_daily_counts(wh: Warehouse, rep: Report, start: str) -> None:
 
 
 def check_npb_pa_per_game(wh: Warehouse, rep: Report, start: str) -> None:
-    """NPB PAs per played game, every date (CR-005): the old builder made ~400."""
+    """NPB PAs per played game, every date (CR-005): the old builder made ~400.
+    Per 9 innings, so a 12-inning game (06-22: 104 PAs) isn't flagged."""
     rows = wh.query(f"""
-        WITH g AS (SELECT dt, count(*) n FROM {GOLD}.fact_game WHERE dt >= '{start}' AND source = 'npb_spaia'
-                     AND status NOT LIKE '%中止%' GROUP BY dt),
-             p AS (SELECT dt, count_if(event_type <> 'TRUNCATED') n FROM {GOLD}.fact_plate_appearance
-                   WHERE dt >= '{start}' AND source = 'npb_spaia' GROUP BY dt)
-        SELECT g.dt, p.n / g.n FROM g JOIN p ON g.dt = p.dt""")
+        WITH per_game AS (
+          SELECT dt, game_id, count_if(event_type <> 'TRUNCATED') n, greatest(9, max(inning)) innings
+          FROM {GOLD}.fact_plate_appearance WHERE dt >= '{start}' AND source = 'npb_spaia' GROUP BY dt, game_id)
+        SELECT dt, sum(n) * 9 / sum(innings) FROM per_game GROUP BY dt""")
     bad = sorted(d for d, r in rows if not 55 <= float(r or 0) <= 100)
-    rep.line("FAIL" if bad else "PASS", "NPB PAs per game in 55..100",
+    rep.line("FAIL" if bad else "PASS", "NPB PAs per 9-inning game in 55..100",
              f"{len(rows)} dates; outside: {bad[:6] or 'none'}" + (f" (+{len(bad) - 6})" if len(bad) > 6 else ""))
 
 
