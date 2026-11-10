@@ -309,6 +309,10 @@ resources:
         - task_key: gbdp_backfill
           description: Historical data ingestion for a custom date range
           environment_key: default
+          # Serverless retries a failed task by default, which re-ran a whole
+          # 10-hour range from identity_resolve after a quality failure on four
+          # dates (2026-11-10). The pipeline retries each stage window itself.
+          max_retries: 0
           spark_python_task:
             python_file: ${workspace.file_path}/dbx_entry.py
             parameters:
