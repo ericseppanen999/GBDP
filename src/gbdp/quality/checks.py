@@ -32,11 +32,21 @@ def run_quality_checks(
     outputs: List[Path] = []
     cfg = _load_quality_config()
     days = list(daterange(parse_date(start), parse_date(end)))
+    # Every date is checked (and recorded in audit_quality) even after one
+    # fails: raising at the first hard failure left the rest of its window
+    # unchecked. The stage still fails, naming every failed date.
+    failed: List[str] = []
     for i, d in enumerate(days, 1):
         t0 = time.monotonic()
         logger.info("quality_checks dt=%s (%d/%d)", d.isoformat(), i, len(days))
-        outputs.append(_run_for_date(root, d, cfg, force))
+        try:
+            outputs.append(_run_for_date(root, d, cfg, force))
+        except RuntimeError as exc:
+            logger.error("%s", exc)
+            failed.append(str(exc))
         logger.info("quality_checks dt=%s done (%.1fs)", d.isoformat(), time.monotonic() - t0)
+    if failed:
+        raise RuntimeError("; ".join(failed))
     return outputs
 
 
@@ -120,13 +130,18 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
             count = con.execute("SELECT COUNT(*) FROM t").fetchone()[0]
         else:
             count = _spark_count(root / table, dt_str)
+        # An off day for every league (the All-Star break Monday, 07-13) has
+        # no games to publish: only a shortfall against silver's schedule fails.
+        scheduled = _scheduled_games(dt) if count < min_count and table == "fact_game" else None
+        if scheduled == 0:
+            logger.info("quality_checks dt=%s: no league scheduled a game; row_count_min %s passes", dt_str, table)
         results.append(
             {
                 "check": "row_count_min",
                 "table": table,
                 "count": count,
                 "min_count": min_count,
-                "ok": count >= min_count or not _in_season(dt),
+                "ok": count >= min_count or not _in_season(dt) or scheduled == 0,
                 "dt": dt_str,
             }
         )
@@ -268,6 +283,18 @@ def _enforce(results: List[Dict[str, object]], dt_str: str) -> None:
     if hard_failures:
         summary = "; ".join(f"{r.get('check')}:{r.get('table') or r.get('child') or ''}" for r in hard_failures)
         raise RuntimeError(f"quality_checks dt={dt_str} failed hard invariant(s): {summary}")
+
+
+# Silver game lists gold builds fact_game from (MLB, NPB, KBO API).
+_SCHEDULE_SOURCES = (("mlb_statsapi", "games"), ("npb_spaia", "games"), ("kbo_api", "games"))
+
+
+def _scheduled_games(dt: date) -> int:
+    """Games silver lists for dt across the sources fact_game reads; 0 on a
+    day no league played."""
+    from gbdp.gold.publish import _read_silver
+
+    return sum(len(_read_silver(Path("."), src, entity, dt)) for src, entity in _SCHEDULE_SOURCES)
 
 
 def _in_season(dt: date) -> bool:
