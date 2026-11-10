@@ -1938,8 +1938,14 @@ def _npb_pa_rows(gid: str, pas: List[Dict[str, Any]], dt: date, bridge: Dict[tup
         return i + 1 >= len(pas) or pas[i + 1]["key"][:2] != pas[i]["key"][:2]
 
     done = [p for i, p in enumerate(pas) if p["result"] is not None or last_in_half(i)]
+    # SPAIA sometimes gives two PA headers of one half-inning the same play_ab
+    # (2026-06-04: 代打 田宮 and 奈良間 both 1), so the key repeats. The first
+    # keeps the plain key, so every other pa_id is unchanged; a repeat is "#2".
+    seen_keys: Dict[tuple, int] = {}
     rows = []
     for i, p in enumerate(done):
+        n = seen_keys[p["key"]] = seen_keys.get(p["key"], 0) + 1
+        pa_suffix = "" if n == 1 else f"#{n}"
         r = p["row"]
         inning, top, _ = p["key"]
         is_top = {"1": True, "2": False}.get(top)
@@ -1965,7 +1971,7 @@ def _npb_pa_rows(gid: str, pas: List[Dict[str, Any]], dt: date, bridge: Dict[tup
         if is_top is not None:
             runs = p.get("score_after", p["score_before"])[bat] - p["score_before"][bat]
         rows.append({
-            "pa_id": ulid_from_key(f"pa:npb:{gid}:{inning}:{top}:{p['key'][2]}"),
+            "pa_id": ulid_from_key(f"pa:npb:{gid}:{inning}:{top}:{p['key'][2]}{pa_suffix}"),
             "game_id": ulid_from_key(f"game:npb_spaia:{gid}"),
             "inning": _coerce_known_type(inning, "long"),
             # 1 = top, 2 = bottom (code 1 is in every 9th inning, 2 only when the

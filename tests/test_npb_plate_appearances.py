@@ -182,3 +182,22 @@ def test_runs_from_a_walk_off_row_go_to_the_pa_in_progress():
     pa, = publish._reconstruct_npb_pa(rows, date(2026, 6, 10), {})
     assert pa["runs_scored_on_play"] == 1
     assert pa["is_top_inning"] is False
+
+
+def test_a_repeated_play_ab_gets_its_own_pa_id():
+    # 2026-06-04, game 2021038962, top 7th: SPAIA gave the pinch hitter 田宮 and
+    # the next batter 奈良間 the same play_ab (1). Both PAs stay, with distinct
+    # pa_ids, and the first keeps the plain key's ID.
+    rows = [
+        _ev(1, 1, "6", "＜代打：田宮＞無死走者なし", inning=7),
+        _ev(2, 1, "1", "6球目:空振りの三振を喫する 1アウト", inning=7),
+        _ev(3, 1, "6", "＜8番：奈良間＞一死走者なし", inning=7),
+        _ev(4, 1, "1", "5球目:セカンドゴロ 2アウト", inning=7),
+        _ev(5, 2, "6", "＜9番：梅林＞二死走者なし", inning=7),
+        _ev(6, 2, "1", "5球目:空振りの三振を喫する 3アウト", inning=7),
+    ]
+    pas = publish._reconstruct_npb_pa(rows, date(2026, 6, 4), {})
+    assert [p["event_type"] for p in pas] == ["K", "OUT", "K"]
+    assert len({p["pa_id"] for p in pas}) == 3
+    assert pas[0]["pa_id"] == publish.ulid_from_key("pa:npb:g:7:1:1")
+    assert [(p["outs_before"], p["outs_after"]) for p in pas] == [(0, 1), (1, 2), (2, 3)]
