@@ -399,6 +399,43 @@ def check_silver_duplicates(wh: Warehouse, rep: Report, start: str) -> None:
         rep.line("FAIL" if dupes else "PASS", f"silver {src}/{entity} duplicates", f"{dupes} duplicate rows of {total}")
 
 
+def check_silver_keys(wh: Warehouse, rep: Report, start: str) -> None:
+    """Preflight, from silver alone and in minutes: the key collisions and gaps
+    a gold run would otherwise find hours in. Run it before a long rebuild.
+    FAIL = gold can't handle it; WARN = gold handles it, shown so it's seen."""
+    pbp = _silver("npb_spaia", "game_pbp")
+    (n,), = wh.query(f"""
+        SELECT count(*) FROM (
+          SELECT 1 FROM {pbp}
+          WHERE dt >= '{start}' AND get_json_object(raw_event_json, '$.TextInfo_Bat_Text_Sec') = '6'
+          GROUP BY dt, game_id, inning, top_bottom, play_ab HAVING count(*) > 1)""")
+    rep.line("WARN" if int(n) else "PASS", "silver NPB repeated play_ab",
+             f"{n} half-innings where SPAIA numbers two PA headers alike (gold suffixes #2)")
+    for entity in ("boxscore_batting", "boxscore_pitching"):
+        (n,), = wh.query(f"""
+            SELECT count(*) FROM (
+              SELECT 1 FROM {_silver('kbo_api', entity)}
+              WHERE dt >= '{start}' AND player_name IS NOT NULL
+              GROUP BY dt, game_id, team_id, player_name HAVING count(*) > 1)""")
+        rep.line("WARN" if int(n) else "PASS", f"silver KBO same-name teammates ({entity})",
+                 f"{n} (game, team, name) repeats (gold keys them team:name#2)")
+    missing = wh.query(f"""
+        SELECT b.dt FROM (SELECT DISTINCT dt FROM {_silver('kbo_api', 'boxscore_batting')}
+                          WHERE dt >= '{start}' AND game_id IS NOT NULL) b
+        LEFT ANTI JOIN (SELECT DISTINCT dt FROM {_silver('kbo_api', 'games')}
+                        WHERE dt >= '{start}' AND game_id IS NOT NULL) g ON g.dt = b.dt
+        ORDER BY 1""")
+    dts = [r[0] for r in missing]
+    rep.line("FAIL" if dts else "PASS", "silver KBO box scores without games",
+             f"{len(dts)} dates" + (f": {', '.join(dts[:6])}" if dts else ""))
+    (n,), = wh.query(f"""
+        SELECT count(*) FROM (
+          SELECT 1 FROM {_silver('mlb_statcast', 'pitches')}
+          WHERE dt >= '{start}' AND game_pk IS NOT NULL
+          GROUP BY dt, game_pk, at_bat_number, pitch_number HAVING count(*) > 1)""")
+    rep.line("FAIL" if int(n) else "PASS", "silver Statcast one row per pitch", f"{n} repeated pitch keys")
+
+
 def check_against_mlb(wh: Warehouse, rep: Report, days: list) -> None:
     """Production gold vs MLB's own boxscores: PAs, runs and hits per team, per game."""
     from reconcile_day import PLAYED, mlb_truth
@@ -482,6 +519,7 @@ def main() -> int:
         "roster_size": lambda: check_roster_size(wh, rep, args.start),
         "silver_statcast": lambda: check_silver_statcast(wh, rep, args.start),
         "silver_duplicates": lambda: check_silver_duplicates(wh, rep, args.start),
+        "silver_keys": lambda: check_silver_keys(wh, rep, args.start),
         "quality_results": lambda: check_quality_results(wh, rep, args.start),
         "against_mlb": lambda: check_against_mlb(wh, rep, [d for d in args.truth_days.split(",") if d]),
     }
