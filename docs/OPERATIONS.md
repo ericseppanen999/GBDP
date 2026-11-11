@@ -144,10 +144,9 @@ Add `--semantic-layer` to apply the semantic layer to those tables afterwards (s
 
 `configs/semantic_layer.yaml` becomes table/column COMMENTs, `v_*` views and
 `mv_*` metric views in `gbdp.gold_gbdp`. It is not part of the nightly; run it
-after a gold rebuild or a YAML change. It has not been applied to production
-yet, and `mv_batting`, `mv_run_expectancy` and `mv_team_games` can't be until
-the gold rebuild adds `run_expectancy_daily`, `runs_to_end_of_inning` and
-`fact_game.game_type`:
+after a gold rebuild or a YAML change. Last applied to production on
+2026-11-11, after the gold rebuild (validated first: 0 failures; applied: 311
+statements, 0 failed, 12 skipped for `fact_standings`, which has no UC table yet):
 
 1. Edit the YAML, then `python scripts/build_semantic_layer.py` and commit
    `docs/semantic_layer_uc.sql` (a test fails while it is stale).
@@ -159,9 +158,8 @@ the gold rebuild adds `run_expectancy_daily`, `runs_to_end_of_inning` and
    `python scripts/build_semantic_layer.py --game-types` lists fact_game's
    game types per source and season phase and fails on any that map to
    `other` (those games drop out of the regular-season default record).
-   It also fails while fact_plate_appearance still has legacy `SAC` rows:
-   after the rebuild replaces them with SF/SH, drop SAC from
-   `vocabularies.event_type.legacy` and the `sac_fly` / `sacrifice` groups.
+   It also fails while fact_plate_appearance has rows with a code listed in
+   `vocabularies.event_type.legacy` (none since SAC was dropped, 2026-11-11).
 3. `databricks bundle run gbdp_semantic_layer --target prod` (or
    `python dbx_entry.py semantic-layer --catalog gbdp --schema gold_gbdp` on a
    cluster). Comments on tables/columns that don't exist yet are skipped; any

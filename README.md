@@ -3,17 +3,21 @@
 A lakehouse that pulls MLB, NPB (Japan) and other leagues' data from their public feeds and turns it into one consistent, queryable model: games, rosters, players, every plate appearance and every pitch. It also produces derived analytics like season-to-date run expectancy. It runs nightly on Databricks (Delta Lake + Unity Catalog) and identically on a laptop (Parquet + DuckDB), and serves everything through a small FastAPI.
 
 ```
-$ curl 'localhost:8000/run-expectancy?league=MLB&season=2025'
+$ curl 'localhost:8000/run-expectancy?league=MLB&season=2026'
 ```
 
 | Bases | 0 outs | 1 out | 2 outs |
 |-------|-------:|------:|-------:|
-| empty | 0.37 | 0.19 | 0.09 |
-| 1st   | 0.68 | 0.32 | 0.23 |
-| 1st & 2nd | 1.47 | 0.88 | 0.56 |
-| loaded | 1.50 | 1.33 | 1.29 |
+| empty | 0.49 | 0.26 | 0.11 |
+| 1st | 0.89 | 0.53 | 0.24 |
+| 2nd | 1.14 | 0.67 | 0.34 |
+| 3rd | 1.38 | 0.92 | 0.37 |
+| 1st & 2nd | 1.52 | 0.87 | 0.45 |
+| 1st & 3rd | 1.85 | 1.18 | 0.50 |
+| 2nd & 3rd | 1.90 | 1.37 | 0.53 |
+| loaded | 2.43 | 1.63 | 0.77 |
 
-<sub>Expected runs from each base/out state to the end of the inning, computed from 933 MLB plate appearances on 2025-04-01 (one day, so small-sample noisy; a full season converges on the familiar ~0.5 for bases empty, nobody out).</sub>
+<sub>Expected runs from each base/out state to the end of the inning, from all 139,585 MLB plate appearances of 2026-05-13 to 11-05 in production gold, reconciled game by game against MLB's own box scores (see [Proving the data is right](#proving-the-data-is-right)).</sub>
 
 ## What's in it
 
@@ -178,7 +182,7 @@ Every read endpoint takes `as_of=YYYY-MM-DD` to read the data as it stood on tha
 [`configs/semantic_layer.yaml`](configs/semantic_layer.yaml) is the one definition of what gold means and how every metric is computed: each table's grain, keys, columns and caveats, the code lists (event types, base states, season phases), plain views (`v_plate_appearance`, `v_team_game`, ...) and 52 metrics in six metric views (batting from plate appearances, batting and pitching from box scores, team results, Statcast pitches, run expectancy). Everything reads it:
 
 - the API (`/metrics`) and MCP server (`list_metrics`, `describe_metric`, `compute_metric`) compile requests to SQL on local gold;
-- `gbdp semantic-layer` (bundle job `gbdp-semantic-layer`; the SQL is in [docs/semantic_layer_uc.sql](docs/semantic_layer_uc.sql)) writes table and column comments, the views and `CREATE VIEW ... WITH METRICS` metric views (`mv_batting`, `mv_pitching`, `mv_team_games`, ...) to Unity Catalog for Genie and SQL users. **Not applied yet:** none of these exist in `gbdp.gold_gbdp` today, and they haven't been checked on Databricks (`--validate-in` hasn't been run). `mv_batting`, `mv_run_expectancy` and `mv_team_games` also need the gold rebuild first: production gold has no `run_expectancy_daily` table, no `fact_plate_appearance.runs_to_end_of_inning` and no `fact_game.game_type`, and it still has `SAC` rows where rebuilt gold has `SF`/`SH`. Rebuild gold, validate in a scratch schema, then apply ([docs/OPERATIONS.md](docs/OPERATIONS.md) 6b);
+- `gbdp semantic-layer` (bundle job `gbdp-semantic-layer`; the SQL is in [docs/semantic_layer_uc.sql](docs/semantic_layer_uc.sql)) writes table and column comments, the views and `CREATE VIEW ... WITH METRICS` metric views (`mv_batting`, `mv_pitching`, `mv_team_games`, ...) to Unity Catalog for Genie and SQL users. Applied to `gbdp.gold_gbdp` on 2026-11-11 after the gold rebuild: `--validate-in` built every view and metric view in a scratch schema and queried every metric with 0 failures (and found every game type mapped to a season phase), then the job applied 311 comments, views and metric views. To change it, edit the YAML, validate in a scratch schema, then apply ([docs/OPERATIONS.md](docs/OPERATIONS.md) 6b);
 - the dashboard's metric datasets are compiled from it by `scripts/build_dashboard.py`.
 
 ```bash
