@@ -17,6 +17,9 @@ from gbdp.utils.io import (
 )
 from gbdp.pipeline.errors import PermanentStageError
 from gbdp.utils.time import daterange, parse_date
+from gbdp.utils.logging import get_logger
+
+logger = get_logger("gbdp.catalog")
 
 
 def publish_uc_managed(start: str, end: str, catalog: str, bronze_schema: str, silver_schema: str, gold_schema: str,
@@ -30,18 +33,65 @@ def publish_uc_managed(start: str, end: str, catalog: str, bronze_schema: str, s
     days = list(daterange(parse_date(start), parse_date(end)))
     errors: List[str] = []
     # All gold first: an error in a lower layer must not hold back later gold dates.
-    for d in days:
-        _publish_gold(spark, d, catalog, gold_schema, errors)
-    # Gold is ~2 min a month, bronze + silver ~45: gold_only lets what readers
-    # see (dashboard, metric views, API) land first, the lower layers later.
+    # Delta gold and silver are one table per entity, partitioned by dt: a range
+    # is one read and one replaceWhere write per table. Per day that was ~3,500
+    # transactions for a season's gold (~2.5 h on 2026-11-10). Bronze is per file.
+    by_range = storage_format() == "delta" and len(days) > 1
+    if by_range:
+        _publish_delta_range(spark, gold_root(), days[0], days[-1], catalog, gold_schema, errors, layer="gold")
+    else:
+        for d in days:
+            _publish_gold(spark, d, catalog, gold_schema, errors)
+    # gold_only lets what readers see (dashboard, metric views, API) land first.
+    if by_range and not gold_only:
+        _publish_delta_range(spark, silver_root(), days[0], days[-1], catalog, silver_schema, errors, layer="silver")
     for d in ([] if gold_only else days):
-        _publish_silver(spark, d, catalog, silver_schema, errors)
+        if not by_range:
+            _publish_silver(spark, d, catalog, silver_schema, errors)
         _publish_bronze_parsed(spark, d, catalog, bronze_schema, errors)
         _publish_bronze_requests(spark, d, catalog, bronze_schema, errors)
     if errors:
         # Schema clashes come out the same on every attempt; a retry would only
         # re-publish the whole window again (~45 min each, confirmed live).
         raise PermanentStageError(f"{len(errors)} UC table write(s) failed: " + " | ".join(errors[:10]))
+
+
+def _delta_tables(root, layer: str):
+    """(table directory, UC table name suffix) for every Delta table of a layer:
+    gold/<table>, silver/<source>/<entity> (published as <source>_<entity>)."""
+    if layer == "gold":
+        return [(d, d.name) for d in list_dir(root, dirs_only=True)]
+    return [(e, f"{s.name}_{e.name}") for s in list_dir(root, dirs_only=True) for e in list_dir(s, dirs_only=True)]
+
+
+def _publish_delta_range(spark, root, start: date, end: date, catalog: str, schema: str, errors: List[str],
+                         layer: str) -> None:
+    """Every Delta table of a layer for dt in [start, end], one write per table.
+    UC ends up holding exactly what the layer holds for those dates: a dt the
+    layer no longer has is cleared, as a per-day write would leave it stale."""
+    if not path_exists(root):
+        return
+    lo, hi = start.isoformat(), end.isoformat()
+    tables = _delta_tables(root, layer)
+    # Tables that aren't a Delta root (gold's audit_* tables are dt= parquet
+    # folders) go through the per-day path, and only those.
+    per_day = {name for t, name in tables if not path_exists(t / "_delta_log")}
+    if per_day:
+        for d in daterange(start, end):
+            (_publish_gold if layer == "gold" else _publish_silver)(spark, d, catalog, schema, errors, only=per_day)
+    for table_dir, name in tables:
+        if name in per_day:
+            continue
+        full_name = f"{catalog}.{schema}.{name}"
+        try:
+            df = spark.read.format("delta").load(spark_path(table_dir)).where(f"dt >= '{lo}' AND dt <= '{hi}'")
+        except Exception as e:
+            errors.append(f"{full_name} dt={lo}..{hi}: read failed: {str(e).splitlines()[0][:200]}")
+            continue
+        if "dt" not in df.columns:
+            continue
+        logger.info("register_uc %s %s..%s", full_name, lo, hi)
+        _try_write(spark, df, full_name, start, errors, end=end)
 
 
 # Deterministic: the same partition hits the same clash on every attempt.
@@ -54,15 +104,19 @@ _SCHEMA_CLASH_MARKERS = (
 )
 
 
-def _try_write(spark, df, full_name: str, dt: date, errors: List[str]) -> None:
+def _try_write(spark, df, full_name: str, dt: date, errors: List[str], end: date | None = None) -> None:
     """Write one table; a schema clash is recorded so the other tables still publish."""
     try:
-        _write_managed(spark, df, full_name, dt)
+        if end is None:
+            _write_managed(spark, df, full_name, dt)
+        else:
+            _write_managed(spark, df, full_name, dt, end)
     except Exception as e:
         msg = str(e)
         if not any(m in msg.lower() for m in _SCHEMA_CLASH_MARKERS):
             raise
-        errors.append(f"{full_name} dt={dt.isoformat()}: {msg.splitlines()[0][:200]}")
+        span = dt.isoformat() if end is None else f"{dt.isoformat()}..{end.isoformat()}"
+        errors.append(f"{full_name} dt={span}: {msg.splitlines()[0][:200]}")
 
 
 def publish_uc_managed_from_env(start: str, end: str, gold_only: bool = False) -> None:
@@ -150,7 +204,7 @@ def _sanitize_for_uc(df):
     return df
 
 
-def _publish_gold(spark, dt: date, catalog: str, schema: str, errors: List[str]) -> None:
+def _publish_gold(spark, dt: date, catalog: str, schema: str, errors: List[str], only=None) -> None:
     base = gold_root()
     if not path_exists(base):
         return
@@ -160,6 +214,8 @@ def _publish_gold(spark, dt: date, catalog: str, schema: str, errors: List[str])
 
     for table_dir in list_dir(base, dirs_only=True):
         table = table_dir.name
+        if only is not None and table not in only:
+            continue
         full_name = f"{catalog}.{schema}.{table}"
         df = None
 
@@ -203,7 +259,7 @@ def _publish_gold(spark, dt: date, catalog: str, schema: str, errors: List[str])
         _try_write(spark, df, full_name, dt, errors)
 
 
-def _publish_silver(spark, dt: date, catalog: str, schema: str, errors: List[str]) -> None:
+def _publish_silver(spark, dt: date, catalog: str, schema: str, errors: List[str], only=None) -> None:
     base = silver_root()
     if not path_exists(base):
         return
@@ -215,6 +271,8 @@ def _publish_silver(spark, dt: date, catalog: str, schema: str, errors: List[str
         source = source_dir.name
         for entity_dir in list_dir(source_dir, dirs_only=True):
             entity = entity_dir.name
+            if only is not None and f"{source}_{entity}" not in only:
+                continue
             full_name = f"{catalog}.{schema}.{source}_{entity}"
             df = None
 
@@ -303,12 +361,15 @@ def _publish_bronze_requests(spark, dt: date, catalog: str, schema: str, errors:
     _try_write(spark, df, full_name, dt, errors)
 
 
-def _write_managed(spark, df, full_name: str, dt: date) -> None:
-    from pyspark.sql import functions as F
-
+def _write_managed(spark, df, full_name: str, dt: date, end: date | None = None) -> None:
+    """Replace one dt partition of a managed table, or with end, every dt in
+    [dt, end] at once (one Delta transaction instead of one per day)."""
     dt_str = dt.isoformat()
-    if "dt" not in df.columns:
+    if end is None and "dt" not in df.columns:
+        from pyspark.sql import functions as F
+
         df = df.withColumn("dt", F.lit(dt_str))
+    where = f"dt = '{dt_str}'" if end is None else f"dt >= '{dt_str}' AND dt <= '{end.isoformat()}'"
 
     # Make UC-safe (fix invalid columns + stabilize complex types)
     df = _sanitize_for_uc(df)
@@ -326,7 +387,7 @@ def _write_managed(spark, df, full_name: str, dt: date) -> None:
         (
             df.write.format("delta")
             .mode("overwrite")
-            .option("replaceWhere", f"dt = '{dt_str}'")
+            .option("replaceWhere", where)
             .option("mergeSchema", "true")
             .saveAsTable(full_name)
         )
