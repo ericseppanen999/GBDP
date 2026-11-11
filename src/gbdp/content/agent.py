@@ -37,6 +37,14 @@ reconciled MLB and NPB data. Write one post per insight you find worth posting
   is notable, not a forecast. Don't call it a breakout or a new normal.
 - Name the player or league as the data does. Under 280 characters per post,
   no hashtags, at most one emoji.
+- The data covers only `coverage.start` to `coverage.end` (in the input). If
+  that doesn't start at the season's opening day, never say "season" or "in
+  2026": say "since <start date>" instead.
+- No superlatives or rankings (longest, best, most, highest, record, first,
+  only): nothing here compares a player with the whole league. Trend words
+  (rose, fell, jumped, climbed, dropped) only for change_vs_baseline and
+  league_month_shift, which compare two periods; a cross-league gap or a
+  streak is a single fact.
 - In `claims`, list every headline number the post states, as the data's raw
   fractions or counts: value, and baseline when the post states it."""
 
@@ -88,6 +96,17 @@ class Draft:
 
 # ---------------------------------------------------------------- gather ---
 
+def coverage(as_of: Optional[str]) -> Dict[str, Any]:
+    """The game dates gold holds for the as-of year, so a post can't call a
+    partial season a season."""
+    from gbdp.serve.db import run_sql
+
+    year = (as_of or date.today().isoformat())[:4]
+    rows = run_sql(f"SELECT min(dt) AS start, max(dt) AS end FROM fact_game "
+                   f"WHERE dt >= '{year}-01-01' AND dt <= '{as_of or year + '-12-31'}'", limit=1)
+    return rows[0] if rows else {"start": None, "end": None}
+
+
 def gather(as_of: Optional[str] = None, limit: int = 12, evidence_rows: int = 30) -> List[Dict[str, Any]]:
     """The best insights, interleaved across detectors, each with its evidence."""
     from gbdp import mcp_server as tools
@@ -103,16 +122,24 @@ def gather(as_of: Optional[str] = None, limit: int = 12, evidence_rows: int = 30
         rows = detail.get("evidence_rows") or []
         out.append({k: v for k, v in detail.items() if k not in ("evidence_sql", "evidence_rows")}
                    | {"evidence_rows": rows[:evidence_rows]})
+    if out:
+        out[0]["_coverage"] = coverage(as_of)
     return out
 
 
 # ----------------------------------------------------------------- draft ---
 
+def _payload(insights: List[Dict[str, Any]]) -> str:
+    cov = next((i.get("_coverage") for i in insights if i.get("_coverage")), None)
+    body = {"coverage": cov or {"start": None, "end": None},
+            "insights": [{k: v for k, v in i.items() if k != "_coverage"} for i in insights]}
+    return json.dumps(body, ensure_ascii=False, default=str, sort_keys=True)
+
 def draft(client, insights: List[Dict[str, Any]], model: str = MODEL) -> List[Draft]:
     """One structured call: a post (with its claims) per insight worth posting."""
     if not insights:
         return []
-    payload = json.dumps(insights, ensure_ascii=False, default=str, sort_keys=True)
+    payload = _payload(insights)
     response = client.beta.messages.create(
         model=model,
         max_tokens=16000,
@@ -142,7 +169,7 @@ def draft_ollama(insights: List[Dict[str, Any]], model: str = "qwen2.5:3b",
 
     if not insights:
         return []
-    payload = json.dumps(insights, ensure_ascii=False, default=str, sort_keys=True)
+    payload = _payload(insights)
     r = requests.post(f"{host.rstrip('/')}/api/chat", timeout=timeout, json={
         "model": model,
         "stream": False,
@@ -153,6 +180,41 @@ def draft_ollama(insights: List[Dict[str, Any]], model: str = "qwen2.5:3b",
     })
     r.raise_for_status()
     posts = json.loads(r.json()["message"]["content"]).get("posts", [])
+    return [Draft(str(p.get("insight_id", "")), str(p.get("text", "")), list(p.get("claims") or [])) for p in posts]
+
+
+def draft_openai_compat(insights: List[Dict[str, Any]], model: str = "openai/gpt-oss-120b",
+                        base_url: str = "https://api.groq.com/openai/v1", api_key_env: str = "GROQ_API_KEY",
+                        timeout: float = 300.0) -> List[Draft]:
+    """The same drafting step on an open-weights model behind an
+    OpenAI-compatible chat API (Groq by default), with the same JSON schema.
+    If the server won't take the schema strictly, it falls back to JSON mode
+    with the schema in the prompt; verify() guards the output either way."""
+    import os
+
+    import requests
+
+    if not insights:
+        return []
+    key = os.environ.get(api_key_env)
+    if not key:
+        raise RuntimeError(f"{api_key_env} is not set")
+    payload = _payload(insights)
+    messages = [{"role": "system", "content": SYSTEM},
+                {"role": "user", "content": f"Insights (JSON):\n{payload}"}]
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {key}"}
+    body = {"model": model, "temperature": 0, "messages": messages,
+            "response_format": {"type": "json_schema", "json_schema": {"name": "posts", "strict": True, "schema": SCHEMA}}}
+    r = requests.post(url, headers=headers, json=body, timeout=timeout)
+    if r.status_code == 400:
+        schema_note = "\n\nAnswer with JSON matching this schema:\n" + json.dumps(SCHEMA)
+        body = {"model": model, "temperature": 0, "response_format": {"type": "json_object"},
+                "messages": [messages[0], {"role": "user", "content": messages[1]["content"] + schema_note}]}
+        r = requests.post(url, headers=headers, json=body, timeout=timeout)
+    r.raise_for_status()
+    content = r.json()["choices"][0]["message"]["content"]
+    posts = json.loads(content).get("posts", [])
     return [Draft(str(p.get("insight_id", "")), str(p.get("text", "")), list(p.get("claims") or [])) for p in posts]
 
 
@@ -209,6 +271,12 @@ def text_numbers(text: str) -> List[tuple]:
     return out
 
 
+_SUPERLATIVES = ("longest", "shortest", "best", "worst", "most", "least", "highest", "lowest", "record",
+                 "first", "only", "top", "leads", "leading")
+_TREND_WORDS = ("rose", "rising", "climbed", "climbing", "jumped", "fell", "falling", "dropped", "surged",
+                "plunged", "increased", "decreased", "edging")
+
+
 def verify(drafts: List[Draft], insights: List[Dict[str, Any]], as_of: Optional[str] = None) -> List[Draft]:
     """Mark each draft's problems: an unknown insight, a claim gold doesn't
     re-derive, or a number in the text that isn't one of the insight's own."""
@@ -236,6 +304,18 @@ def verify(drafts: List[Draft], insights: List[Dict[str, Any]], as_of: Optional[
         for number, pct, written in text_numbers(d.text):
             if not any(_rounds_to(a, number) for a in allowed):
                 d.problems.append(f"number in text not in the data: {written}")
+        low = d.text.lower()
+        for word in _SUPERLATIVES:
+            if re.search(rf"\b{word}\b", low):
+                d.problems.append(f"superlative or ranking the data doesn't support: {word!r}")
+        if ins.get("detector") not in ("change_vs_baseline", "league_month_shift"):
+            for word in _TREND_WORDS:
+                if re.search(rf"\b{word}\b", low):
+                    d.problems.append(f"trend word for a single fact: {word!r}")
+        cov = next((i.get("_coverage") for i in insights if i.get("_coverage")), None) or {}
+        start = str(cov.get("start") or "")
+        if start and not start.endswith(("-03-25", "-03-26", "-03-27", "-03-28")) and re.search(r"\bseason\b|\bin 20\d\d\b", low):
+            d.problems.append(f"says 'season' but the data starts {start}")
         if len(d.text) > 280:
             d.problems.append(f"too long ({len(d.text)} characters)")
     return drafts
@@ -272,10 +352,16 @@ def write_queue(drafts: List[Draft], insights: List[Dict[str, Any]], out_dir: Pa
 
 def run(client, as_of: Optional[str], out_dir: Path, limit: int = 12, model: str = MODEL,
         backend: str = "claude") -> Path:
-    """backend "claude" (client: an anthropic.Anthropic) or "ollama" (client
-    unused; model is an Ollama model name)."""
+    """backend "claude" (client: an anthropic.Anthropic), "groq" (an
+    open-weights model on Groq; GROQ_API_KEY) or "ollama" (a local model);
+    client is unused for the last two."""
     insights = gather(as_of, limit)
     as_of = as_of or (str(insights[0].get("dt")) if insights else date.today().isoformat())
-    drafted = draft_ollama(insights, model=model) if backend == "ollama" else draft(client, insights, model=model)
+    if backend == "ollama":
+        drafted = draft_ollama(insights, model=model)
+    elif backend == "groq":
+        drafted = draft_openai_compat(insights, model=model)
+    else:
+        drafted = draft(client, insights, model=model)
     drafts = verify(drafted, insights, as_of=as_of)
     return write_queue(drafts, insights, out_dir, as_of)

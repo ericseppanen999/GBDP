@@ -18,7 +18,7 @@ class _FakeClient:
 
     def _create(self, **kwargs):
         self.requests.append(kwargs)
-        insights = json.loads(kwargs["messages"][0]["content"].split("\n", 1)[1])
+        insights = json.loads(kwargs["messages"][0]["content"].split("\n", 1)[1])["insights"]
         text = json.dumps({"posts": self.make_posts(insights)})
         return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text=text)])
 
@@ -112,3 +112,32 @@ def test_ollama_backend_drafts_with_the_same_schema_and_survives_junk(semantic_g
     assert sent["url"].endswith("/api/chat") and sent["body"]["format"] == agent.SCHEMA
     assert sent["body"]["model"] == "qwen2.5:3b"
     assert all(d.ok for d in drafts[:-1]) and any("malformed claim" in p for p in drafts[-1].problems)
+
+
+def test_superlatives_trend_words_and_season_for_a_partial_season_are_rejected(semantic_gold):
+    insights = agent.gather(limit=50)
+    streak = next(i for i in insights if i["detector"] == "hitting_streak")
+    sid, n = streak["insight_id"], int(streak["value"])
+    claim = [{"insight_id": sid, "value": streak["value"], "baseline": None}]
+    # The 2026-11-11 Groq run: "the longest active streak in MLB" passed the number checks.
+    posts = [
+        {"insight_id": sid, "text": f"{n} straight games, the longest active streak.", "claims": claim},
+        {"insight_id": sid, "text": f"His streak rose to {n} games.", "claims": claim},
+        {"insight_id": sid, "text": f"{n} straight games this season.", "claims": claim},
+        {"insight_id": sid, "text": f"{n} straight games with a hit.", "claims": claim},
+    ]
+    insights[0]["_coverage"] = {"start": "2026-05-13", "end": "2026-11-04"}
+    longest, rose, season, fine = agent.verify(agent.draft(_FakeClient(lambda _: posts), insights), insights)
+    assert any("longest" in p for p in longest.problems)
+    assert any("rose" in p for p in rose.problems)
+    assert any("data starts 2026-05-13" in p for p in season.problems)
+    assert fine.ok, fine.problems
+
+
+def test_the_prompt_carries_the_coverage(semantic_gold):
+    insights = agent.gather(limit=5)
+    client = _FakeClient(lambda _: [])
+    agent.draft(client, insights)
+    body = json.loads(client.requests[0]["messages"][0]["content"].split("\n", 1)[1])
+    assert set(body["coverage"]) == {"start", "end"} and body["coverage"]["start"]
+    assert all("_coverage" not in i for i in body["insights"])
