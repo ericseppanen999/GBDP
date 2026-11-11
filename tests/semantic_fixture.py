@@ -262,4 +262,32 @@ def build_gold(tmp: Path) -> Path:
     build_silver(silver)
     resolve_identity(DAY1.isoformat(), DAY2.isoformat(), root=gold, force=True)
     publish_gold(DAY1.isoformat(), DAY2.isoformat(), root=gold, force=True)
+    build_insights(tmp, gold)
     return gold
+
+
+def build_insights(tmp: Path, gold: Path) -> None:
+    """insight_candidates as of DAY2, with thresholds low enough for two days
+    of fixture data (configs/insights.yaml needs a real season)."""
+    import os
+
+    import yaml
+
+    from gbdp.insights.publish import insights_config, publish_insights
+
+    cfg = insights_config(Path(__file__).resolve().parent.parent / "configs" / "insights.yaml")
+    cfg["hitting_streak"]["min_games"] = 1
+    cfg["change_vs_baseline"].update(min_recent_pa=1, min_baseline_pa=1, min_abs_z=0)
+    cfg["league_month_shift"].update(min_month_pa=1, min_abs_z=0)
+    cfg["cross_league_gap"].update(min_season_pa=1, min_abs_z=0)
+    path = tmp / "insights.yaml"
+    path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+    saved = os.environ.get("GBDP_INSIGHTS_CONFIG")
+    os.environ["GBDP_INSIGHTS_CONFIG"] = str(path)
+    try:
+        publish_insights(DAY2.isoformat(), DAY2.isoformat(), root=gold, force=True)
+    finally:
+        if saved is None:
+            os.environ.pop("GBDP_INSIGHTS_CONFIG", None)
+        else:
+            os.environ["GBDP_INSIGHTS_CONFIG"] = saved

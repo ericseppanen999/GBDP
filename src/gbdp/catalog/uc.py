@@ -239,6 +239,7 @@ def _expected_gold_tables() -> List[str]:
         "feature_player_rolling_30d",
         "feature_batter_daily",
         "ml_split",
+        "insight_candidates",
         "ml_breakout_examples",
         "audit_pipeline_runs",
         "audit_stage_runs",

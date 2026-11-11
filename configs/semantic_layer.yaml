@@ -700,6 +700,43 @@ tables:
       dt: Last day of the window.
       ingested_at_utc: When this row was written.
 
+  insight_candidates:
+    description: >
+      Patterns in the season to date that are worth writing about, found by
+      deterministic detectors (src/gbdp/insights/detectors.py, thresholds in
+      configs/insights.yaml) as of dt: active hitting streaks, a batter's last
+      14 days against his own season, a league's month against its previous
+      month, and MLB against NPB. Each row carries its numbers, sample size, a
+      score and evidence_sql, a query over gold that re-derives the headline
+      number. An LLM writing about one should state only these numbers and can
+      re-run evidence_sql to check them.
+    grain: up to top_per_detector rows per detector per dt
+    primary_key: [insight_id, dt]
+    sources: [feature_batter_daily, dim_player]
+    caveats:
+      - Written by the opt-in insights_publish stage for its end date only, not by gold_publish for every dt.
+      - change_vs_baseline is mostly regression to the mean (see the breakout model in the README); its score is a z-score against sampling noise, not a forecast.
+      - Box-score-only leagues (KBO, LMB, Indy) have no feature_batter_daily rows, so no insights yet.
+    columns:
+      insight_id: Hash of detector, dt, league, subject and metric.
+      detector: hitting_streak, change_vs_baseline, league_month_shift or cross_league_gap.
+      league_code: MLB or NPB; for cross_league_gap the pair, e.g. MLB-NPB.
+      subject_type: player, league or league_pair.
+      subject_id: dim_player.player_id for a player; the league code(s) otherwise.
+      subject_name: dim_player.primary_name for a player (from its newest snapshot); the league code(s) otherwise.
+      metric: What value measures (hitting_streak_games, woba, k_rate, bb_rate, hr_rate).
+      value: The headline number (the streak length, the recent or this-month rate, the first league's rate).
+      baseline: What value is compared with (the season-before-window or previous-month rate, the second league's rate); null for streaks.
+      delta: value - baseline; null for streaks.
+      sample_size: PAs (or games, for a streak) behind value.
+      score: Strength within its detector, bigger is stronger (games for a streak, |z| otherwise).
+      rank: 1 = highest score within its detector on dt.
+      facts_json: The detector's other numbers (dates, PAs, z, direction, caveat) as JSON.
+      evidence_sql: SQL over gold ({{table:...}} placeholders, as in this file) that re-derives the headline number.
+      definition_version: configs/insights.yaml definition_version.
+      dt: The as-of date.
+      ingested_at_utc: When this row was written.
+
   feature_batter_daily:
     description: >
       Each batter's counting stats on dt from fact_plate_appearance (the

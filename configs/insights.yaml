@@ -1,0 +1,25 @@
+# Insight detectors (src/gbdp/insights/detectors.py). Thresholds keep a
+# candidate from being noise: most short-window "trends" are regression to the
+# mean, so each detector needs a sample size and a score, not just a big number.
+definition_version: insights-v1
+
+hitting_streak:
+  min_games: 10          # consecutive games with a hit, ending on the batter's latest game
+
+change_vs_baseline:
+  recent_days: 14        # the window ending on the as-of date
+  min_recent_pa: 40
+  min_baseline_pa: 150   # season to date before the window
+  min_abs_z: 2.5         # |recent - baseline| wOBA over its standard error
+  woba_sd_per_pa: 0.5    # rough per-PA SD of wOBA, for the standard error
+
+league_month_shift:
+  min_month_pa: 3000     # a league-month needs this many PAs to be compared
+  min_abs_z: 3.0
+
+cross_league_gap:
+  min_season_pa: 10000   # each league, season to date
+  min_abs_z: 4.0
+
+# Kept for the content agent: how many of each detector's top candidates.
+top_per_detector: 10

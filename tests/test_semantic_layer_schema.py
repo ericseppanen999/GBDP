@@ -26,8 +26,12 @@ def sl():
     return semantic.load()
 
 
-def _publish_tables() -> set:
-    src = inspect.getsource(publish)
+def _publish_tables(with_stages: bool = True) -> set:
+    """Gold tables the code writes; with_stages adds those written by stages
+    other than gold_publish (insights_publish's insight_candidates)."""
+    from gbdp.insights import publish as insights_publish
+
+    src = inspect.getsource(publish) + (inspect.getsource(insights_publish) if with_stages else "")
     return set(re.findall(r'_write_gold_table\(\s*root,\s*"(\w+)"', src))
 
 
@@ -66,7 +70,7 @@ def test_publish_runs_every_table_writer(sl):
     assert "*_ml_steps(root, dt, force)" in source
     steps = re.findall(r'\("(\w+)", lambda', source)
     # run_expectancy_daily is written inside the run_expectancy step.
-    assert set(steps) | {"run_expectancy_daily"} == _publish_tables()
+    assert set(steps) | {"run_expectancy_daily"} == _publish_tables(with_stages=False)
 
 
 def test_columns_match_what_the_code_writes(sl, semantic_gold):

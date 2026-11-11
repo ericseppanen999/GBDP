@@ -85,6 +85,11 @@ _KNOWN_FIELD_TYPES: Dict[str, str] = {
     "breakout_split": "string", "train_end": "string", "validation_end": "string", "embargo_days": "long",
     # breakout_candidates
     "score": "double", "rank": "long", "model_version": "string", "horizon_days": "long",
+    # insight_candidates (insights/detectors.py): baseline/delta are null for
+    # streaks, so a batch of only streaks would otherwise infer them as STRING.
+    "value": "double", "baseline": "double", "delta": "double", "sample_size": "long",
+    "insight_id": "string", "detector": "string", "subject_type": "string", "subject_id": "string",
+    "subject_name": "string", "metric": "string", "facts_json": "string", "evidence_sql": "string",
 }
 
 

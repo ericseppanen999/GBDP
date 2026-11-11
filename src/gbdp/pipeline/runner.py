@@ -124,7 +124,7 @@ def run_pipeline(
     return results
 
 
-_OPT_IN_STAGES = {"ml_publish", "register_uc_gold"}
+_OPT_IN_STAGES = {"ml_publish", "register_uc_gold", "insights_publish"}
 
 
 def _pipeline_stages() -> Dict[str, Callable]:
@@ -143,6 +143,7 @@ def _pipeline_stages() -> Dict[str, Callable]:
         "identity_resolve": _stage_identity,
         "gold_publish": _stage_gold,
         "ml_publish": _stage_ml,
+        "insights_publish": _stage_insights,
         "quality_checks": _stage_quality,
         "audit_report": _stage_audit,
         "register_uc": _stage_register_uc,
@@ -339,6 +340,13 @@ def _stage_identity(start, end, cfg, writer, cache, force, leagues=None):
 
 def _stage_gold(start, end, cfg, writer, cache, force, leagues=None):
     _run_step(f"gold_publish:{start}..{end}", lambda: publish_gold(start, end, force=force))
+
+
+def _stage_insights(start, end, cfg, writer, cache, force, leagues=None):
+    # As of the window's end date: one insight_candidates partition per run.
+    from gbdp.insights.publish import publish_insights
+
+    _run_step(f"insights_publish:{end}", lambda: publish_insights(start, end))
 
 
 def _stage_ml(start, end, cfg, writer, cache, force, leagues=None):

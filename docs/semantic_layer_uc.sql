@@ -459,6 +459,44 @@ ALTER TABLE gbdp.gold_gbdp.feature_player_rolling_30d ALTER COLUMN `dt` COMMENT 
 
 ALTER TABLE gbdp.gold_gbdp.feature_player_rolling_30d ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
 
+COMMENT ON TABLE gbdp.gold_gbdp.insight_candidates IS 'Patterns in the season to date that are worth writing about, found by deterministic detectors (src/gbdp/insights/detectors.py, thresholds in configs/insights.yaml) as of dt: active hitting streaks, a batter\'s last 14 days against his own season, a league\'s month against its previous month, and MLB against NPB. Each row carries its numbers, sample size, a score and evidence_sql, a query over gold that re-derives the headline number. An LLM writing about one should state only these numbers and can re-run evidence_sql to check them. Grain: up to top_per_detector rows per detector per dt. Sources: feature_batter_daily, dim_player. Caveat: Written by the opt-in insights_publish stage for its end date only, not by gold_publish for every dt. Caveat: change_vs_baseline is mostly regression to the mean (see the breakout model in the README); its score is a z-score against sampling noise, not a forecast. Caveat: Box-score-only leagues (KBO, LMB, Indy) have no feature_batter_daily rows, so no insights yet. Semantic l...';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `insight_id` COMMENT 'Hash of detector, dt, league, subject and metric.';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `detector` COMMENT 'hitting_streak, change_vs_baseline, league_month_shift or cross_league_gap.';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `league_code` COMMENT 'MLB or NPB; for cross_league_gap the pair, e.g. MLB-NPB.';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `subject_type` COMMENT 'player, league or league_pair.';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `subject_id` COMMENT 'dim_player.player_id for a player; the league code(s) otherwise.';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `subject_name` COMMENT 'dim_player.primary_name for a player (from its newest snapshot); the league code(s) otherwise.';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `metric` COMMENT 'What value measures (hitting_streak_games, woba, k_rate, bb_rate, hr_rate).';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `value` COMMENT 'The headline number (the streak length, the recent or this-month rate, the first league\'s rate).';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `baseline` COMMENT 'What value is compared with (the season-before-window or previous-month rate, the second league\'s rate); null for streaks.';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `delta` COMMENT 'value - baseline; null for streaks.';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `sample_size` COMMENT 'PAs (or games, for a streak) behind value.';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `score` COMMENT 'Strength within its detector, bigger is stronger (games for a streak, |z| otherwise).';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `rank` COMMENT '1 = highest score within its detector on dt.';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `facts_json` COMMENT 'The detector\'s other numbers (dates, PAs, z, direction, caveat) as JSON.';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `evidence_sql` COMMENT 'SQL over gold ({{table:...}} placeholders, as in this file) that re-derives the headline number.';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `definition_version` COMMENT 'configs/insights.yaml definition_version.';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `dt` COMMENT 'The as-of date.';
+
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
+
 COMMENT ON TABLE gbdp.gold_gbdp.feature_batter_daily IS 'Each batter\'s counting stats on dt from fact_plate_appearance (the sources in configs/ml.yaml: MLB Statcast and NPB SPAIA). The daily building block of the breakout windows; summing a dt range of it gives that range\'s line. Grain: one row per (player_id, league_code) per dt, for batters with at least one PA. Sources: fact_plate_appearance. Caveat: wOBA terms use one fixed set of weights (configs/ml.yaml) for every league and season, and count intentional walks as walks (the feeds don\'t separate them). Semantic layer: configs/semantic_layer.yaml.';
 
 ALTER TABLE gbdp.gold_gbdp.feature_batter_daily ALTER COLUMN `player_id` COMMENT 'FK to dim_player (fact_plate_appearance.batter_id).';

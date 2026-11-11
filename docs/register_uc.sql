@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS gbdp.gold_gbdp.breakout_candidates USING DELTA LOCATI
 CREATE TABLE IF NOT EXISTS gbdp.gold_gbdp.feature_player_rolling_30d USING DELTA LOCATION '/Volumes/gbdp/gold_gbdp/gold_vol/gbdp/gold/feature_player_rolling_30d';
 CREATE TABLE IF NOT EXISTS gbdp.gold_gbdp.feature_batter_daily USING DELTA LOCATION '/Volumes/gbdp/gold_gbdp/gold_vol/gbdp/gold/feature_batter_daily';
 CREATE TABLE IF NOT EXISTS gbdp.gold_gbdp.ml_split USING DELTA LOCATION '/Volumes/gbdp/gold_gbdp/gold_vol/gbdp/gold/ml_split';
+CREATE TABLE IF NOT EXISTS gbdp.gold_gbdp.insight_candidates USING DELTA LOCATION '/Volumes/gbdp/gold_gbdp/gold_vol/gbdp/gold/insight_candidates';
 CREATE TABLE IF NOT EXISTS gbdp.gold_gbdp.ml_breakout_examples USING DELTA LOCATION '/Volumes/gbdp/gold_gbdp/gold_vol/gbdp/gold/ml_breakout_examples';
 CREATE TABLE IF NOT EXISTS gbdp.gold_gbdp.audit_pipeline_runs USING DELTA LOCATION '/Volumes/gbdp/gold_gbdp/gold_vol/gbdp/gold/audit_pipeline_runs';
 CREATE TABLE IF NOT EXISTS gbdp.gold_gbdp.audit_stage_runs USING DELTA LOCATION '/Volumes/gbdp/gold_gbdp/gold_vol/gbdp/gold/audit_stage_runs';
