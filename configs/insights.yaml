@@ -1,10 +1,11 @@
 # Insight detectors (src/gbdp/insights/detectors.py). Thresholds keep a
 # candidate from being noise: most short-window "trends" are regression to the
 # mean, so each detector needs a sample size and a score, not just a big number.
-definition_version: insights-v1
+definition_version: insights-v2
 
 hitting_streak:
   min_games: 10          # consecutive games with a hit, ending on the batter's latest game
+  max_days_since_last_game: 3   # else it ended (injury, end of season): not active
 
 change_vs_baseline:
   recent_days: 14        # the window ending on the as-of date

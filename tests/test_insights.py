@@ -126,3 +126,21 @@ def test_publish_insights_writes_gold(tmp_path, monkeypatch):
     publish_insights(AS_OF.isoformat(), AS_OF.isoformat())
     rows = read_parquet_rows(gold / "insight_candidates" / f"dt={AS_OF.isoformat()}")
     assert [(r["detector"], r["subject_name"], r["value"]) for r in rows] == [("hitting_streak", "鈴木", 6.0)]
+
+
+def test_a_streak_whose_player_stopped_playing_is_not_active(query):
+    # Soderstrom, 2026-08-31: an 11-game streak that ended on his last game, 08-14.
+    rows = [_day("idle", "MLB", date(2026, 8, 14) - timedelta(days=i)) for i in range(11)]
+    rows += [_day("live", "MLB", AS_OF - timedelta(days=1 + i)) for i in range(11)]
+    found = d.hitting_streaks(query(rows), AS_OF, dict(CFG["hitting_streak"], max_days_since_last_game=3))
+    assert [c["subject_id"] for c in found] == ["live"]
+
+
+def test_only_the_latest_month_shift_is_reported(query):
+    rows = []
+    for i in range(300):  # June -> July jump in HR, then July == August
+        rows.append(_day(f"j{i}", "NPB", date(2026, 6, 15), pa=5, hr=0, so=1))
+        rows.append(_day(f"k{i}", "NPB", date(2026, 7, 15), pa=5, hr=1 if i % 3 == 0 else 0, so=1))
+        rows.append(_day(f"l{i}", "NPB", date(2026, 8, 15), pa=5, hr=1 if i % 3 == 0 else 0, so=1))
+    shifts = d.league_month_shift(query(rows), AS_OF, CFG["league_month_shift"])
+    assert not [c for c in shifts if c["metric"] == "hr_rate"]  # July's jump is old news by August

@@ -54,7 +54,10 @@ def _candidate(detector: str, as_of: date, league: str, subject_type: str, subje
 
 
 def hitting_streaks(q: Query, as_of: date, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Batters whose latest games are a run of games with a hit."""
+    """Batters whose latest games are a run of games with a hit, and who
+    played within max_days_since_last_game of as_of: a streak that ended on
+    a player's last game before an injury, or on the season's last day, is
+    not active."""
     rows = q(f"""
         WITH games AS (
           SELECT player_id, league_code, dt, CASE WHEN h > 0 THEN 1 ELSE 0 END AS hit
@@ -71,7 +74,8 @@ def hitting_streaks(q: Query, as_of: date, cfg: Dict[str, Any]) -> List[Dict[str
         SELECT r.player_id, r.league_code, r.start_dt, r.end_dt, r.games, p.primary_name
         FROM runs r JOIN last_game l ON l.player_id = r.player_id AND l.last_dt = r.end_dt
         LEFT JOIN players p ON p.player_id = r.player_id
-        WHERE r.games >= {int(cfg['min_games'])}""")
+        WHERE r.games >= {int(cfg['min_games'])}
+          AND r.end_dt >= '{(as_of - timedelta(days=int(cfg.get('max_days_since_last_game', 3)))).isoformat()}'""")
     out = []
     for r in rows:
         evidence = f"""
@@ -148,7 +152,8 @@ def _rate_z(x1: float, n1: float, x2: float, n2: float) -> float:
 
 
 def league_month_shift(q: Query, as_of: date, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """A league's month vs its own previous month, for K%, BB% and HR/PA."""
+    """A league's latest month (with enough PAs) vs its previous month, for
+    K%, BB% and HR/PA."""
     by_league: Dict[str, List[Dict[str, Any]]] = {}
     for r in _league_months(q, as_of):
         if (r["pa"] or 0) >= cfg["min_month_pa"]:
@@ -156,7 +161,8 @@ def league_month_shift(q: Query, as_of: date, cfg: Dict[str, Any]) -> List[Dict[
     out = []
     for league, months in by_league.items():
         months.sort(key=lambda r: r["month"])
-        for prev, cur in zip(months, months[1:]):
+        # Only the latest month against the one before it is news as of as_of.
+        for prev, cur in list(zip(months, months[1:]))[-1:]:
             for metric, (num, den, label) in RATES.items():
                 z = _rate_z(cur[num], cur[den], prev[num], prev[den])
                 if abs(z) < cfg["min_abs_z"]:
