@@ -387,5 +387,7 @@ targets:
     workspace:
       root_path: /Workspace/Users/eric.t.seppanen@gmail.com/.bundle/${bundle.name}/${bundle.target}
     variables:
-      # Resumed 2026-11-11 after the full-season gold rebuild reconciled.
-      nightly_pause_status: UNPAUSED
+      # Paused while the 2026-03-25..05-12 backfill and full-season gold
+      # rebuild run (the nightly would write gold underneath it). Set to
+      # UNPAUSED once season_coverage passes.
+      nightly_pause_status: PAUSED
