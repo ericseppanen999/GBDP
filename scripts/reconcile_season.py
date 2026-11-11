@@ -59,6 +59,10 @@ def _compare(rep, league: str, truth: dict, got: dict, keys) -> dict:
         misses[key] = bad
         rep.line("PASS" if not bad else "FAIL", f"{league} {key} per team = source", f"{checked - len(bad)}/{checked} games"
                  + (f"; e.g. {[(g, tuple(got.get(g, {}).get(key, [0, 0])), tuple(truth[g][key])) for g in bad[:3]]}" if bad else ""))
+        # Every miss with its date, so it can be re-published by date.
+        for g in bad:
+            print(f"    {league} {key} miss: game {g} dt {truth[g].get('day', '?')} "
+                  f"gold {tuple(got.get(g, {}).get(key, [0, 0]))} source {tuple(truth[g][key])}")
     return misses
 
 
@@ -77,7 +81,7 @@ def reconcile_mlb(wh, rep, start: str, end: str) -> None:
             if "Suspended" in str(g.get("detail")):
                 suspended.append(pk)
             if g["status"] in PLAYED:
-                truth[pk] = g
+                truth[pk] = dict(g, day=day)
     got = _gold_by_game(wh, "mlb_statcast", start, end)
     print(f"MLB: {len(truth)} final games in the source, {len(got)} with plate appearances in gold; suspended: {sorted(set(suspended)) or 'none'}")
     _compare(rep, "MLB", truth, got, ("pa", "runs", "hits"))
@@ -85,9 +89,9 @@ def reconcile_mlb(wh, rep, start: str, end: str) -> None:
 
 def reconcile_npb(wh, rep, start: str, end: str) -> None:
     rng = f"dt BETWEEN '{start}' AND '{end}'"
-    finals = {str(g): {"runs": (int(h), int(a)), "hits": None}
-              for g, h, a in wh.query(f"""
-                SELECT game_id, max_by(home_score, dt), max_by(away_score, dt) FROM {vl._silver('npb_spaia', 'games')}
+    finals = {str(g): {"runs": (int(h), int(a)), "hits": None, "day": d}
+              for g, h, a, d in wh.query(f"""
+                SELECT game_id, max_by(home_score, dt), max_by(away_score, dt), max(dt) FROM {vl._silver('npb_spaia', 'games')}
                 WHERE {rng} AND game_id IS NOT NULL AND game_state_name = '試合終了' GROUP BY game_id""")}
     for gid, hh, vh in wh.query(f"""
             SELECT get_json_object(raw_event_json, '$.GameID'),
