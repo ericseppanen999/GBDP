@@ -145,17 +145,14 @@ def test_validation_creates_only_in_the_scratch_schema():
             self.sql.append(sql)
             if "mv_run_expectancy" in sql and sql.startswith("CREATE"):
                 raise RuntimeError("TABLE_OR_VIEW_NOT_FOUND run_expectancy_daily")
-            if "event_type IN ('SAC')" in sql:
-                return [["SAC", "15"]]
             if "AS season_phase" in sql:
                 return [["mlb_statsapi", "regular", "R", "10"], ["npb_spaia", "other", "ファーム", "3"]]
             return []
 
     wh, lines = _Warehouse(), []
     failures = mod.validate("gbdp", "gold_gbdp", "semantic_check", "managed", wh, out=lines.append)
-    assert failures == 3  # the metric view, an unmapped game type, and legacy SAC rows
-    assert any("still has legacy event types (SAC: 15 row(s))" in line
-               and "sac_fly, sacrifice groups" in line for line in lines)
+    assert failures == 2  # the metric view and an unmapped game type
+    assert any("OK    no legacy event types" in line for line in lines)
     assert any("FAIL  unmapped game types" in line and "npb_spaia 'ファーム'" in line for line in lines)
     assert any("mlb_statsapi regular: 'R'" in line for line in lines)
     assert any("FROM gbdp.gold_gbdp.fact_game" in s for s in wh.sql)
@@ -197,14 +194,34 @@ def test_game_type_check_is_read_only_and_covers_every_source():
     assert any("kbo_local '정규'" in line for line in lines)
 
 
-def test_legacy_sac_check_passes_once_the_rebuild_replaced_it():
+def _with_legacy_sac():
+    """The layer as it was before production gold dropped SAC (2026-11-11):
+    SAC legacy, and counted in the sac_fly and sacrifice groups."""
+    import dataclasses
+
+    v = SL.vocabularies["event_type"]
+    groups = dict(v.groups, sac_fly=v.groups["sac_fly"] + ("SAC",), sacrifice=v.groups["sacrifice"] + ("SAC",))
+    vocab = dataclasses.replace(v, legacy={"SAC": "a sacrifice, before the SF/SH split"}, groups=groups)
+    return dataclasses.replace(SL, vocabularies=dict(SL.vocabularies, event_type=vocab))
+
+
+def test_legacy_check_fails_while_rows_remain_and_passes_once_gone():
     mod = _builder()
+    sl = _with_legacy_sac()
 
     class _Warehouse:
+        def __init__(self, rows):
+            self.rows = rows
+
         def query(self, sql):
             assert sql.startswith("SELECT") and "event_type IN ('SAC')" in sql
-            return []
+            return self.rows
 
     lines = []
-    assert mod.check_legacy_event_types(SL, "gbdp", "gold_gbdp", _Warehouse(), out=lines.append) == 0
+    assert mod.check_legacy_event_types(sl, "gbdp", "gold_gbdp", _Warehouse([["SAC", "15"]]), out=lines.append) == 1
+    assert "still has legacy event types (SAC: 15 row(s))" in lines[-1] and "sac_fly, sacrifice groups" in lines[-1]
+    assert mod.check_legacy_event_types(sl, "gbdp", "gold_gbdp", _Warehouse([]), out=lines.append) == 0
     assert "drop them from vocabularies.event_type.legacy" in lines[-1]
+    # The committed layer has none left (dropped once production gold had no SAC).
+    assert mod.check_legacy_event_types(SL, "gbdp", "gold_gbdp", None, out=lines.append) == 0
+    assert "no legacy event types" in lines[-1]

@@ -28,7 +28,7 @@ from gbdp.ml.config import BreakoutConfig
 NOT_A_PA = frozenset({"TRUNCATED"})
 AT_BAT = frozenset({"1B", "2B", "3B", "HR", "K", "OUT", "DP", "TP", "FC", "ERROR"})
 HIT = frozenset({"1B", "2B", "3B", "HR"})
-SAC_FLY = frozenset({"SF", "SAC"})  # SAC: legacy pre-rebuild code, counted as a fly (as the vocabulary does)
+SAC_FLY = frozenset({"SF"})  # as vocabularies.event_type.groups.sac_fly
 SAC_BUNT = frozenset({"SH"})
 
 # Counting stats per batter per day, in feature_batter_daily and in every window sum.

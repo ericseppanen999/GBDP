@@ -80,15 +80,14 @@ def test_run_value_ignores_a_stale_run_expectancy(gold):
 
 def test_obp_counts_sac_flies_not_sac_bunts(gold):
     # Official OBP: (H + BB + HBP) / (AB + BB + HBP + SF). Neither SF nor SH
-    # is an at-bat; a legacy SAC row (gold written before the SF/SH split)
-    # counts as a sacrifice fly until the rebuild replaces it.
+    # is an at-bat.
     _write(gold, "fact_plate_appearance", D1, [
         _pa("a", "1B", 0, 0, 1, 0, 0), _pa("b", "OUT", 1, 0, 1, 1, 0), _pa("c", "SF", 4, 1, 0, 2, 1),
-        _pa("d", "SH", 1, 1, 2, 2, 0), _pa("e", "BB", 2, 2, 3, 2, 0), _pa("f", "SAC", 3, 2, 6, 3, 0)])
+        _pa("d", "SH", 1, 1, 2, 2, 0), _pa("e", "BB", 2, 2, 3, 2, 0)])
     _write(gold, "run_expectancy_daily", D1, [_re(0, 0, 1, 0)])  # v_plate_appearance reads it
     out = db.compute_metrics(MetricRequest(
         metrics=["pa", "ab", "sac_flies", "sac_bunts", "avg", "obp"], filters=[Filter("batter_id", "eq", "p1")]))
     row = out["rows"][0]
-    assert (row["pa"], row["ab"], row["sac_flies"], row["sac_bunts"]) == (6, 2, 2, 1)
+    assert (row["pa"], row["ab"], row["sac_flies"], row["sac_bunts"]) == (5, 2, 1, 1)
     assert row["avg"] == pytest.approx(1 / 2)
-    assert row["obp"] == pytest.approx(2 / (2 + 1 + 2))  # (H + BB) / (AB + BB + SF incl. legacy SAC)
+    assert row["obp"] == pytest.approx(2 / (2 + 1 + 1))  # (H + BB) / (AB + BB + SF); SH is in neither

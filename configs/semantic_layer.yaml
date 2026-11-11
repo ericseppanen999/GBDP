@@ -84,13 +84,6 @@ vocabularies:
         out and any runs that scored. Statcast calls it truncated_pa; NPB rows
         get it when the last header of a half-inning has no result.
       UNKNOWN: The source outcome could not be mapped. Counted as a PA, not as an at-bat.
-    legacy:
-      SAC: >
-        Written before gold split sacrifices into SF and SH: a sacrifice fly
-        or bunt. The code no longer writes it and the gold rebuild replaces
-        it; until then a SAC row counts as a sacrifice fly (in OBP's
-        denominator, as it always did), and a sacrifice fly double play from
-        then is still DP, an at-bat.
     groups:
       not_a_pa: [TRUNCATED]
       at_bat: [1B, 2B, 3B, HR, K, OUT, DP, TP, FC, ERROR]
@@ -98,11 +91,9 @@ vocabularies:
       walk: [BB]
       hit_by_pitch: [HBP]
       strikeout: [K]
-      # SAC is legacy (see legacy): counted with SF so OBP on pre-rebuild
-      # gold is what it was. Drop it once production gold has no SAC rows.
-      sac_fly: [SF, SAC]
+      sac_fly: [SF]
       sac_bunt: [SH]
-      sacrifice: [SF, SH, SAC]
+      sacrifice: [SF, SH]
 
   base_state:
     description: >
@@ -476,7 +467,6 @@ tables:
       - For Statcast the state after a PA is read from the next PA's first pitch, so a stolen base or pickoff between PAs is credited to the earlier PA.
       - MLB games can be in both mlb_statcast and retrosheet_local; filter on source to avoid counting a game twice.
       - There is no RBI outside Retrosheet.
-      - Rows written before the SF/SH split (until the gold rebuild) carry SAC for both kinds of sacrifice and DP for a sacrifice fly double play; see vocabularies.event_type.legacy.
 
   fact_boxscore_batting:
     description: Per-player, per-game batting line from each source's box score.
@@ -763,7 +753,7 @@ tables:
       bb: Walks.
       hbp: Hit by pitch.
       so: Strikeouts.
-      sf: Sacrifice flies (legacy SAC counted here too).
+      sf: Sacrifice flies.
       sh: Sacrifice bunts.
       woba_den: wOBA denominator, AB + BB + HBP + SF.
       woba_value: wOBA numerator, the sum of the weights of his BB, HBP, 1B, 2B, 3B and HR.
@@ -1299,18 +1289,16 @@ metrics:
     source_rationale: *pa_why
   sac_flies:
     metric_view: mv_batting
-    description: Sacrifice flies (SF; legacy SAC rows count here until the gold rebuild).
+    description: Sacrifice flies (SF).
     expr: SUM(source.is_sf)
     format: count
     source_rationale: *pa_why
-    caveats: [Until the gold rebuild this includes sacrifice bunts written as SAC.]
   sac_bunts:
     metric_view: mv_batting
     description: Sacrifice bunts (SH).
     expr: SUM(source.is_sh)
     format: count
     source_rationale: *pa_why
-    caveats: [Until the gold rebuild, sacrifice bunts written before the SF/SH split are SAC and count as sac_flies instead.]
   total_bases:
     metric_view: mv_batting
     description: Total bases (1B = 1, 2B = 2, 3B = 3, HR = 4).
@@ -1334,7 +1322,6 @@ metrics:
     format: rate
     source_rationale: *pa_why
     caveats:
-      - Rows written before the SF/SH split (until the gold rebuild) carry SAC for both kinds; they count as sacrifice flies, so OBP on those rows is slightly low for batters with sacrifice bunts.
   slg:
     metric_view: mv_batting
     description: Slugging percentage, total bases / at-bats.

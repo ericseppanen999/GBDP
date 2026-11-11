@@ -140,11 +140,12 @@ def test_event_type_groups_only_use_known_codes(sl):
     # Catcher's interference is a PA but not an at-bat (gbdp-40's rule too).
     assert "INT" not in vocab.groups["at_bat"] and "INT" not in vocab.groups["not_a_pa"]
     assert all("TRUNCATED" not in codes for g, codes in vocab.groups.items() if g != "not_a_pa")
-    # Sacrifices: neither kind is an at-bat; only flies (and legacy SAC, which
-    # was always counted in OBP's denominator) are in sac_fly.
-    for code in ("SF", "SH", "SAC"):
+    # Sacrifices: neither kind is an at-bat; only flies are in sac_fly (OBP's
+    # denominator). Legacy SAC was dropped once production gold had none.
+    for code in ("SF", "SH"):
         assert code not in vocab.groups["at_bat"] and code in vocab.groups["sacrifice"]
-    assert set(vocab.groups["sac_fly"]) == {"SF", "SAC"} and vocab.groups["sac_bunt"] == ("SH",)
+    assert vocab.groups["sac_fly"] == ("SF",) and vocab.groups["sac_bunt"] == ("SH",)
+    assert not vocab.legacy and all("SAC" not in codes for codes in vocab.groups.values())
     assert publish._map_event_type("sac_fly_double_play") == "SF"
 
 
