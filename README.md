@@ -213,17 +213,17 @@ Storage is Unity Catalog Volumes per layer (`/Volumes/gbdp/{bronze,silver,gold}_
 
 Quality checks catch broken invariants. They can't tell you the numbers match reality, so the platform is also reconciled, game by game, against the leagues' own records.
 
-**The 2026 season in production** (2026-05-13 to 11-05, rebuilt from bronze on 2026-11-09/10; `reconcile_season.py` against the MLB Stats API and SPAIA's games feed):
+**The 2026 season in production** (2026-05-13 to 11-05, Unity Catalog `gbdp.gold_gbdp`, checked 2026-11-11 with `reconcile_season.py` against the MLB Stats API and SPAIA's games feed):
 
 | | MLB (1,842 final games) | NPB (655 finished games) |
 |---|---|---|
-| every game has plate appearances | 1,842 | 655 |
+| every game has plate appearances | 1,842 (100%) | 655 (100%) |
 | plate appearances per team = the official box score | 1,842 (100%) | |
-| runs per team = the official score | 1,828 (99.2%) | 655 (100%) |
-| hits per team = the official score | 1,837 (99.7%) | 651 (99.4%) |
+| runs per team = the official score | 1,842 (100%) | 655 (100%) |
+| hits per team = the official score | 1,842 (100%) | 651 (99.4%) |
 
-- **The 14 MLB run misses** were each one run that scored *between* plate appearances (a balk or a wild pickoff throw has no Statcast pitch row). Fixed in gold: on silver, the new rule gives every one of 1,799 games its official final score. Seven of the 11 affected dates are re-published; the other four (08-24, 09-01, 09-19, 09-24) wait on Databricks Free Edition's daily compute limit.
-- **The 5 MLB hit misses** are scoring changes made after the fetch: rebuilt locally from a fresh Statcast download, 823660 (09-02), 824311 (09-04) and 823904 (09-05) match the box score exactly. The backfill fetched each day once, and the nightly's 7-day correction window doesn't reach back to them; re-fetching those dates fixes them. The **4 NPB hit misses** (one hit each, gold one short) are SPAIA disagreeing with itself: the "truth" is the hit counter SPAIA embeds in its feed, and in those games every hit its play-by-play text describes is in gold, every PA has a result, and in three of them no error could have been rescored as a hit. An independent NPB box score (npb.jp) would settle which side is right.
+- **MLB took two fixes to reach 100%.** 14 games were one run short: a run that scores *between* plate appearances (a balk, a wild pickoff throw) has no Statcast pitch row, so each PA now runs to the next PA's starting score. 5 games were one hit off: official scoring changes made after the backfill fetched those days (09-02 to 09-06), fixed by re-fetching them. A fresh local rebuild of three of those games matched the box score before the re-fetch did.
+- **The 4 NPB hit misses** (gold one short each) are SPAIA disagreeing with itself: the "truth" is the hit counter SPAIA embeds in its feed, while every hit its play-by-play text describes is in gold, every PA has a result, and in three of the games no error could have been rescored as a hit. An independent NPB box score (npb.jp) would settle which side is right.
 - **Invariants over the season**, all clean: no duplicate game, PA (188,618), pitch (542,178), roster or box-score key; no pitch without its PA and no PA without its game; base states 0..7 and outs 0..3 everywhere; every PA has both teams; one current `dim_player` row per player and no NPB coach or manager among them; every MLB and NPB game day has games, PAs (and MLB pitches).
 
 The rebuild itself found nine defects that only show on some days, each now fixed with a regression test: Savant repeating a pitch line byte-for-byte; Savant leaving the event blank when the third out is made on the bases mid-PA; SPAIA numbering two batters of one half-inning alike; KBO's two pitchers named 이승현 (and a 박건우 on each side of one game) merging into one player; KBO games never fetched for 30 May–June dates; a rained-out game counted as played; the All-Star break Monday failing "at least one game"; runs scoring between PAs; and Unity Catalog tables created long ago with DOUBLE counts. `verify_lakehouse.py --only silver_keys` now finds the key collisions among these from silver in minutes, before a gold run.
