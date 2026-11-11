@@ -404,6 +404,27 @@ def check_silver_duplicates(wh: Warehouse, rep: Report, start: str) -> None:
         rep.line("FAIL" if dupes else "PASS", f"silver {src}/{entity} duplicates", f"{dupes} duplicate rows of {total}")
 
 
+def check_season_coverage(wh: Warehouse, rep: Report, start: str) -> None:
+    """Gold covers MLB's whole season, from the league's own calendar: the
+    2026 rebuild began 2026-05-13 while the season began 03-25, and every
+    other check passed because they all asked whether loaded data was right,
+    not whether all of it was loaded."""
+    import requests
+
+    season = start[:4]
+    s = requests.get(f"https://statsapi.mlb.com/api/v1/seasons/{season}", params={"sportId": 1},
+                     headers={"User-Agent": "gbdp-verify"}, timeout=30).json()["seasons"][0]
+    first, last = s["regularSeasonStartDate"], s.get("postSeasonEndDate") or s["regularSeasonEndDate"]
+    (lo, hi, n), = wh.query(f"""
+        SELECT min(dt), max(dt), count(DISTINCT dt) FROM {GOLD}.fact_game
+        WHERE source = 'mlb_statsapi' AND dt BETWEEN '{season}-01-01' AND '{season}-12-31' AND lower(status) LIKE 'final%'""")
+    missing_start = lo is None or lo > first
+    missing_end = hi is None or (hi < last and date.today().isoformat() > last)
+    rep.line("FAIL" if missing_start or missing_end else "PASS", f"MLB {season} season covered in gold",
+             f"season {first}..{last}; gold final games {lo}..{hi} on {n} dates"
+             + (f"; missing {first}..{lo}" if missing_start and lo else "") + (f"; missing {hi}..{last}" if missing_end and hi else ""))
+
+
 def check_silver_keys(wh: Warehouse, rep: Report, start: str) -> None:
     """Preflight, from silver alone and in minutes: the key collisions and gaps
     a gold run would otherwise find hours in. Run it before a long rebuild.
@@ -525,6 +546,7 @@ def main() -> int:
         "silver_statcast": lambda: check_silver_statcast(wh, rep, args.start),
         "silver_duplicates": lambda: check_silver_duplicates(wh, rep, args.start),
         "silver_keys": lambda: check_silver_keys(wh, rep, args.start),
+        "season_coverage": lambda: check_season_coverage(wh, rep, args.start),
         "quality_results": lambda: check_quality_results(wh, rep, args.start),
         "against_mlb": lambda: check_against_mlb(wh, rep, [d for d in args.truth_days.split(",") if d]),
     }
