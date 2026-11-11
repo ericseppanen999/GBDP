@@ -207,7 +207,22 @@ Storage is Unity Catalog Volumes per layer (`/Volumes/gbdp/{bronze,silver,gold}_
 
 ## Proving the data is right
 
-Quality checks catch broken invariants. They can't tell you the numbers match reality, so two tools reconcile the platform against the leagues' own records.
+Quality checks catch broken invariants. They can't tell you the numbers match reality, so the platform is also reconciled, game by game, against the leagues' own records.
+
+**The 2026 season in production** (2026-05-13 to 11-05, rebuilt from bronze on 2026-11-09/10; `reconcile_season.py` against the MLB Stats API and SPAIA's games feed):
+
+| | MLB (1,842 final games) | NPB (655 finished games) |
+|---|---|---|
+| every game has plate appearances | 1,842 | 655 |
+| plate appearances per team = the official box score | 1,842 (100%) | |
+| runs per team = the official score | 1,828 (99.2%) | 655 (100%) |
+| hits per team = the official score | 1,837 (99.7%) | 651 (99.4%) |
+
+- **The 14 MLB run misses** were each one run that scored *between* plate appearances (a balk or a wild pickoff throw has no Statcast pitch row). Fixed in gold: on silver, the new rule gives every one of 1,799 games its official final score. Seven of the 11 affected dates are re-published; the other four (08-24, 09-01, 09-19, 09-24) wait on Databricks Free Edition's daily compute limit.
+- **The 5 MLB and 4 NPB hit misses** are one hit each and not yet explained.
+- **Invariants over the season**, all clean: no duplicate game, PA (188,618), pitch (542,178), roster or box-score key; no pitch without its PA and no PA without its game; base states 0..7 and outs 0..3 everywhere; every PA has both teams; one current `dim_player` row per player and no NPB coach or manager among them; every MLB and NPB game day has games, PAs (and MLB pitches).
+
+The rebuild itself found nine defects that only show on some days, each now fixed with a regression test: Savant repeating a pitch line byte-for-byte; Savant leaving the event blank when the third out is made on the bases mid-PA; SPAIA numbering two batters of one half-inning alike; KBO's two pitchers named 이승현 (and a 박건우 on each side of one game) merging into one player; KBO games never fetched for 30 May–June dates; a rained-out game counted as played; the All-Star break Monday failing "at least one game"; runs scoring between PAs; and Unity Catalog tables created long ago with DOUBLE counts. `verify_lakehouse.py --only silver_keys` now finds the key collisions among these from silver in minutes, before a gold run.
 
 **`scripts/reconcile_day.py`** runs on a local pipeline output for one day. It fetches ground truth independently: MLB boxscores and linescores, and the totals NPB's feed embeds in every event. Then it checks each layer: bronze has every entity, silver has every game with the right final score, gold rebuilds each team's plate appearances, runs and hits exactly, and the API returns what gold holds.
 
@@ -251,7 +266,7 @@ All three tools only read, so they're safe to run while jobs are running.
 pytest
 ```
 
-The suite has 408 tests (4 more need a local Spark). Most are regression tests named after real production incidents, such as rosters duplicated ~110×, a type clash that blocked publishing, IDs that changed daily, Savant listing the same pitch twice, and two KBO players with the same name merging into one. Each pins the fix so the bug can't come back.
+The suite has 419 tests (4 more need a local Spark). Most are regression tests named after real production incidents, such as rosters duplicated ~110×, a type clash that blocked publishing, IDs that changed daily, Savant listing the same pitch twice, and two KBO players with the same name merging into one. Each pins the fix so the bug can't come back.
 
 ## Known limits
 
