@@ -65,3 +65,24 @@ def test_query_tool_executes_safe_sql(tmp_path, monkeypatch):
 
     result = query("SELECT count(*) AS n FROM fact_game")
     assert result == [{"n": 2}]
+
+
+def test_insight_tools_find_explain_and_verify(semantic_gold):
+    from gbdp import mcp_server as m
+
+    found = m.find_insights(limit=50)
+    assert found and "error" not in found[0], found[:1]
+    assert {"insight_id", "detector", "value", "score", "facts"} <= set(found[0])
+    assert "evidence_sql" not in found[0]
+    streaks = m.find_insights(detector="hitting_streak")
+    assert streaks and all(r["detector"] == "hitting_streak" for r in streaks)
+
+    for row in found:
+        detail = m.explain_insight(row["insight_id"])
+        assert "error" not in detail, detail
+        assert detail["evidence_rows"], row["detector"]
+        ok = m.verify_claim(row["insight_id"], value=row["value"], baseline=row.get("baseline"))
+        assert ok["verified"], (row["detector"], ok)
+    wrong = m.verify_claim(found[0]["insight_id"], value=(found[0]["value"] or 0) + 1)
+    assert wrong["verified"] is False
+    assert m.verify_claim("no-such-id", value=1)["verified"] is False

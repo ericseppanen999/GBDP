@@ -161,6 +161,106 @@ def query(sql: str, limit: int = 1000) -> List[Dict[str, Any]]:
         return [{"error": f"query failed: {exc}"}]
 
 
+def _insight_rows(as_of: Optional[str]) -> List[Dict[str, Any]]:
+    from gbdp.serve.db import query as read_table
+
+    return read_table("insight_candidates", dt=as_of, limit=10000)
+
+
+def _with_facts(row: Dict[str, Any], keep_sql: bool = False) -> Dict[str, Any]:
+    import json
+
+    out = {k: v for k, v in row.items() if k not in ("facts_json", "ingested_at_utc") and (keep_sql or k != "evidence_sql")}
+    out["facts"] = json.loads(row.get("facts_json") or "{}")
+    return out
+
+
+@mcp.tool()
+def find_insights(
+    detector: Optional[str] = None,
+    league: Optional[str] = None,
+    as_of: Optional[str] = None,
+    min_score: Optional[float] = None,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    """Patterns in the data worth writing about, found by deterministic
+    detectors (table insight_candidates): active hitting streaks
+    (hitting_streak), a batter's last 14 days vs his own season
+    (change_vs_baseline), a league's month vs its previous month
+    (league_month_shift) and MLB vs NPB (cross_league_gap).
+
+    Each result has the headline numbers (value, baseline, delta,
+    sample_size), a score (bigger = stronger within its detector) and facts
+    (dates, PAs, z, caveats). Write ONLY these numbers: every one can be
+    re-derived with explain_insight / verify_claim. as_of: YYYY-MM-DD
+    (default: the latest run). Results interleave detectors, each one's best first."""
+    try:
+        rows = _insight_rows(as_of)
+    except Exception as exc:
+        return [{"error": f"could not read insight_candidates: {exc}"}]
+    if detector:
+        rows = [r for r in rows if r.get("detector") == detector]
+    if league:
+        rows = [r for r in rows if league.upper() in str(r.get("league_code") or "").upper().split("-")]
+    if min_score is not None:
+        rows = [r for r in rows if (r.get("score") or 0) >= min_score]
+    # Each detector's best first, then each one's second, ...: scores aren't
+    # comparable across detectors, and a mix makes better material.
+    rows.sort(key=lambda r: (r.get("rank") or 0, -(r.get("score") or 0), str(r.get("detector"))))
+    return [_with_facts(r) for r in rows[: max(1, int(limit))]]
+
+
+def _find(insight_id: str, as_of: Optional[str]) -> Optional[Dict[str, Any]]:
+    return next((r for r in _insight_rows(as_of) if r.get("insight_id") == insight_id), None)
+
+
+def _evidence(row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    import re
+
+    # {{table:NAME}} -> NAME: run_sql resolves bare gold table names on both backends.
+    sql = re.sub(r"\{\{table:(\w+)\}\}", lambda m: m.group(1), row["evidence_sql"])
+    return run_sql(sql, limit=10000)
+
+
+@mcp.tool()
+def explain_insight(insight_id: str, as_of: Optional[str] = None) -> Dict[str, Any]:
+    """One insight in full: its numbers, facts, the evidence SQL, and the
+    rows that SQL returns from gold right now (e.g. each game of a streak,
+    each month of a league shift). Use it to add detail to a draft."""
+    try:
+        row = _find(insight_id, as_of)
+        if row is None:
+            return {"error": f"no insight {insight_id!r}" + (f" as of {as_of}" if as_of else "")}
+        return {**_with_facts(row, keep_sql=True), "evidence_rows": _evidence(row)}
+    except Exception as exc:
+        return {"error": f"explain failed: {exc}"}
+
+
+@mcp.tool()
+def verify_claim(insight_id: str, value: float, baseline: Optional[float] = None,
+                 tolerance: float = 0.0005, as_of: Optional[str] = None) -> Dict[str, Any]:
+    """Check a number a draft states for an insight against gold: re-runs the
+    insight's evidence SQL, recomputes value (and baseline), and says whether
+    the stated numbers match within tolerance (rates are fractions, e.g.
+    0.0227 for 2.27%). A draft should not be published unless every claim
+    verifies."""
+    from gbdp.insights.detectors import recompute
+
+    try:
+        row = _find(insight_id, as_of)
+        if row is None:
+            return {"verified": False, "error": f"no insight {insight_id!r}"}
+        got = recompute(row, _evidence(row))
+        checks = {"value": (value, got["value"])}
+        if baseline is not None:
+            checks["baseline"] = (baseline, got["baseline"])
+        ok = all(g is not None and abs(float(s) - float(g)) <= tolerance for s, g in checks.values())
+        return {"verified": ok, "insight_id": insight_id,
+                "checked": {k: {"stated": s, "gold": g} for k, (s, g) in checks.items()}}
+    except Exception as exc:
+        return {"verified": False, "error": f"verify failed: {exc}"}
+
+
 def main() -> None:
     mcp.run()
 

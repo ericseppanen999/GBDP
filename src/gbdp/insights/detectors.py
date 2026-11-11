@@ -223,3 +223,23 @@ def detect(q: Query, as_of: date, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
             c["definition_version"] = cfg["definition_version"]
             out.append(c)
     return out
+
+
+def recompute(candidate: Dict[str, Any], evidence_rows: List[Dict[str, Any]]) -> Dict[str, float | None]:
+    """The candidate's value (and baseline) recomputed from its evidence_sql
+    rows, so a stated number can be checked against gold."""
+    det, metric = candidate["detector"], candidate["metric"]
+    if det == "hitting_streak":
+        return {"value": float(sum(1 for r in evidence_rows if (r.get("h") or 0) > 0)), "baseline": None}
+    if det == "change_vs_baseline":
+        by = {r["span"]: r for r in evidence_rows}
+        return {"value": by.get("recent", {}).get("woba"), "baseline": by.get("baseline", {}).get("woba")}
+    if det == "league_month_shift":
+        facts = json.loads(candidate["facts_json"])
+        by = {r["month"]: r[metric] for r in evidence_rows}
+        return {"value": by.get(facts["month"]), "baseline": by.get(facts["previous_month"])}
+    if det == "cross_league_gap":
+        a, b = json.loads(candidate["facts_json"])["leagues"]
+        by = {r["league_code"]: r[metric] for r in evidence_rows}
+        return {"value": by.get(a), "baseline": by.get(b)}
+    raise ValueError(f"unknown detector {det!r}")
