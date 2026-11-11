@@ -132,6 +132,30 @@ def draft(client, insights: List[Dict[str, Any]], model: str = MODEL) -> List[Dr
     return [Draft(p["insight_id"], p["text"], p["claims"]) for p in posts]
 
 
+def draft_ollama(insights: List[Dict[str, Any]], model: str = "qwen2.5:3b",
+                 host: str = "http://localhost:11434", timeout: float = 900.0) -> List[Draft]:
+    """The same drafting step on a local open-source model through Ollama's
+    chat API, constrained to the same JSON schema. For testing the pipeline
+    (and the verifier) without a Claude API key; small models get rejected
+    more often, which is the point of verify()."""
+    import requests
+
+    if not insights:
+        return []
+    payload = json.dumps(insights, ensure_ascii=False, default=str, sort_keys=True)
+    r = requests.post(f"{host.rstrip('/')}/api/chat", timeout=timeout, json={
+        "model": model,
+        "stream": False,
+        "format": SCHEMA,
+        "options": {"temperature": 0},
+        "messages": [{"role": "system", "content": SYSTEM},
+                     {"role": "user", "content": f"Insights (JSON):\n{payload}"}],
+    })
+    r.raise_for_status()
+    posts = json.loads(r.json()["message"]["content"]).get("posts", [])
+    return [Draft(str(p.get("insight_id", "")), str(p.get("text", "")), list(p.get("claims") or [])) for p in posts]
+
+
 # ---------------------------------------------------------------- verify ---
 
 _NUMBER = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?|\.\d+)(%?)")
@@ -199,7 +223,10 @@ def verify(drafts: List[Draft], insights: List[Dict[str, Any]], as_of: Optional[
         if not d.claims:
             d.problems.append("no claims listed")
         for c in d.claims:
-            if c["insight_id"] != d.insight_id:
+            if not isinstance(c, dict) or "value" not in c:
+                d.problems.append(f"malformed claim: {c!r}")
+                continue
+            if c.get("insight_id") != d.insight_id:
                 d.problems.append(f"claim names another insight {c['insight_id']}")
                 continue
             check = tools.verify_claim(c["insight_id"], value=c["value"], baseline=c.get("baseline"), as_of=as_of)
@@ -243,8 +270,12 @@ def write_queue(drafts: List[Draft], insights: List[Dict[str, Any]], out_dir: Pa
     return path
 
 
-def run(client, as_of: Optional[str], out_dir: Path, limit: int = 12, model: str = MODEL) -> Path:
+def run(client, as_of: Optional[str], out_dir: Path, limit: int = 12, model: str = MODEL,
+        backend: str = "claude") -> Path:
+    """backend "claude" (client: an anthropic.Anthropic) or "ollama" (client
+    unused; model is an Ollama model name)."""
     insights = gather(as_of, limit)
     as_of = as_of or (str(insights[0].get("dt")) if insights else date.today().isoformat())
-    drafts = verify(draft(client, insights, model=model), insights, as_of=as_of)
+    drafted = draft_ollama(insights, model=model) if backend == "ollama" else draft(client, insights, model=model)
+    drafts = verify(drafted, insights, as_of=as_of)
     return write_queue(drafts, insights, out_dir, as_of)

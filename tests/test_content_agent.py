@@ -85,3 +85,30 @@ def test_a_refusal_or_truncation_stops_the_run():
         agent.draft(respond("refusal"), [{"insight_id": "x"}])
     with pytest.raises(RuntimeError, match="max_tokens"):
         agent.draft(respond("max_tokens"), [{"insight_id": "x"}])
+
+
+def test_ollama_backend_drafts_with_the_same_schema_and_survives_junk(semantic_gold, monkeypatch):
+    import requests
+
+    insights = agent.gather(limit=50)
+    sent = {}
+
+    class _Resp:
+        def __init__(self, posts):
+            self.posts = posts
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"message": {"content": json.dumps({"posts": self.posts})}}
+
+    def fake_post(url, timeout, json):
+        sent.update(url=url, body=json)
+        return _Resp(_honest(insights) + [{"insight_id": insights[0]["insight_id"], "text": "x", "claims": ["junk"]}])
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    drafts = agent.verify(agent.draft_ollama(insights, model="qwen2.5:3b"), insights)
+    assert sent["url"].endswith("/api/chat") and sent["body"]["format"] == agent.SCHEMA
+    assert sent["body"]["model"] == "qwen2.5:3b"
+    assert all(d.ok for d in drafts[:-1]) and any("malformed claim" in p for p in drafts[-1].problems)

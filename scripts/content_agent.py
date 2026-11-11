@@ -2,6 +2,7 @@
 
     python scripts/content_agent.py --cloud --as-of 2026-08-31     # production UC, via the databricks CLI login
     python scripts/content_agent.py --as-of 2025-08-31             # local gold (GBDP_GOLD_ROOT)
+    python scripts/content_agent.py --cloud --backend ollama --model qwen2.5:3b   # a local open model, no API key
 
 Needs Claude API credentials (ANTHROPIC_API_KEY, or an `ant auth login`
 profile). Writes content_queue/drafts_<as_of>.md (+ .json) for a human to
@@ -26,6 +27,9 @@ def main() -> int:
     ap.add_argument("--out", default="content_queue")
     ap.add_argument("--cloud", action="store_true", help="read production UC through the databricks CLI")
     ap.add_argument("--profile", help="databricks CLI profile (with --cloud)")
+    ap.add_argument("--backend", choices=["claude", "ollama"], default="claude",
+                    help="ollama: a local open-source model, for testing without a Claude API key")
+    ap.add_argument("--model", help="model name (default claude-opus-5-5; for ollama e.g. qwen2.5:3b)")
     args = ap.parse_args()
 
     if args.cloud:
@@ -42,11 +46,14 @@ def main() -> int:
         )
         db.set_warehouse(wh.Warehouse(settings, transport=cli_transport(args.profile)))
 
-    import anthropic
+    from gbdp.content.agent import MODEL, run
 
-    from gbdp.content.agent import run
+    if args.backend == "ollama":
+        path = run(None, args.as_of, Path(args.out), limit=args.limit, model=args.model or "qwen2.5:3b", backend="ollama")
+    else:
+        import anthropic
 
-    path = run(anthropic.Anthropic(), args.as_of, Path(args.out), limit=args.limit)
+        path = run(anthropic.Anthropic(), args.as_of, Path(args.out), limit=args.limit, model=args.model or MODEL)
     print(f"wrote {path}")
     print(path.read_text(encoding="utf-8").split("\n")[2])
     return 0
