@@ -9,6 +9,8 @@ import pytest
 from gbdp.quality import checks
 
 DAY = "2026-07-13"
+_PA_SCHEMA = pa.schema([("game_id", pa.string()), ("source", pa.string()), ("dt", pa.string())]
+                       + [(c, pa.int64()) for c in ("base_state_before", "base_state_after", "outs_before", "outs_after")])
 
 
 def _write(root, *parts, rows, schema=None):
@@ -68,3 +70,28 @@ def test_a_failing_date_does_not_stop_the_later_ones(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="dt=2026-07-13"):
         checks.run_quality_checks("2026-07-12", "2026-07-15", root=tmp_path)
     assert seen == ["2026-07-12", "2026-07-13", "2026-07-14", "2026-07-15"]
+
+
+def test_npb_coverage_skips_days_with_no_npb_game_played(lake):
+    silver, gold = lake
+    _write(silver, "npb_spaia", "games", f"dt={DAY}", rows=[{"game_id": "g1", "dt": DAY}])
+    # A rained-out NPB game in gold, no plate appearances.
+    _write(gold, "fact_game", f"dt={DAY}", rows=[{"game_id": "g1", "source": "npb_spaia", "status": "試合中止", "dt": DAY}])
+    _write(gold, "fact_plate_appearance", f"dt={DAY}", rows=[],
+           schema=_PA_SCHEMA)
+    cfg = {"thresholds": {"npb_pbp_coverage_pct": 0.7}}
+    path = checks._run_for_date(gold, date.fromisoformat(DAY), cfg, True)
+    from gbdp.utils.io import read_parquet_rows
+    rows = read_parquet_rows(path.parent if path.suffix else path)
+    assert not [r for r in rows if r.get("check") == "npb_pbp_coverage"]
+
+
+def test_npb_coverage_pct_is_a_float(lake):
+    silver, gold = lake
+    _write(gold, "fact_game", f"dt={DAY}", rows=[{"game_id": "g1", "source": "npb_spaia", "status": "試合終了", "dt": DAY}])
+    _write(gold, "fact_plate_appearance", f"dt={DAY}", rows=[],
+           schema=_PA_SCHEMA)
+    path = checks._run_for_date(gold, date.fromisoformat(DAY), {"thresholds": {"npb_pbp_coverage_pct": 0.7}}, True)
+    from gbdp.utils.io import read_parquet_rows
+    row = next(r for r in read_parquet_rows(path.parent if path.suffix else path) if r.get("check") == "npb_pbp_coverage")
+    assert row["pct"] == 0.0 and isinstance(row["pct"], float)

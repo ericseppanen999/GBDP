@@ -177,7 +177,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                     with_pitch = con.execute("SELECT COUNT(*) FROM pitches").fetchone()[0]
                 else:
                     with_pitch = _spark_distinct_count(root / "fact_pitch", dt_str, "game_id")
-                pct = min(1.0, with_pitch / total_mlb)
+                pct = min(1.0, float(with_pitch) / total_mlb)
                 results.append(
                     {
                         "check": "pitch_coverage",
@@ -192,7 +192,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                 pa_path = root / "fact_plate_appearance" / f"dt={dt_str}"
                 if fmt == "parquet":
                     con.execute(
-                        f"CREATE OR REPLACE VIEW games_npb AS SELECT DISTINCT game_id FROM read_parquet('{game_path}/*.parquet') WHERE source='npb_spaia'"
+                        f"CREATE OR REPLACE VIEW games_npb AS SELECT DISTINCT game_id FROM read_parquet('{game_path}/*.parquet') WHERE source='npb_spaia' AND coalesce(status, '') NOT LIKE '%中止%'"
                     )
                     total_npb = con.execute("SELECT COUNT(*) FROM games_npb").fetchone()[0]
                     con.execute(
@@ -205,7 +205,7 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                     spark = SparkSession.builder.getOrCreate()
                     games_df = (
                         spark.read.format("delta").load(spark_path(root / "fact_game"))
-                        .where(f"dt = '{dt_str}' AND source = 'npb_spaia'")
+                        .where(f"dt = '{dt_str}' AND source = 'npb_spaia' AND coalesce(status, '') NOT LIKE '%中止%'")
                     )
                     total_npb = games_df.select("game_id").distinct().count()
                     pa_df = (
@@ -213,16 +213,21 @@ def _run_for_date(root: Path, dt: date, cfg: Dict, force: bool) -> Path:
                         .where(f"dt = '{dt_str}' AND source = 'npb_spaia'")
                     )
                     with_pbp = pa_df.select("game_id").distinct().count()
-                pct_npb = (with_pbp / total_npb) if total_npb else 0
-                results.append(
-                    {
-                        "check": "npb_pbp_coverage",
-                        "pct": pct_npb,
-                        "threshold": float(thresholds.get("npb_pbp_coverage_pct", 0)),
-                        "ok": pct_npb >= float(thresholds.get("npb_pbp_coverage_pct", 0)),
-                        "dt": dt_str,
-                    }
-                )
+                # No NPB game played (an off day, or every game rained out:
+                # 試合中止) has no play-by-play to cover; there's nothing to check.
+                # pct is always a float: an int 0 made the column BIGINT on such
+                # days and the UC write clashed with DOUBLE.
+                pct_npb = float(with_pbp) / total_npb if total_npb else None
+                if pct_npb is not None:
+                    results.append(
+                        {
+                            "check": "npb_pbp_coverage",
+                            "pct": pct_npb,
+                            "threshold": float(thresholds.get("npb_pbp_coverage_pct", 0)),
+                            "ok": pct_npb >= float(thresholds.get("npb_pbp_coverage_pct", 0)),
+                            "dt": dt_str,
+                        }
+                    )
 
     # Base/out validity checks
     if _exists_for_check("fact_plate_appearance"):
