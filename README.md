@@ -107,6 +107,19 @@ python scripts/train_breakout.py --gold-root ./data/gold             # write the
 python -m gbdp.cli run --start ... --end ... --stages ml_publish     # rescore: the ML tables only, over published gold
 ```
 
+## Insights and automated content
+
+`insight_candidates` (nightly, `src/gbdp/insights/`) holds patterns worth writing about, found by deterministic detectors with sample-size and score thresholds (`configs/insights.yaml`): active hitting streaks, a batter's last 14 days against his own season, a league's latest month against the one before, and MLB against NPB. Each row has its numbers and `evidence_sql` that re-derives them. On 2026-08-31 they found, among others, Shohei Ohtani's .237 wOBA over 14 days against .430 for his season, Cal Raleigh's .521 against .261, Junior Caminero's 14-game streak, and MLB hitting home runs 38% more often per PA than NPB (3.14% vs 2.28%).
+
+The MCP server exposes them to any LLM client: `find_insights`, `explain_insight` (the evidence rows) and `verify_claim` (re-derives a stated number from gold).
+
+`scripts/content_agent.py` drafts posts from them. Code gathers the insights and their evidence, one Claude call (structured output) writes the posts and lists the numbers each one states, then every claim goes through `verify_claim` and every number in the text is matched against that insight's data. Drafts that pass go to `content_queue/drafts_<as_of>.md` for a human to review, and rejects are listed with the reason; nothing is published.
+
+```bash
+export ANTHROPIC_API_KEY=...
+python scripts/content_agent.py --cloud --as-of 2026-08-31   # production, via the databricks CLI login
+```
+
 ## Design decisions worth knowing
 
 - **Stable IDs.** Every canonical ID is a hash of a source key (`game:mlb_statsapi:778563`), so the same player, team or game gets the same ID on every run and on every machine. An earlier version mixed the date into the hash; 0 of 2,369 entities kept their ID from one day to the next.
@@ -270,7 +283,7 @@ All three tools only read, so they're safe to run while jobs are running.
 pytest
 ```
 
-The suite has 419 tests (4 more need a local Spark). Most are regression tests named after real production incidents, such as rosters duplicated ~110×, a type clash that blocked publishing, IDs that changed daily, Savant listing the same pitch twice, and two KBO players with the same name merging into one. Each pins the fix so the bug can't come back.
+The suite has 433 tests (4 more need a local Spark). Most are regression tests named after real production incidents, such as rosters duplicated ~110×, a type clash that blocked publishing, IDs that changed daily, Savant listing the same pitch twice, and two KBO players with the same name merging into one. Each pins the fix so the bug can't come back.
 
 ## Known limits
 

@@ -51,3 +51,6 @@ notes/
 
 # Dashboards are deployed by the bundle, so they must be committed.
 !dashboards/*.lvdash.json
+
+# content agent drafts (reviewed by hand, not committed)
+content_queue/
