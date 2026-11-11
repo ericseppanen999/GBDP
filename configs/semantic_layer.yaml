@@ -704,7 +704,7 @@ tables:
     primary_key: [insight_id, dt]
     sources: [feature_batter_daily, dim_player]
     caveats:
-      - Written by the opt-in insights_publish stage for its end date only, not by gold_publish for every dt.
+      - Written by the insights_publish stage (in the nightly) for each window's end date, not by gold_publish for every dt: a dt is the as-of date of one run.
       - change_vs_baseline is mostly regression to the mean (see the breakout model in the README); its score is a z-score against sampling noise, not a forecast.
       - Box-score-only leagues (KBO, LMB, Indy) have no feature_batter_daily rows, so no insights yet.
     columns:

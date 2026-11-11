@@ -124,7 +124,7 @@ def run_pipeline(
     return results
 
 
-_OPT_IN_STAGES = {"ml_publish", "register_uc_gold", "insights_publish"}
+_OPT_IN_STAGES = {"ml_publish", "register_uc_gold"}
 
 
 def _pipeline_stages() -> Dict[str, Callable]:

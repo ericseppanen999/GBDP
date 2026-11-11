@@ -99,6 +99,11 @@ resources:
         - task_key: gbdp_run
           description: Full pipeline — ingest → silver → identity → gold → quality
           environment_key: default
+          # No serverless auto-retry (see gbdp_backfill): a failure emails, and
+          # the next night's 7-day correction window re-runs those dates anyway.
+          max_retries: 0
+          retry_on_timeout: false
+          disable_auto_optimization: true
           spark_python_task:
             python_file: ${workspace.file_path}/dbx_entry.py
             parameters:
@@ -381,3 +386,6 @@ targets:
     mode: production
     workspace:
       root_path: /Workspace/Users/eric.t.seppanen@gmail.com/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      # Resumed 2026-11-11 after the full-season gold rebuild reconciled.
+      nightly_pause_status: UNPAUSED
