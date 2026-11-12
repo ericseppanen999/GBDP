@@ -479,6 +479,42 @@ ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `spin_sum` COMMENT '
 
 ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `spin_n` COMMENT 'Pitches with a spin rate.';
 
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `zone_pitches` COMMENT 'Pitches in the strike zone (Savant zone 1-9).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `zone_swings` COMMENT 'Swings at those.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `zone_whiffs` COMMENT 'Misses on those swings (zone contact = 1 - zone_whiffs / zone_swings).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `chase_pitches` COMMENT 'Pitches outside the zone (Savant zone 11-14).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `chase_swings` COMMENT 'Swings at those (chase rate = chase_swings / chase_pitches).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `bip` COMMENT 'Balls in play.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `hard_hit` COMMENT 'Balls in play at 95+ mph exit velocity.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `barrels` COMMENT 'Balls in play Savant classes as barrels (launch_speed_angle 6).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `ev_sum` COMMENT 'Sum of exit velocity (mph) over balls in play with one.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `ev_n` COMMENT 'Balls in play with an exit velocity.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `la_sum` COMMENT 'Sum of launch angle (degrees) over balls in play with one.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `la_n` COMMENT 'Balls in play with a launch angle.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `gb` COMMENT 'Ground balls.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `ld` COMMENT 'Line drives.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `fb` COMMENT 'Fly balls.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `pu` COMMENT 'Popups.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `pulled` COMMENT 'Balls in play to the batter\'s pull side (spray angle beyond 15 degrees from center).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `pulled_air` COMMENT 'Pulled line drives and fly balls.';
+
 ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `woba_value` COMMENT 'Sum of wOBA values of the PAs that ended on this pitch type.';
 
 ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `xwoba_value` COMMENT 'Sum of xwOBA values of the same PAs.';
@@ -492,6 +528,68 @@ ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `source` COMMENT 'Al
 ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `dt` COMMENT 'Game date.';
 
 ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
+
+COMMENT ON TABLE gbdp.gold_gbdp.feature_batter_pitch_daily IS 'Each MLB batter\'s results by pitch group per day - fastballs (FF, SI, FC), breaking balls (SL, ST, CU, KC, SV), offspeed (CH, FS, FO) and other - from Savant\'s raw Statcast rows: swing decisions (chase, zone swings and contact, whiffs), contact quality (hard-hit, barrels, exit velocity, launch angle), batted-ball mix and pull rate, and wOBA / xwOBA. Sums, so any span adds up. The "why" behind a batter\'s storyline (insights/drivers.py): what changed, or how he compares with the league. Grain: one row per batter per pitch group per dt. Sources: mlb_statcast. Caveat: Written by the statcast_features_publish stage (in the nightly), from silver, not by gold_publish. Caveat: Pull side uses Savant\'s hit coordinates and the batter\'s side for that pitch; switch hitters are counted per PA. Semantic layer: configs/semantic_layer.yaml.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `player_id` COMMENT 'FK to dim_player (the batter).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `pitch_group` COMMENT 'fastball, breaking, offspeed or other.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `pitches` COMMENT 'Pitches of this group he saw on dt.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `swings` COMMENT 'Swings at them (including fouls and balls in play).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `whiffs` COMMENT 'Swings and misses.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `zone_pitches` COMMENT 'Pitches in the strike zone (Savant zone 1-9).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `zone_swings` COMMENT 'Swings at those.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `zone_whiffs` COMMENT 'Misses on those swings (zone contact = 1 - zone_whiffs / zone_swings).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `chase_pitches` COMMENT 'Pitches outside the zone (Savant zone 11-14).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `chase_swings` COMMENT 'Swings at those (chase rate = chase_swings / chase_pitches).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `bip` COMMENT 'Balls in play.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `hard_hit` COMMENT 'Balls in play at 95+ mph exit velocity.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `barrels` COMMENT 'Balls in play Savant classes as barrels (launch_speed_angle 6).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `ev_sum` COMMENT 'Sum of exit velocity (mph) over balls in play with one.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `ev_n` COMMENT 'Balls in play with an exit velocity.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `la_sum` COMMENT 'Sum of launch angle (degrees) over balls in play with one.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `la_n` COMMENT 'Balls in play with a launch angle.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `gb` COMMENT 'Ground balls.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `ld` COMMENT 'Line drives.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `fb` COMMENT 'Fly balls.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `pu` COMMENT 'Popups.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `pulled` COMMENT 'Balls in play to the batter\'s pull side (spray angle beyond 15 degrees from center).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `pulled_air` COMMENT 'Pulled line drives and fly balls.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `woba_value` COMMENT 'Sum of Savant woba_value over PAs that ended on this pitch group.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `xwoba_value` COMMENT 'Sum of xwOBA over the same PAs.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `woba_den` COMMENT 'Those PAs.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `league_code` COMMENT 'Always MLB.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `source` COMMENT 'Always mlb_statcast.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `dt` COMMENT 'Game date.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_batter_pitch_daily ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
 
 COMMENT ON TABLE gbdp.gold_gbdp.feature_contact_daily IS 'Each MLB batter\'s wOBA and Statcast expected wOBA (xwOBA) sums per day, with balls in play and their BABIP hits, from silver Statcast. wOBA - xwOBA over a span is how far his results ran ahead of (or behind) his contact quality; feeds the luck_gap insight detector. Grain: one row per batter per dt. Sources: mlb_statcast. Caveat: Written by the statcast_features_publish stage (in the nightly), from silver, not by gold_publish. Caveat: Statcast\'s wOBA weights, not gold\'s (feature_batter_daily); the two differ slightly. Semantic layer: configs/semantic_layer.yaml.';
 
@@ -517,7 +615,7 @@ ALTER TABLE gbdp.gold_gbdp.feature_contact_daily ALTER COLUMN `dt` COMMENT 'Game
 
 ALTER TABLE gbdp.gold_gbdp.feature_contact_daily ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
 
-COMMENT ON TABLE gbdp.gold_gbdp.insight_candidates IS 'Patterns in the season to date that are worth writing about, found by deterministic detectors (src/gbdp/insights/detectors.py, thresholds in configs/insights.yaml) as of dt: active hitting streaks, a batter\'s last 14 days against his own season, a league\'s month against its previous month, and MLB against NPB. Each row carries its numbers, sample size, a score and evidence_sql, a query over gold that re-derives the headline number. An LLM writing about one should state only these numbers and can re-run evidence_sql to check them. Grain: up to top_per_detector rows per detector per dt. Sources: feature_batter_daily, feature_pitch_daily, feature_contact_daily, dim_player. Caveat: {"Written by the insights_publish stage (in the nightly) for each window\'s end date, not by gold_publish for every dt": \'a dt is the as-of date of one run.\'} Caveat: change_vs_baseline is mostly regression to the mean (see the breakout model in the README); its score is a z-score against sampling noise, not a forecast. Caveat: Box-s...';
+COMMENT ON TABLE gbdp.gold_gbdp.insight_candidates IS 'Patterns in the season to date that are worth writing about, found by deterministic detectors (src/gbdp/insights/detectors.py, thresholds in configs/insights.yaml) as of dt: active hitting streaks, a batter\'s last 14 days against his own season, a league\'s month against its previous month, and MLB against NPB. Each row carries its numbers, sample size, a score and evidence_sql, a query over gold that re-derives the headline number. An LLM writing about one should state only these numbers and can re-run evidence_sql to check them. Grain: up to top_per_detector rows per detector per dt. Sources: feature_batter_daily, feature_pitch_daily, feature_contact_daily, feature_batter_pitch_daily, dim_player. Caveat: {"Written by the insights_publish stage (in the nightly) for each window\'s end date, not by gold_publish for every dt": \'a dt is the as-of date of one run.\'} Caveat: change_vs_baseline is mostly regression to the mean (see the breakout model in the README); its score is a z-score against sampling noise, n...';
 
 ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `insight_id` COMMENT 'Hash of detector, dt, league, subject and metric.';
 
@@ -545,7 +643,7 @@ ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `score` COMMENT 'Stre
 
 ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `rank` COMMENT '1 = highest score within its detector on dt.';
 
-ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `facts_json` COMMENT 'The detector\'s other numbers (dates, PAs, z, direction, caveat) as JSON.';
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `facts_json` COMMENT 'The detector\'s other numbers (dates, PAs, z, direction, caveat) as JSON, and for MLB players `drivers`, the Statcast components that explain it (insights/drivers.py).';
 
 ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `evidence_sql` COMMENT 'SQL over gold ({{table:...}} placeholders, as in this file) that re-derives the headline number.';
 

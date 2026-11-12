@@ -59,6 +59,18 @@ if it repeats another post's point). Rules:
 - In `claims`, list every headline number the post states, as the data's raw
   fractions or counts: value, and baseline when the post states it.
 
+The why: most MLB player insights carry `facts.drivers`, the Statcast
+components that explain the storyline, strongest first. Each has a label,
+`before` and `since` values, and a z-score. For a luck_gap, `since` is the
+player and `before` is the league (`vs: league`); for new_pitch, a driver with
+`vs: his other pitches` compares the new pitch with the rest of his mix. Build
+the post around the why - "he's chasing 22% of pitches outside the zone, down
+from 35%, and barreling breaking balls" beats "he had a good two weeks".
+Use one or two drivers, in plain baseball words, with their numbers. Never
+give a reason that isn't in the drivers (no injuries, mechanics, lineup
+spots, or anything else the data doesn't show); with no drivers, state the
+storyline without a why.
+
 Revisions: an insight with `revise_previous_draft` was drafted before and
 rejected by the fact-checker; write that post again, fixing every listed
 problem, and keep everything else that was right.
@@ -304,7 +316,8 @@ def _rounds_to(actual: float, stated: float) -> bool:
     (22.3 for 22.269, .521 for 0.5208, 14 for 14.0)."""
     s = f"{stated}".rstrip("0").rstrip(".") if "." in f"{stated}" else f"{stated}"
     decimals = len(s.split(".")[1]) if "." in s else 0
-    return round(actual, decimals) == round(stated, decimals) or abs(actual - stated) < 1e-9
+    # half a unit either way: 56.25 written as 56.3 (or 56.2) is the same number
+    return abs(actual - stated) <= 0.5 * 10 ** -decimals + 1e-9
 
 
 def text_numbers(text: str) -> List[tuple]:
@@ -319,7 +332,7 @@ def text_numbers(text: str) -> List[tuple]:
 _SUPERLATIVES = ("longest", "shortest", "best", "worst", "most", "least", "highest", "lowest", "record",
                  "first", "only", "top", "leads", "leading")
 _TREND_WORDS = ("rose", "rising", "climbed", "climbing", "jumped", "fell", "falling", "dropped", "surged",
-                "plunged", "increased", "decreased", "edging")
+                "plunged", "increased", "decreased", "edging", "up from", "down from")
 
 
 def _is_detector_fact(claim: Dict[str, Any], insight: Dict[str, Any]) -> bool:

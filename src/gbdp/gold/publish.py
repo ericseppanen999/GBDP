@@ -94,6 +94,11 @@ _KNOWN_FIELD_TYPES: Dict[str, str] = {
     "pitch_type": "string", "pitches": "long", "swings": "long", "whiffs": "long", "velo_sum": "double",
     "velo_n": "long", "spin_sum": "double", "spin_n": "long", "xwoba_value": "double", "xwoba_bip_n": "long",
     "bip": "long", "babip_hits": "long",
+    # feature_batter_pitch_daily and the "why" counters on feature_pitch_daily
+    "pitch_group": "string", "zone_pitches": "long", "zone_swings": "long", "zone_whiffs": "long",
+    "chase_pitches": "long", "chase_swings": "long", "hard_hit": "long", "barrels": "long", "ev_sum": "double",
+    "ev_n": "long", "la_sum": "double", "la_n": "long", "gb": "long", "ld": "long", "fb": "long", "pu": "long",
+    "pulled": "long", "pulled_air": "long",
 }
 
 

@@ -717,9 +717,76 @@ tables:
       velo_n: Pitches with a release speed.
       spin_sum: Sum of release spin rate (rpm) over the pitches with one.
       spin_n: Pitches with a spin rate.
+      zone_pitches: Pitches in the strike zone (Savant zone 1-9).
+      zone_swings: Swings at those.
+      zone_whiffs: Misses on those swings (zone contact = 1 - zone_whiffs / zone_swings).
+      chase_pitches: Pitches outside the zone (Savant zone 11-14).
+      chase_swings: Swings at those (chase rate = chase_swings / chase_pitches).
+      bip: Balls in play.
+      hard_hit: Balls in play at 95+ mph exit velocity.
+      barrels: Balls in play Savant classes as barrels (launch_speed_angle 6).
+      ev_sum: Sum of exit velocity (mph) over balls in play with one.
+      ev_n: Balls in play with an exit velocity.
+      la_sum: Sum of launch angle (degrees) over balls in play with one.
+      la_n: Balls in play with a launch angle.
+      gb: Ground balls.
+      ld: Line drives.
+      fb: Fly balls.
+      pu: Popups.
+      pulled: Balls in play to the batter's pull side (spray angle beyond 15 degrees from center).
+      pulled_air: Pulled line drives and fly balls.
       woba_value: Sum of wOBA values of the PAs that ended on this pitch type.
       xwoba_value: Sum of xwOBA values of the same PAs.
       woba_den: Those PAs (the wOBA denominator).
+      league_code: Always MLB.
+      source: Always mlb_statcast.
+      dt: Game date.
+      ingested_at_utc: When this row was written.
+
+  feature_batter_pitch_daily:
+    description: >
+      Each MLB batter's results by pitch group per day - fastballs (FF, SI,
+      FC), breaking balls (SL, ST, CU, KC, SV), offspeed (CH, FS, FO) and
+      other - from Savant's raw Statcast rows: swing decisions (chase, zone
+      swings and contact, whiffs), contact quality (hard-hit, barrels, exit
+      velocity, launch angle), batted-ball mix and pull rate, and wOBA /
+      xwOBA. Sums, so any span adds up. The "why" behind a batter's storyline
+      (insights/drivers.py): what changed, or how he compares with the league.
+    grain: one row per batter per pitch group per dt
+    primary_key: [player_id, pitch_group, dt]
+    foreign_keys:
+      player_id: dim_player.player_id
+    sources: [mlb_statcast]
+    caveats:
+      - Written by the statcast_features_publish stage (in the nightly), from silver, not by gold_publish.
+      - Pull side uses Savant's hit coordinates and the batter's side for that pitch; switch hitters are counted per PA.
+    columns:
+      player_id: FK to dim_player (the batter).
+      pitch_group: fastball, breaking, offspeed or other.
+      pitches: Pitches of this group he saw on dt.
+      swings: Swings at them (including fouls and balls in play).
+      whiffs: Swings and misses.
+      zone_pitches: Pitches in the strike zone (Savant zone 1-9).
+      zone_swings: Swings at those.
+      zone_whiffs: Misses on those swings (zone contact = 1 - zone_whiffs / zone_swings).
+      chase_pitches: Pitches outside the zone (Savant zone 11-14).
+      chase_swings: Swings at those (chase rate = chase_swings / chase_pitches).
+      bip: Balls in play.
+      hard_hit: Balls in play at 95+ mph exit velocity.
+      barrels: Balls in play Savant classes as barrels (launch_speed_angle 6).
+      ev_sum: Sum of exit velocity (mph) over balls in play with one.
+      ev_n: Balls in play with an exit velocity.
+      la_sum: Sum of launch angle (degrees) over balls in play with one.
+      la_n: Balls in play with a launch angle.
+      gb: Ground balls.
+      ld: Line drives.
+      fb: Fly balls.
+      pu: Popups.
+      pulled: Balls in play to the batter's pull side (spray angle beyond 15 degrees from center).
+      pulled_air: Pulled line drives and fly balls.
+      woba_value: Sum of Savant woba_value over PAs that ended on this pitch group.
+      xwoba_value: Sum of xwOBA over the same PAs.
+      woba_den: Those PAs.
       league_code: Always MLB.
       source: Always mlb_statcast.
       dt: Game date.
@@ -764,7 +831,7 @@ tables:
       re-run evidence_sql to check them.
     grain: up to top_per_detector rows per detector per dt
     primary_key: [insight_id, dt]
-    sources: [feature_batter_daily, feature_pitch_daily, feature_contact_daily, dim_player]
+    sources: [feature_batter_daily, feature_pitch_daily, feature_contact_daily, feature_batter_pitch_daily, dim_player]
     caveats:
       - Written by the insights_publish stage (in the nightly) for each window's end date, not by gold_publish for every dt: a dt is the as-of date of one run.
       - change_vs_baseline is mostly regression to the mean (see the breakout model in the README); its score is a z-score against sampling noise, not a forecast.
@@ -783,7 +850,7 @@ tables:
       sample_size: PAs (or games, for a streak) behind value.
       score: Strength within its detector, bigger is stronger (games for a streak, |z| otherwise).
       rank: 1 = highest score within its detector on dt.
-      facts_json: The detector's other numbers (dates, PAs, z, direction, caveat) as JSON.
+      facts_json: The detector's other numbers (dates, PAs, z, direction, caveat) as JSON, and for MLB players `drivers`, the Statcast components that explain it (insights/drivers.py).
       evidence_sql: SQL over gold ({{table:...}} placeholders, as in this file) that re-derives the headline number.
       definition_version: configs/insights.yaml definition_version.
       dt: The as-of date.

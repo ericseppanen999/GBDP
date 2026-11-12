@@ -38,14 +38,21 @@ def _latest_dim_player_dt(root: Path, as_of: date) -> date | None:
 
 # The views the detectors read, and an empty stand-in for each when its
 # table doesn't exist yet (a first run, or a league with no Statcast).
-VIEWS = {"fbd": "feature_batter_daily", "fpd": "feature_pitch_daily", "fcd": "feature_contact_daily"}
+VIEWS = {"fbd": "feature_batter_daily", "fpd": "feature_pitch_daily", "fcd": "feature_contact_daily",
+         "fbpd": "feature_batter_pitch_daily"}
+# The pitch-level counters feature_pitch_daily and feature_batter_pitch_daily share.
+_COMPONENTS = ("0 AS pitches, 0 AS swings, 0 AS whiffs, 0 AS zone_pitches, 0 AS zone_swings, 0 AS zone_whiffs, "
+               "0 AS chase_pitches, 0 AS chase_swings, 0 AS bip, 0 AS hard_hit, 0 AS barrels, 0.0 AS ev_sum, "
+               "0 AS ev_n, 0.0 AS la_sum, 0 AS la_n, 0 AS gb, 0 AS ld, 0 AS fb, 0 AS pu, 0 AS pulled, "
+               "0 AS pulled_air, 0.0 AS woba_value, 0.0 AS xwoba_value, 0 AS woba_den")
 EMPTY = {
     "fbd": "CAST(NULL AS STRING) AS player_id, CAST(NULL AS STRING) AS league_code, 0 AS pa, 0 AS ab, 0 AS h, "
            "0 AS hr, 0 AS bb, 0 AS so, 0 AS hbp, 0 AS sf, 0 AS sh, 0 AS doubles, 0 AS triples, 0 AS woba_den, "
            "0.0 AS woba_value, CAST(NULL AS STRING) AS dt",
-    "fpd": "CAST(NULL AS STRING) AS player_id, CAST(NULL AS STRING) AS pitch_type, 0 AS pitches, 0 AS swings, "
-           "0 AS whiffs, 0.0 AS velo_sum, 0 AS velo_n, 0.0 AS spin_sum, 0 AS spin_n, 0.0 AS woba_value, "
-           "0.0 AS xwoba_value, 0 AS woba_den, CAST(NULL AS STRING) AS dt",
+    "fpd": "CAST(NULL AS STRING) AS player_id, CAST(NULL AS STRING) AS pitch_type, " + _COMPONENTS
+           + ", 0.0 AS velo_sum, 0 AS velo_n, 0.0 AS spin_sum, 0 AS spin_n, CAST(NULL AS STRING) AS dt",
+    "fbpd": "CAST(NULL AS STRING) AS player_id, CAST(NULL AS STRING) AS pitch_group, " + _COMPONENTS
+            + ", CAST(NULL AS STRING) AS dt",
     "fcd": "CAST(NULL AS STRING) AS player_id, 0.0 AS woba_value, 0.0 AS xwoba_value, 0 AS woba_den, "
            "0 AS xwoba_bip_n, 0 AS bip, 0 AS babip_hits, CAST(NULL AS STRING) AS dt",
 }

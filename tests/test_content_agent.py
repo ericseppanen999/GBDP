@@ -177,3 +177,10 @@ def test_a_rejected_draft_gets_one_revision_with_its_problems(semantic_gold):
     assert not drafts[0].ok
     out = agent.revise_once(drafts, insights, drafting, None)
     assert out[0].ok and out[0].text.endswith("with a hit.") and len(seen) == 2
+
+
+def test_a_tie_rounds_either_way_and_a_comparison_with_the_league_is_not_a_trend():
+    # 0.5625 as a percentage is 56.25: 56.3 and 56.2 both say it
+    assert agent._rounds_to(56.25, 56.3) and agent._rounds_to(56.25, 56.2)
+    assert not agent._rounds_to(56.25, 56.4)
+    assert "down from" in agent._TREND_WORDS and "up from" in agent._TREND_WORDS

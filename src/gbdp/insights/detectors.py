@@ -356,6 +356,31 @@ DETECTORS = {
 }
 
 
+def _attach_drivers(q: Query, as_of: date, c: Dict[str, Any]) -> None:
+    """Add facts.drivers: the Statcast components that explain the storyline
+    (insights/drivers.py). MLB players only; NPB has no pitch-level data."""
+    from gbdp.insights import drivers as dr
+
+    if c["subject_type"] != "player" or c["league_code"] != "MLB":
+        return
+    facts = json.loads(c["facts_json"])
+    try:
+        if c["detector"] == "change_vs_baseline":
+            split = as_of - timedelta(days=int(facts["recent_days"]) - 1)
+            found = dr.batter_change(q, c["subject_id"], split, as_of)
+        elif c["detector"] == "luck_gap":
+            found = dr.batter_vs_league(q, c["subject_id"], as_of)
+        elif c["detector"] in ("new_pitch", "velocity_change"):
+            found = dr.pitcher_change(q, c["subject_id"], date.fromisoformat(facts["since"]), as_of,
+                                      pitch_type=facts.get("pitch_type") if c["detector"] == "new_pitch" else None)
+        else:
+            return
+    except Exception:  # a missing feature table must not cost the insight itself
+        return
+    facts["drivers"] = found
+    c["facts_json"] = json.dumps(facts, ensure_ascii=False, sort_keys=True, default=str)
+
+
 def _interleave_directions(found: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Best first, alternating facts.direction (lucky/unlucky, up/down) when a
     detector has both, so one side can't take every slot."""
@@ -382,6 +407,7 @@ def detect(q: Query, as_of: date, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
             continue
         found = _interleave_directions(sorted(fn(q, as_of, cfg[name]), key=lambda c: (-c["score"], c["insight_id"])))
         for rank, c in enumerate(found[: int(cfg["top_per_detector"])], 1):
+            _attach_drivers(q, as_of, c)
             c["rank"] = rank
             c["definition_version"] = cfg["definition_version"]
             out.append(c)
