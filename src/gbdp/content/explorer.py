@@ -173,6 +173,7 @@ class Exploration:
     findings: List[Finding] = field(default_factory=list)
     finished: bool = False
     stopped: str = ""
+    columns: Dict[str, List[str]] = field(default_factory=dict)
     spent: str = ""
 
     @property
@@ -290,7 +291,8 @@ def execute(ex: Exploration, name: str, args: Dict[str, Any], skeptic: Callable[
     if name == "list_tables":
         return json.dumps(tools.list_tables())
     if name == "describe_table":
-        return _clip(json.dumps(tools.describe_table(str(args.get("table", ""))), default=str), chars)
+        table = str(args.get("table", ""))
+        return _clip(json.dumps(table_brief(tools.describe_table(table), columns_of(ex, table)), default=str), chars)
     if name == "list_metrics":
         return _clip(json.dumps(tools.list_metrics(), default=str), chars)
     if name == "describe_metric":
@@ -300,7 +302,7 @@ def execute(ex: Exploration, name: str, args: Dict[str, Any], skeptic: Callable[
         try:
             rows = _jsonable(ex.run_sql(sql))
         except Exception as exc:
-            return f"ERROR: {_clip(str(exc), 800)}"
+            return f"ERROR: {_clip(str(exc), 800)}" + column_hint(str(exc), sql, lambda t: columns_of(ex, t))
         qid = f"q{len(ex.queries) + 1}"
         ex.queries[qid] = Query(qid, sql, str(args.get("purpose", "")), rows)
         return _show(ex.queries[qid], rows_shown, chars)
@@ -326,6 +328,63 @@ def execute(ex: Exploration, name: str, args: Dict[str, Any], skeptic: Callable[
         ex.finished = True
         return "ok"
     return f"ERROR: unknown tool {name}"
+
+
+def columns_of(ex: "Exploration", table: str) -> List[str]:
+    """A table's or view's column names: the semantic layer's list, or, for a
+    view (whose entry has only its SQL), the keys of one row. Cached per run."""
+    from gbdp import mcp_server as tools
+
+    if table not in ex.columns:
+        detail = tools.describe_table(table)
+        cols = list((detail or {}).get("columns") or {}) if isinstance(detail, dict) else []
+        if not cols and isinstance(detail, dict) and "error" not in detail and re.fullmatch(r"\w+", table):
+            try:
+                rows = ex.run_sql(f"SELECT * FROM {table} LIMIT 1")
+                cols = list(rows[0]) if rows else []
+            except Exception:
+                cols = []
+        ex.columns[table] = cols
+    return ex.columns[table]
+
+
+def table_brief(detail: Dict[str, Any], names: Optional[List[str]] = None) -> Dict[str, Any]:
+    """describe_table, column names first and a view's SQL left out, so a
+    clipped answer still has what a query needs."""
+    if not isinstance(detail, dict) or "error" in detail:
+        return detail
+    cols = detail.get("columns") or {}
+    out: Dict[str, Any] = {"table": detail.get("table"), "column_names": names or list(cols)}
+    for k in ("grain", "primary_key", "foreign_keys", "caveats"):
+        if detail.get(k):
+            out[k] = detail[k]
+    out["columns"] = {c: _one_line_text(d)[:120] for c, d in cols.items()} if isinstance(cols, dict) else cols
+    out["description"] = _one_line_text(detail.get("description"))[:400]
+    return out
+
+
+def _one_line_text(text: Any) -> str:
+    return " ".join(str(text or "").split())
+
+
+_MISSING_COLUMN = re.compile(r'(?:does not have a column named|Referenced column) "(\w+)"', re.IGNORECASE)
+
+
+def column_hint(error: str, sql: str, columns: Callable[[str], List[str]]) -> str:
+    """For a query that named a column that isn't there: the real columns of
+    the tables and views the query reads."""
+    from gbdp import mcp_server as tools
+
+    if not _MISSING_COLUMN.search(error):
+        return ""
+    known = {t["table"] for t in tools.list_tables()}
+    used = [t for t in dict.fromkeys(re.findall(r"\b(?:from|join)\s+([A-Za-z_]\w*)", sql, re.IGNORECASE)) if t in known]
+    hints = []
+    for t in used:
+        cols = columns(t)
+        if cols:
+            hints.append(f"{t}: {', '.join(cols)}")
+    return ("\nReal columns:\n" + "\n".join(hints)) if hints else ""
 
 
 def _show(q: Query, rows_shown: int, chars: int) -> str:

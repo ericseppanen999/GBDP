@@ -146,3 +146,28 @@ def test_the_token_budget_stops_the_run_before_a_call_that_could_pass_it(sql, tm
     out = json.loads(path.with_suffix(".json").read_text())
     assert "token budget spent" in out["stopped"]
     assert backend.meter.spent <= 30_000 and len(sent) == backend.meter.calls
+
+
+def test_a_missing_column_error_lists_the_real_columns(monkeypatch):
+    from gbdp import mcp_server as tools
+
+    monkeypatch.setattr(tools, "list_tables", lambda: [{"table": "v_player_current"}, {"table": "v_pitch"}])
+    monkeypatch.setattr(tools, "describe_table", lambda t: {"table": t, "columns": {
+        "v_player_current": {"player_id": "", "primary_name": ""}, "v_pitch": {"pitcher_id": "", "plate_x": ""}}[t]})
+    cols = {"v_player_current": ["player_id", "primary_name"], "v_pitch": ["pitcher_id", "plate_x"]}
+    hint = ex.column_hint('Binder Error: Values list "pp" does not have a column named "name_first"',
+                          "SELECT pp.name_first FROM v_pitch p JOIN v_player_current pp ON pp.player_id = p.pitcher_id",
+                          cols.get)
+    assert "v_pitch: pitcher_id, plate_x" in hint and "v_player_current: player_id, primary_name" in hint
+    assert ex.column_hint("Parser Error: syntax", "SELECT 1", cols.get) == ""
+    brief = ex.table_brief({"table": "v_pitch", "sql": "WITH ... long", "columns": {"pitcher_id": "FK", "plate_x": "ft"},
+                            "description": "x"})
+    assert brief["column_names"] == ["pitcher_id", "plate_x"] and "sql" not in brief
+
+
+def test_a_views_columns_come_from_one_row(sql, monkeypatch):
+    from gbdp import mcp_server as tools
+
+    monkeypatch.setattr(tools, "describe_table", lambda t: {"table": t, "category": "view", "sql": "SELECT ..."})
+    e = _ex(sql)
+    assert ex.columns_of(e, "t") == ["name", "pa", "woba"]
