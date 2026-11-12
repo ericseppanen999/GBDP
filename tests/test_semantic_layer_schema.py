@@ -28,10 +28,13 @@ def sl():
 
 def _publish_tables(with_stages: bool = True) -> set:
     """Gold tables the code writes; with_stages adds those written by stages
-    other than gold_publish (insights_publish's insight_candidates)."""
+    other than gold_publish (insights_publish's insight_candidates,
+    statcast_features_publish's feature_pitch_daily / feature_contact_daily)."""
     from gbdp.insights import publish as insights_publish
+    from gbdp.insights import statcast_features
 
-    src = inspect.getsource(publish) + (inspect.getsource(insights_publish) if with_stages else "")
+    stages = inspect.getsource(insights_publish) + inspect.getsource(statcast_features)
+    src = inspect.getsource(publish) + (stages if with_stages else "")
     return set(re.findall(r'_write_gold_table\(\s*root,\s*"(\w+)"', src))
 
 

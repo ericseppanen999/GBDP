@@ -1,7 +1,7 @@
 # Insight detectors (src/gbdp/insights/detectors.py). Thresholds keep a
 # candidate from being noise: most short-window "trends" are regression to the
 # mean, so each detector needs a sample size and a score, not just a big number.
-definition_version: insights-v2
+definition_version: insights-v3
 
 hitting_streak:
   min_games: 10          # consecutive games with a hit, ending on the batter's latest game
@@ -21,6 +21,24 @@ league_month_shift:
 cross_league_gap:
   min_season_pa: 10000   # each league, season to date
   min_abs_z: 4.0
+
+luck_gap:
+  min_pa: 200            # wOBA denominator, season to date
+  min_abs_gap: 0.040     # |wOBA - xwOBA|
+
+new_pitch:
+  recent_days: 30        # "since": the last 30 days against the rest of the season
+  min_early_pitches: 400
+  min_recent_pitches: 250
+  max_early_share: 0.03  # barely threw it before
+  min_recent_share: 0.12 # a real part of the mix now
+  min_xwoba_improvement: 0.020  # xwOBA against since, vs before: clearly harder to hit
+
+velocity_change:
+  recent_days: 30
+  pitch_types: [FF, SI]  # four-seam fastball, sinker
+  min_pitches: 150       # of that pitch type, in each span
+  min_abs_mph: 1.5
 
 # Kept for the content agent: how many of each detector's top candidates.
 top_per_detector: 10

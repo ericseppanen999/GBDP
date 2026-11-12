@@ -36,6 +36,21 @@ def _latest_dim_player_dt(root: Path, as_of: date) -> date | None:
     return max(dts) if dts else None
 
 
+# The views the detectors read, and an empty stand-in for each when its
+# table doesn't exist yet (a first run, or a league with no Statcast).
+VIEWS = {"fbd": "feature_batter_daily", "fpd": "feature_pitch_daily", "fcd": "feature_contact_daily"}
+EMPTY = {
+    "fbd": "CAST(NULL AS STRING) AS player_id, CAST(NULL AS STRING) AS league_code, 0 AS pa, 0 AS ab, 0 AS h, "
+           "0 AS hr, 0 AS bb, 0 AS so, 0 AS hbp, 0 AS sf, 0 AS sh, 0 AS doubles, 0 AS triples, 0 AS woba_den, "
+           "0.0 AS woba_value, CAST(NULL AS STRING) AS dt",
+    "fpd": "CAST(NULL AS STRING) AS player_id, CAST(NULL AS STRING) AS pitch_type, 0 AS pitches, 0 AS swings, "
+           "0 AS whiffs, 0.0 AS velo_sum, 0 AS velo_n, 0.0 AS spin_sum, 0 AS spin_n, 0.0 AS woba_value, "
+           "0.0 AS xwoba_value, 0 AS woba_den, CAST(NULL AS STRING) AS dt",
+    "fcd": "CAST(NULL AS STRING) AS player_id, 0.0 AS woba_value, 0.0 AS xwoba_value, 0 AS woba_den, "
+           "0 AS xwoba_bip_n, 0 AS bip, 0 AS babip_hits, CAST(NULL AS STRING) AS dt",
+}
+
+
 def _duckdb_query(root: Path, as_of: date):
     import duckdb
     import pyarrow as pa
@@ -43,16 +58,15 @@ def _duckdb_query(root: Path, as_of: date):
     from gbdp.gold.publish import _read_gold_snapshot
 
     con = duckdb.connect()
-    base = root / "feature_batter_daily"
-    files = sorted(str(p).replace("\\", "/") for p in base.glob("dt=*/*.parquet")
-                   if f"{as_of.year}-01-01" <= p.parent.name[3:] <= as_of.isoformat())
-    if files:
-        paths = ", ".join(f"'{f}'" for f in files)
-        con.execute(f"CREATE VIEW fbd AS SELECT * FROM read_parquet([{paths}], union_by_name=true, hive_partitioning=false)")
-    else:
-        con.execute("CREATE VIEW fbd AS SELECT NULL::VARCHAR AS player_id, NULL::VARCHAR AS league_code, "
-                    "0 AS pa, 0 AS ab, 0 AS h, 0 AS hr, 0 AS bb, 0 AS so, 0 AS hbp, 0 AS sf, 0 AS sh, "
-                    "0 AS doubles, 0 AS triples, 0 AS woba_den, 0.0 AS woba_value, NULL::VARCHAR AS dt WHERE false")
+    for view, table in VIEWS.items():
+        base = root / table
+        files = sorted(str(p).replace("\\", "/") for p in base.glob("dt=*/*.parquet")
+                       if f"{as_of.year}-01-01" <= p.parent.name[3:] <= as_of.isoformat())
+        if files:
+            paths = ", ".join(f"'{f}'" for f in files)
+            con.execute(f"CREATE VIEW {view} AS SELECT * FROM read_parquet([{paths}], union_by_name=true, hive_partitioning=false)")
+        else:
+            con.execute(f"CREATE VIEW {view} AS SELECT {EMPTY[view]} WHERE false")
     snap = _latest_dim_player_dt(root, as_of)
     names = [{"player_id": r["player_id"], "primary_name": r.get("primary_name")}
              for r in (_read_gold_snapshot(root, "dim_player", snap, ["player_id", "primary_name"]) if snap else [])]
@@ -72,9 +86,13 @@ def _spark_query(root: Path, as_of: date):
     from pyspark.sql import functions as F
 
     spark = SparkSession.builder.getOrCreate()
-    fbd = spark.read.format("delta").load(spark_path(root / "feature_batter_daily")) \
-        .where((F.col("dt") >= f"{as_of.year}-01-01") & (F.col("dt") <= as_of.isoformat()))
-    fbd.createOrReplaceTempView("fbd")
+    for view, table in VIEWS.items():
+        if path_exists(root / table):
+            spark.read.format("delta").load(spark_path(root / table)) \
+                .where((F.col("dt") >= f"{as_of.year}-01-01") & (F.col("dt") <= as_of.isoformat())) \
+                .createOrReplaceTempView(view)
+        else:
+            spark.sql(f"SELECT {EMPTY[view]} WHERE false").createOrReplaceTempView(view)
     snap = _latest_dim_player_dt(root, as_of)
     dp = spark.read.format("delta").load(spark_path(root / "dim_player"))
     dp = dp.where(F.col("dt") == snap.isoformat()) if snap else dp.limit(0)

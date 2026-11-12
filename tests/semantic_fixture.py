@@ -54,8 +54,22 @@ def _pitch(ab, n, inning, half, outs, pitch_type, speed, desc, events=None, base
         "outs_when_up": outs, "on_1b": on_1b, "on_2b": on_2b, "on_3b": on_3b, "events": events,
         "description": desc, "pitch_type": pitch_type, "release_speed": speed, "plate_x": 0.1, "plate_z": 2.5,
         "balls": balls, "strikes": strikes, "batter_id": batter, "pitcher_id": pitcher,
-        "raw_json": json.dumps({"bat_score": score[0], "post_bat_score": score[1]}),
+        "raw_json": json.dumps({"bat_score": score[0], "post_bat_score": score[1], **_savant_outcome(events, desc)}),
     }
+
+
+# Savant's per-PA fields on a PA-ending pitch (feature_contact_daily / feature_pitch_daily read them).
+_WOBA = {"walk": 0.69, "hit_by_pitch": 0.72, "single": 0.88, "double": 1.25, "triple": 1.58, "home_run": 2.03}
+
+
+def _savant_outcome(events, desc) -> Dict[str, Any]:
+    if not events or events in ("caught_stealing_2b", "truncated_pa"):
+        return {}
+    out: Dict[str, Any] = {"woba_denom": "1", "woba_value": str(_WOBA.get(events, 0.0))}
+    if desc == "hit_into_play":
+        out.update(estimated_woba_using_speedangle="0.4", bb_type="line_drive",
+                   babip_value="1" if events in ("single", "double", "triple") else "0")
+    return out
 
 
 def _statcast_pitches() -> List[Dict[str, Any]]:
@@ -274,7 +288,9 @@ def build_insights(tmp: Path, gold: Path) -> None:
     import yaml
 
     from gbdp.insights.publish import insights_config, publish_insights
+    from gbdp.insights.statcast_features import publish_statcast_features
 
+    publish_statcast_features(DAY1.isoformat(), DAY2.isoformat(), root=gold, force=True)
     cfg = insights_config(Path(__file__).resolve().parent.parent / "configs" / "insights.yaml")
     cfg["hitting_streak"]["min_games"] = 1
     cfg["change_vs_baseline"].update(min_recent_pa=1, min_baseline_pa=1, min_abs_z=0)

@@ -459,11 +459,69 @@ ALTER TABLE gbdp.gold_gbdp.feature_player_rolling_30d ALTER COLUMN `dt` COMMENT 
 
 ALTER TABLE gbdp.gold_gbdp.feature_player_rolling_30d ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
 
-COMMENT ON TABLE gbdp.gold_gbdp.insight_candidates IS 'Patterns in the season to date that are worth writing about, found by deterministic detectors (src/gbdp/insights/detectors.py, thresholds in configs/insights.yaml) as of dt: active hitting streaks, a batter\'s last 14 days against his own season, a league\'s month against its previous month, and MLB against NPB. Each row carries its numbers, sample size, a score and evidence_sql, a query over gold that re-derives the headline number. An LLM writing about one should state only these numbers and can re-run evidence_sql to check them. Grain: up to top_per_detector rows per detector per dt. Sources: feature_batter_daily, dim_player. Caveat: {"Written by the insights_publish stage (in the nightly) for each window\'s end date, not by gold_publish for every dt": \'a dt is the as-of date of one run.\'} Caveat: change_vs_baseline is mostly regression to the mean (see the breakout model in the README); its score is a z-score against sampling noise, not a forecast. Caveat: Box-score-only leagues (KBO, LMB, Indy) have no f...';
+COMMENT ON TABLE gbdp.gold_gbdp.feature_pitch_daily IS 'Each MLB pitcher\'s pitches by pitch type per day, from Savant\'s raw Statcast rows in silver (insights/statcast_features.py): counts, swings, whiffs, velocity and spin sums, and the wOBA and xwOBA of the plate appearances that ended on that pitch type. Sums, not rates, so any date range adds up: whiff rate = sum(whiffs) / sum(swings), velocity = sum(velo_sum) / sum(velo_n), xwOBA against = sum(xwoba_value) / sum(woba_den). Feeds the new_pitch and velocity_change insight detectors. Grain: one row per pitcher per pitch type per dt. Sources: mlb_statcast. Caveat: Written by the statcast_features_publish stage (in the nightly), from silver, not by gold_publish. Caveat: xwOBA follows Savant (a ball in play counts estimated_woba_using_speedangle, a walk, HBP or strikeout its woba_value); empty where Savant leaves the estimate blank. Semantic layer: configs/semantic_layer.yaml.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `player_id` COMMENT 'FK to dim_player (the pitcher).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `pitch_type` COMMENT 'Savant\'s pitch type code (FF four-seam, SI sinker, SL slider, ST sweeper, CH changeup, ...).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `pitches` COMMENT 'Pitches of this type thrown on dt.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `swings` COMMENT 'Of those, swings (including fouls and balls in play).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `whiffs` COMMENT 'Of those, swings and misses.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `velo_sum` COMMENT 'Sum of release speed (mph) over the pitches with one.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `velo_n` COMMENT 'Pitches with a release speed.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `spin_sum` COMMENT 'Sum of release spin rate (rpm) over the pitches with one.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `spin_n` COMMENT 'Pitches with a spin rate.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `woba_value` COMMENT 'Sum of wOBA values of the PAs that ended on this pitch type.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `xwoba_value` COMMENT 'Sum of xwOBA values of the same PAs.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `woba_den` COMMENT 'Those PAs (the wOBA denominator).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `league_code` COMMENT 'Always MLB.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `source` COMMENT 'Always mlb_statcast.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `dt` COMMENT 'Game date.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_pitch_daily ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
+
+COMMENT ON TABLE gbdp.gold_gbdp.feature_contact_daily IS 'Each MLB batter\'s wOBA and Statcast expected wOBA (xwOBA) sums per day, with balls in play and their BABIP hits, from silver Statcast. wOBA - xwOBA over a span is how far his results ran ahead of (or behind) his contact quality; feeds the luck_gap insight detector. Grain: one row per batter per dt. Sources: mlb_statcast. Caveat: Written by the statcast_features_publish stage (in the nightly), from silver, not by gold_publish. Caveat: Statcast\'s wOBA weights, not gold\'s (feature_batter_daily); the two differ slightly. Semantic layer: configs/semantic_layer.yaml.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_contact_daily ALTER COLUMN `player_id` COMMENT 'FK to dim_player (the batter).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_contact_daily ALTER COLUMN `woba_value` COMMENT 'Sum of Savant woba_value over his PAs.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_contact_daily ALTER COLUMN `xwoba_value` COMMENT 'Sum of xwOBA over the same PAs (balls in play by exit velocity and launch angle).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_contact_daily ALTER COLUMN `woba_den` COMMENT 'Those PAs (Savant woba_denom).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_contact_daily ALTER COLUMN `xwoba_bip_n` COMMENT 'Balls in play with an xwOBA estimate.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_contact_daily ALTER COLUMN `bip` COMMENT 'Balls in play, not counting home runs (BABIP\'s denominator).';
+
+ALTER TABLE gbdp.gold_gbdp.feature_contact_daily ALTER COLUMN `babip_hits` COMMENT 'Of those, hits.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_contact_daily ALTER COLUMN `league_code` COMMENT 'Always MLB.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_contact_daily ALTER COLUMN `source` COMMENT 'Always mlb_statcast.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_contact_daily ALTER COLUMN `dt` COMMENT 'Game date.';
+
+ALTER TABLE gbdp.gold_gbdp.feature_contact_daily ALTER COLUMN `ingested_at_utc` COMMENT 'When this row was written.';
+
+COMMENT ON TABLE gbdp.gold_gbdp.insight_candidates IS 'Patterns in the season to date that are worth writing about, found by deterministic detectors (src/gbdp/insights/detectors.py, thresholds in configs/insights.yaml) as of dt: active hitting streaks, a batter\'s last 14 days against his own season, a league\'s month against its previous month, and MLB against NPB. Each row carries its numbers, sample size, a score and evidence_sql, a query over gold that re-derives the headline number. An LLM writing about one should state only these numbers and can re-run evidence_sql to check them. Grain: up to top_per_detector rows per detector per dt. Sources: feature_batter_daily, feature_pitch_daily, feature_contact_daily, dim_player. Caveat: {"Written by the insights_publish stage (in the nightly) for each window\'s end date, not by gold_publish for every dt": \'a dt is the as-of date of one run.\'} Caveat: change_vs_baseline is mostly regression to the mean (see the breakout model in the README); its score is a z-score against sampling noise, not a forecast. Caveat: Box-s...';
 
 ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `insight_id` COMMENT 'Hash of detector, dt, league, subject and metric.';
 
-ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `detector` COMMENT 'hitting_streak, change_vs_baseline, league_month_shift or cross_league_gap.';
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `detector` COMMENT 'hitting_streak, change_vs_baseline, league_month_shift, cross_league_gap, luck_gap, new_pitch or velocity_change.';
 
 ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `league_code` COMMENT 'MLB or NPB; for cross_league_gap the pair, e.g. MLB-NPB.';
 
@@ -473,7 +531,7 @@ ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `subject_id` COMMENT 
 
 ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `subject_name` COMMENT 'dim_player.primary_name for a player (from its newest snapshot); the league code(s) otherwise.';
 
-ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `metric` COMMENT 'What value measures (hitting_streak_games, woba, k_rate, bb_rate, hr_rate).';
+ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `metric` COMMENT 'What value measures (hitting_streak_games, woba, k_rate, bb_rate, hr_rate, woba_minus_xwoba, pitch_share:<type>, velo:<type>).';
 
 ALTER TABLE gbdp.gold_gbdp.insight_candidates ALTER COLUMN `value` COMMENT 'The headline number (the streak length, the recent or this-month rate, the first league\'s rate).';
 

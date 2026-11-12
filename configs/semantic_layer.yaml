@@ -690,6 +690,68 @@ tables:
       dt: Last day of the window.
       ingested_at_utc: When this row was written.
 
+  feature_pitch_daily:
+    description: >
+      Each MLB pitcher's pitches by pitch type per day, from Savant's raw
+      Statcast rows in silver (insights/statcast_features.py): counts, swings,
+      whiffs, velocity and spin sums, and the wOBA and xwOBA of the plate
+      appearances that ended on that pitch type. Sums, not rates, so any date
+      range adds up: whiff rate = sum(whiffs) / sum(swings), velocity =
+      sum(velo_sum) / sum(velo_n), xwOBA against = sum(xwoba_value) / sum(woba_den).
+      Feeds the new_pitch and velocity_change insight detectors.
+    grain: one row per pitcher per pitch type per dt
+    primary_key: [player_id, pitch_type, dt]
+    foreign_keys:
+      player_id: dim_player.player_id
+    sources: [mlb_statcast]
+    caveats:
+      - Written by the statcast_features_publish stage (in the nightly), from silver, not by gold_publish.
+      - xwOBA follows Savant (a ball in play counts estimated_woba_using_speedangle, a walk, HBP or strikeout its woba_value); empty where Savant leaves the estimate blank.
+    columns:
+      player_id: FK to dim_player (the pitcher).
+      pitch_type: Savant's pitch type code (FF four-seam, SI sinker, SL slider, ST sweeper, CH changeup, ...).
+      pitches: Pitches of this type thrown on dt.
+      swings: Of those, swings (including fouls and balls in play).
+      whiffs: Of those, swings and misses.
+      velo_sum: Sum of release speed (mph) over the pitches with one.
+      velo_n: Pitches with a release speed.
+      spin_sum: Sum of release spin rate (rpm) over the pitches with one.
+      spin_n: Pitches with a spin rate.
+      woba_value: Sum of wOBA values of the PAs that ended on this pitch type.
+      xwoba_value: Sum of xwOBA values of the same PAs.
+      woba_den: Those PAs (the wOBA denominator).
+      league_code: Always MLB.
+      source: Always mlb_statcast.
+      dt: Game date.
+      ingested_at_utc: When this row was written.
+
+  feature_contact_daily:
+    description: >
+      Each MLB batter's wOBA and Statcast expected wOBA (xwOBA) sums per day,
+      with balls in play and their BABIP hits, from silver Statcast. wOBA -
+      xwOBA over a span is how far his results ran ahead of (or behind) his
+      contact quality; feeds the luck_gap insight detector.
+    grain: one row per batter per dt
+    primary_key: [player_id, dt]
+    foreign_keys:
+      player_id: dim_player.player_id
+    sources: [mlb_statcast]
+    caveats:
+      - Written by the statcast_features_publish stage (in the nightly), from silver, not by gold_publish.
+      - Statcast's wOBA weights, not gold's (feature_batter_daily); the two differ slightly.
+    columns:
+      player_id: FK to dim_player (the batter).
+      woba_value: Sum of Savant woba_value over his PAs.
+      xwoba_value: Sum of xwOBA over the same PAs (balls in play by exit velocity and launch angle).
+      woba_den: Those PAs (Savant woba_denom).
+      xwoba_bip_n: Balls in play with an xwOBA estimate.
+      bip: Balls in play, not counting home runs (BABIP's denominator).
+      babip_hits: Of those, hits.
+      league_code: Always MLB.
+      source: Always mlb_statcast.
+      dt: Game date.
+      ingested_at_utc: When this row was written.
+
   insight_candidates:
     description: >
       Patterns in the season to date that are worth writing about, found by
@@ -702,19 +764,19 @@ tables:
       re-run evidence_sql to check them.
     grain: up to top_per_detector rows per detector per dt
     primary_key: [insight_id, dt]
-    sources: [feature_batter_daily, dim_player]
+    sources: [feature_batter_daily, feature_pitch_daily, feature_contact_daily, dim_player]
     caveats:
       - Written by the insights_publish stage (in the nightly) for each window's end date, not by gold_publish for every dt: a dt is the as-of date of one run.
       - change_vs_baseline is mostly regression to the mean (see the breakout model in the README); its score is a z-score against sampling noise, not a forecast.
       - Box-score-only leagues (KBO, LMB, Indy) have no feature_batter_daily rows, so no insights yet.
     columns:
       insight_id: Hash of detector, dt, league, subject and metric.
-      detector: hitting_streak, change_vs_baseline, league_month_shift or cross_league_gap.
+      detector: hitting_streak, change_vs_baseline, league_month_shift, cross_league_gap, luck_gap, new_pitch or velocity_change.
       league_code: MLB or NPB; for cross_league_gap the pair, e.g. MLB-NPB.
       subject_type: player, league or league_pair.
       subject_id: dim_player.player_id for a player; the league code(s) otherwise.
       subject_name: dim_player.primary_name for a player (from its newest snapshot); the league code(s) otherwise.
-      metric: What value measures (hitting_streak_games, woba, k_rate, bb_rate, hr_rate).
+      metric: What value measures (hitting_streak_games, woba, k_rate, bb_rate, hr_rate, woba_minus_xwoba, pitch_share:<type>, velo:<type>).
       value: The headline number (the streak length, the recent or this-month rate, the first league's rate).
       baseline: What value is compared with (the season-before-window or previous-month rate, the second league's rate); null for streaks.
       delta: value - baseline; null for streaks.

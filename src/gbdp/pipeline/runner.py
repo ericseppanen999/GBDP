@@ -143,6 +143,7 @@ def _pipeline_stages() -> Dict[str, Callable]:
         "identity_resolve": _stage_identity,
         "gold_publish": _stage_gold,
         "ml_publish": _stage_ml,
+        "statcast_features_publish": _stage_statcast_features,
         "insights_publish": _stage_insights,
         "quality_checks": _stage_quality,
         "audit_report": _stage_audit,
@@ -340,6 +341,15 @@ def _stage_identity(start, end, cfg, writer, cache, force, leagues=None):
 
 def _stage_gold(start, end, cfg, writer, cache, force, leagues=None):
     _run_step(f"gold_publish:{start}..{end}", lambda: publish_gold(start, end, force=force))
+
+
+def _stage_statcast_features(start, end, cfg, writer, cache, force, leagues=None):
+    # Pitch-type and batted-ball features from silver Statcast, for the insight detectors.
+    if not _allowed(leagues, "mlb"):
+        return
+    from gbdp.insights.statcast_features import publish_statcast_features
+
+    _run_step(f"statcast_features_publish:{start}..{end}", lambda: publish_statcast_features(start, end))
 
 
 def _stage_insights(start, end, cfg, writer, cache, force, leagues=None):

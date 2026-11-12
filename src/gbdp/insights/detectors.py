@@ -210,12 +210,167 @@ def cross_league_gap(q: Query, as_of: date, cfg: Dict[str, Any]) -> List[Dict[st
     return out
 
 
+def _season_split(as_of: date, recent_days: int):
+    return date(as_of.year, 1, 1), as_of - timedelta(days=recent_days - 1)
+
+
+def luck_gap(q: Query, as_of: date, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Batters whose wOBA is far from their xwOBA (Savant's expected wOBA from
+    exit velocity and launch angle): results running ahead of the contact
+    (lucky, due to cool off) or behind it (unlucky, due to heat up)."""
+    season_start = date(as_of.year, 1, 1)
+    rows = q(f"""
+        SELECT c.player_id, max(p.primary_name) AS primary_name, sum(c.woba_value) AS wv, sum(c.xwoba_value) AS xv,
+               sum(c.woba_den) AS wd, sum(c.bip) AS bip, sum(c.babip_hits) AS bh, sum(c.xwoba_bip_n) AS xn
+        FROM fcd c LEFT JOIN players p ON p.player_id = c.player_id
+        WHERE c.dt >= '{season_start.isoformat()}' AND c.dt <= '{as_of.isoformat()}'
+        GROUP BY c.player_id""")
+    out = []
+    for r in rows:
+        wd = r["wd"] or 0
+        if wd < cfg["min_pa"] or not r["xn"]:
+            continue
+        woba, xwoba = r["wv"] / wd, r["xv"] / wd
+        gap = woba - xwoba
+        if abs(gap) < cfg["min_abs_gap"]:
+            continue
+        evidence = f"""
+            SELECT sum(woba_value) / sum(woba_den) AS woba, sum(xwoba_value) / sum(woba_den) AS xwoba,
+                   sum(woba_den) AS pa, sum(babip_hits) * 1.0 / sum(bip) AS babip
+            FROM {{{{table:feature_contact_daily}}}}
+            WHERE player_id = '{r['player_id']}' AND dt BETWEEN '{season_start.isoformat()}' AND '{as_of.isoformat()}'"""
+        out.append(_candidate(
+            "luck_gap", as_of, "MLB", "player", r["player_id"], r.get("primary_name") or "", "woba_minus_xwoba",
+            woba, xwoba, int(wd), abs(gap) * math.sqrt(wd),
+            {"direction": "lucky" if gap > 0 else "unlucky", "woba": round(woba, 4), "xwoba": round(xwoba, 4),
+             "babip": round(r["bh"] / r["bip"], 4) if r["bip"] else None, "pa": int(wd),
+             "caveat": "xwOBA is built from exit velocity and launch angle; the gap tends to close, but not always."},
+            evidence))
+    return out
+
+
+def _pitcher_spans(q: Query, as_of: date, recent_days: int) -> List[Dict[str, Any]]:
+    season_start, split = _season_split(as_of, recent_days)
+    span = f"CASE WHEN f.dt >= '{split.isoformat()}' THEN 'recent' ELSE 'early' END"
+    return q(f"""
+        SELECT f.player_id, max(p.primary_name) AS primary_name, f.pitch_type, {span} AS span,
+               sum(f.pitches) AS pitches, sum(f.swings) AS swings, sum(f.whiffs) AS whiffs,
+               sum(f.velo_sum) AS velo_sum, sum(f.velo_n) AS velo_n,
+               sum(f.xwoba_value) AS xv, sum(f.woba_den) AS wd
+        FROM fpd f LEFT JOIN players p ON p.player_id = f.player_id
+        WHERE f.dt >= '{season_start.isoformat()}' AND f.dt <= '{as_of.isoformat()}'
+        GROUP BY f.player_id, f.pitch_type, {span}""")
+
+
+def new_pitch(q: Query, as_of: date, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Pitchers who barely threw a pitch type early and throw it a lot now,
+    and whose results improved since: the 'added a pitch' story. Results are
+    the pitcher's whole line (whiff rate, xwOBA against), early vs recent."""
+    season_start, split = _season_split(as_of, int(cfg["recent_days"]))
+    by_pitcher: Dict[str, Dict[str, Any]] = {}
+    for r in _pitcher_spans(q, as_of, int(cfg["recent_days"])):
+        p = by_pitcher.setdefault(r["player_id"], {"name": r.get("primary_name") or "", "types": {}, "tot": {}})
+        p["types"].setdefault(r["pitch_type"], {})[r["span"]] = r
+        t = p["tot"].setdefault(r["span"], {"pitches": 0, "swings": 0, "whiffs": 0, "xv": 0.0, "wd": 0})
+        for k in t:
+            t[k] += r[k] or 0
+    out = []
+    for pid, p in by_pitcher.items():
+        early, recent = p["tot"].get("early"), p["tot"].get("recent")
+        if not early or not recent:
+            continue
+        if early["pitches"] < cfg["min_early_pitches"] or recent["pitches"] < cfg["min_recent_pitches"]:
+            continue
+        if not early["swings"] or not recent["swings"] or not early["wd"] or not recent["wd"]:
+            continue
+        whiff_e, whiff_r = early["whiffs"] / early["swings"], recent["whiffs"] / recent["swings"]
+        xw_e, xw_r = early["xv"] / early["wd"], recent["xv"] / recent["wd"]
+        if xw_e - xw_r < cfg.get("min_xwoba_improvement", 0.020):
+            continue  # a new pitch is only the story if he got clearly harder to hit
+        for pitch_type, spans in p["types"].items():
+            share_e = (spans.get("early", {}).get("pitches") or 0) / early["pitches"]
+            share_r = (spans.get("recent", {}).get("pitches") or 0) / recent["pitches"]
+            if share_e > cfg["max_early_share"] or share_r < cfg["min_recent_share"]:
+                continue
+            evidence = f"""
+                SELECT CASE WHEN dt >= '{split.isoformat()}' THEN 'recent' ELSE 'early' END AS span,
+                       sum(CASE WHEN pitch_type = '{pitch_type}' THEN pitches ELSE 0 END) * 1.0 / sum(pitches) AS share,
+                       sum(pitches) AS pitches, sum(whiffs) * 1.0 / sum(swings) AS whiff_rate,
+                       sum(xwoba_value) / sum(woba_den) AS xwoba_against
+                FROM {{{{table:feature_pitch_daily}}}}
+                WHERE player_id = '{pid}' AND dt BETWEEN '{season_start.isoformat()}' AND '{as_of.isoformat()}'
+                GROUP BY 1"""
+            score = (share_r - share_e) * 10 + max(0.0, xw_e - xw_r) * 10 + max(0.0, whiff_r - whiff_e) * 5
+            out.append(_candidate(
+                "new_pitch", as_of, "MLB", "player", pid, p["name"], f"pitch_share:{pitch_type}", share_r, share_e,
+                int(recent["pitches"]), score,
+                {"pitch_type": pitch_type, "since": split.isoformat(), "recent_days": int(cfg["recent_days"]),
+                 "whiff_rate_before": round(whiff_e, 4), "whiff_rate_since": round(whiff_r, 4),
+                 "xwoba_against_before": round(xw_e, 4), "xwoba_against_since": round(xw_r, 4),
+                 "pitches_before": int(early["pitches"]), "pitches_since": int(recent["pitches"])},
+                evidence))
+    return out
+
+
+def velocity_change(q: Query, as_of: date, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """A pitcher's fastball (four-seam or sinker) velocity over the last N
+    days against the rest of his season."""
+    season_start, split = _season_split(as_of, int(cfg["recent_days"]))
+    spans: Dict[tuple, Dict[str, Any]] = {}
+    for r in _pitcher_spans(q, as_of, int(cfg["recent_days"])):
+        if r["pitch_type"] in cfg["pitch_types"]:
+            spans.setdefault((r["player_id"], r["pitch_type"]), {"name": r.get("primary_name") or ""})[r["span"]] = r
+    out = []
+    for (pid, pitch_type), sp in spans.items():
+        e, rc = sp.get("early"), sp.get("recent")
+        if not e or not rc or (e["velo_n"] or 0) < cfg["min_pitches"] or (rc["velo_n"] or 0) < cfg["min_pitches"]:
+            continue
+        v_e, v_r = e["velo_sum"] / e["velo_n"], rc["velo_sum"] / rc["velo_n"]
+        if abs(v_r - v_e) < cfg["min_abs_mph"]:
+            continue
+        evidence = f"""
+            SELECT CASE WHEN dt >= '{split.isoformat()}' THEN 'recent' ELSE 'early' END AS span,
+                   sum(velo_sum) / sum(velo_n) AS velo, sum(velo_n) AS pitches
+            FROM {{{{table:feature_pitch_daily}}}}
+            WHERE player_id = '{pid}' AND pitch_type = '{pitch_type}'
+              AND dt BETWEEN '{season_start.isoformat()}' AND '{as_of.isoformat()}'
+            GROUP BY 1"""
+        out.append(_candidate(
+            "velocity_change", as_of, "MLB", "player", pid, sp["name"], f"velo:{pitch_type}", v_r, v_e,
+            int(rc["velo_n"]), abs(v_r - v_e),
+            {"pitch_type": pitch_type, "direction": "up" if v_r > v_e else "down", "since": split.isoformat(),
+             "recent_days": int(cfg["recent_days"]), "pitches_before": int(e["velo_n"]),
+             "pitches_since": int(rc["velo_n"])},
+            evidence))
+    return out
+
+
 DETECTORS = {
     "hitting_streak": hitting_streaks,
     "change_vs_baseline": change_vs_baseline,
     "league_month_shift": league_month_shift,
     "cross_league_gap": cross_league_gap,
+    "luck_gap": luck_gap,
+    "new_pitch": new_pitch,
+    "velocity_change": velocity_change,
 }
+
+
+def _interleave_directions(found: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Best first, alternating facts.direction (lucky/unlucky, up/down) when a
+    detector has both, so one side can't take every slot."""
+    sides: Dict[str, List[Dict[str, Any]]] = {}
+    for c in found:
+        sides.setdefault(json.loads(c["facts_json"]).get("direction", ""), []).append(c)
+    if len(sides) < 2:
+        return found
+    out: List[Dict[str, Any]] = []
+    queues = sorted(sides.values(), key=lambda v: -v[0]["score"])
+    while any(queues):
+        for qd in queues:
+            if qd:
+                out.append(qd.pop(0))
+    return out
 
 
 def detect(q: Query, as_of: date, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -223,7 +378,9 @@ def detect(q: Query, as_of: date, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     cfg['top_per_detector']."""
     out: List[Dict[str, Any]] = []
     for name, fn in DETECTORS.items():
-        found = sorted(fn(q, as_of, cfg[name]), key=lambda c: (-c["score"], c["insight_id"]))
+        if name not in cfg:
+            continue
+        found = _interleave_directions(sorted(fn(q, as_of, cfg[name]), key=lambda c: (-c["score"], c["insight_id"])))
         for rank, c in enumerate(found[: int(cfg["top_per_detector"])], 1):
             c["rank"] = rank
             c["definition_version"] = cfg["definition_version"]
@@ -248,4 +405,13 @@ def recompute(candidate: Dict[str, Any], evidence_rows: List[Dict[str, Any]]) ->
         a, b = json.loads(candidate["facts_json"])["leagues"]
         by = {r["league_code"]: r[metric] for r in evidence_rows}
         return {"value": by.get(a), "baseline": by.get(b)}
+    if det == "luck_gap":
+        r = evidence_rows[0] if evidence_rows else {}
+        return {"value": r.get("woba"), "baseline": r.get("xwoba")}
+    if det == "new_pitch":
+        by = {r["span"]: r for r in evidence_rows}
+        return {"value": by.get("recent", {}).get("share"), "baseline": by.get("early", {}).get("share")}
+    if det == "velocity_change":
+        by = {r["span"]: r for r in evidence_rows}
+        return {"value": by.get("recent", {}).get("velo"), "baseline": by.get("early", {}).get("velo")}
     raise ValueError(f"unknown detector {det!r}")

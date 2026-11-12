@@ -42,9 +42,16 @@ reconciled MLB and NPB data. Write one post per insight you find worth posting
   2026": say "since <start date>" instead.
 - No superlatives or rankings (longest, best, most, highest, record, first,
   only): nothing here compares a player with the whole league. Trend words
-  (rose, fell, jumped, climbed, dropped) only for change_vs_baseline and
-  league_month_shift, which compare two periods; a cross-league gap or a
-  streak is a single fact.
+  (rose, fell, jumped, climbed, dropped) only for change_vs_baseline,
+  league_month_shift, new_pitch and velocity_change, which compare two
+  periods; a cross-league gap, a streak or a luck gap is a single fact.
+- luck_gap: wOBA against xwOBA (expected wOBA from exit velocity and launch
+  angle). "Lucky" means results ahead of his contact, "unlucky" behind it;
+  say the gap tends to close, never that it will.
+- new_pitch: the pitch's share of his pitches before and since facts.since,
+  with his whiff rate and xwOBA against before and since. Name the pitch in
+  words (FF four-seam, SI sinker, FC cutter, SL slider, ST sweeper, CU
+  curveball, KC knuckle curve, CH changeup, FS splitter).
 - In `claims`, list every headline number the post states, as the data's raw
   fractions or counts: value, and baseline when the post states it.
 
@@ -329,7 +336,7 @@ def verify(drafts: List[Draft], insights: List[Dict[str, Any]], as_of: Optional[
         for word in _SUPERLATIVES:
             if re.search(rf"\b{word}\b", low):
                 d.problems.append(f"superlative or ranking the data doesn't support: {word!r}")
-        if ins.get("detector") not in ("change_vs_baseline", "league_month_shift"):
+        if ins.get("detector") not in ("change_vs_baseline", "league_month_shift", "new_pitch", "velocity_change"):
             for word in _TREND_WORDS:
                 if re.search(rf"\b{word}\b", low):
                     d.problems.append(f"trend word for a single fact: {word!r}")

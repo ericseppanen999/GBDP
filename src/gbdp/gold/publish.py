@@ -90,6 +90,10 @@ _KNOWN_FIELD_TYPES: Dict[str, str] = {
     "value": "double", "baseline": "double", "delta": "double", "sample_size": "long",
     "insight_id": "string", "detector": "string", "subject_type": "string", "subject_id": "string",
     "subject_name": "string", "metric": "string", "facts_json": "string", "evidence_sql": "string",
+    # feature_pitch_daily / feature_contact_daily (insights/statcast_features.py)
+    "pitch_type": "string", "pitches": "long", "swings": "long", "whiffs": "long", "velo_sum": "double",
+    "velo_n": "long", "spin_sum": "double", "spin_n": "long", "xwoba_value": "double", "xwoba_bip_n": "long",
+    "bip": "long", "babip_hits": "long",
 }
 
 
