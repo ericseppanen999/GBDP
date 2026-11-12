@@ -8,16 +8,16 @@ $ curl 'localhost:8000/run-expectancy?league=MLB&season=2026'
 
 | Bases | 0 outs | 1 out | 2 outs |
 |-------|-------:|------:|-------:|
-| empty | 0.49 | 0.26 | 0.11 |
-| 1st | 0.89 | 0.53 | 0.24 |
-| 2nd | 1.14 | 0.67 | 0.34 |
-| 3rd | 1.38 | 0.92 | 0.37 |
-| 1st & 2nd | 1.52 | 0.87 | 0.45 |
-| 1st & 3rd | 1.85 | 1.18 | 0.50 |
-| 2nd & 3rd | 1.90 | 1.37 | 0.53 |
-| loaded | 2.43 | 1.63 | 0.77 |
+| empty | 0.49 | 0.26 | 0.10 |
+| 1st | 0.88 | 0.53 | 0.23 |
+| 2nd | 1.13 | 0.67 | 0.32 |
+| 3rd | 1.44 | 0.92 | 0.37 |
+| 1st & 2nd | 1.53 | 0.90 | 0.45 |
+| 1st & 3rd | 1.78 | 1.16 | 0.51 |
+| 2nd & 3rd | 1.99 | 1.36 | 0.52 |
+| loaded | 2.46 | 1.63 | 0.75 |
 
-<sub>Expected runs from each base/out state to the end of the inning, from all 139,585 MLB plate appearances of 2026-05-13 to 11-05 in production gold, reconciled game by game against MLB's own box scores (see [Proving the data is right](#proving-the-data-is-right)).</sub>
+<sub>Expected runs from each base/out state to the end of the inning, from all 186,493 MLB plate appearances of the 2026 season (03-25 to 10-28) in production gold, reconciled game by game against MLB's own box scores (see [Proving the data is right](#proving-the-data-is-right)).</sub>
 
 ## What's in it
 
@@ -236,18 +236,18 @@ Storage is Unity Catalog Volumes per layer (`/Volumes/gbdp/{bronze,silver,gold}_
 
 Quality checks catch broken invariants. They can't tell you the numbers match reality, so the platform is also reconciled, game by game, against the leagues' own records.
 
-**The 2026 season in production** (2026-05-13 to 11-05, Unity Catalog `gbdp.gold_gbdp`, checked 2026-11-11 with `reconcile_season.py` against the MLB Stats API and SPAIA's games feed):
+**The 2026 season in production** (opening day 2026-03-25 to 11-05, Unity Catalog `gbdp.gold_gbdp`, checked 2026-11-12 with `reconcile_season.py` against the MLB Stats API and SPAIA's games feed):
 
-| | MLB (1,842 final games) | NPB (655 finished games) |
+| | MLB (2,470 final games) | NPB (876 finished games) |
 |---|---|---|
-| every game has plate appearances | 1,842 (100%) | 655 (100%) |
-| plate appearances per team = the official box score | 1,842 (100%) | |
-| runs per team = the official score | 1,842 (100%) | 655 (100%) |
-| hits per team = the official score | 1,842 (100%) | 651 (99.4%) |
+| every game has plate appearances | 2,470 (100%) | 876 (100%) |
+| plate appearances per team = the official box score | 2,470 (100%) | |
+| runs per team = the official score | 2,470 (100%) | 876 (100%) |
+| hits per team = the official score | 2,470 (100%) | 870 (99.3%) |
 
 - **MLB took two fixes to reach 100%.** 14 games were one run short: a run that scores *between* plate appearances (a balk, a wild pickoff throw) has no Statcast pitch row, so each PA now runs to the next PA's starting score. 5 games were one hit off: official scoring changes made after the backfill fetched those days (09-02 to 09-06), fixed by re-fetching them. A fresh local rebuild of three of those games matched the box score before the re-fetch did.
-- **The 4 NPB hit misses** (gold one short each) are SPAIA disagreeing with itself: the "truth" is the hit counter SPAIA embeds in its feed, while every hit its play-by-play text describes is in gold, every PA has a result, and in three of the games no error could have been rescored as a hit. An independent NPB box score (npb.jp) would settle which side is right.
-- **Invariants over the season**, all clean: no duplicate game, PA (188,618), pitch (542,178), roster or box-score key; no pitch without its PA and no PA without its game; base states 0..7 and outs 0..3 everywhere; every PA has both teams; one current `dim_player` row per player and no NPB coach or manager among them; every MLB and NPB game day has games, PAs (and MLB pitches).
+- **The 6 NPB hit misses** are gold one short each. Four (06-16 to 09-23) were examined and are SPAIA disagreeing with itself: the "truth" is the hit counter SPAIA embeds in its feed, while every hit its play-by-play text describes is in gold, every PA has a result, and in three of the games no error could have been rescored as a hit. The other two (05-01 and 05-08, from the early-season backfill) show the same pattern but haven't been examined one by one. An independent NPB box score (npb.jp) would settle which side is right.
+- **Invariants over the season**, all clean: no duplicate game, PA (252,686), pitch (728,603), roster or box-score key; no pitch without its PA and no PA without its game; base states 0..7 and outs 0..3 everywhere; every PA has both teams; one current `dim_player` row per player and no NPB coach or manager among them; every MLB and NPB game day has games, PAs (and MLB pitches).
 
 The rebuild itself found nine defects that only show on some days, each now fixed with a regression test: Savant repeating a pitch line byte-for-byte; Savant leaving the event blank when the third out is made on the bases mid-PA; SPAIA numbering two batters of one half-inning alike; KBO's two pitchers named 이승현 (and a 박건우 on each side of one game) merging into one player; KBO games never fetched for 30 May–June dates; a rained-out game counted as played; the All-Star break Monday failing "at least one game"; runs scoring between PAs; and Unity Catalog tables created long ago with DOUBLE counts. `verify_lakehouse.py --only silver_keys` now finds the key collisions among these from silver in minutes, before a gold run.
 
@@ -267,7 +267,7 @@ Getting there found and fixed real defects: NPB counted every pitch as a plate a
 **`scripts/verify_lakehouse.py`** checks the live Unity Catalog tables through a SQL warehouse:
 
 ```bash
-python scripts/verify_lakehouse.py --start 2026-05-13
+python scripts/verify_lakehouse.py --start 2026-03-25
 ```
 
 It prints PASS/WARN/FAIL for:
@@ -280,7 +280,7 @@ It prints PASS/WARN/FAIL for:
 **`scripts/reconcile_season.py`** does the same reconciliation for production gold over any date range, game by game, against the MLB Stats API and SPAIA's games feed (a different endpoint from the play-by-play gold is built from):
 
 ```bash
-python scripts/reconcile_season.py --start 2026-05-13 --end 2026-11-05 --gold-delta
+python scripts/reconcile_season.py --start 2026-03-25 --end 2026-11-05 --gold-delta
 ```
 
 `--gold-delta` reads gold's Delta tables directly, so a rebuild can be checked before it is published to Unity Catalog.

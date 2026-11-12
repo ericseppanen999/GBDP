@@ -546,7 +546,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--warehouse", default=os.getenv("GBDP_WAREHOUSE_ID", "a9d3d2589a30ab67"))
     ap.add_argument("--profile", default=os.getenv("DATABRICKS_CONFIG_PROFILE"))
-    ap.add_argument("--start", default="2026-05-13", help="first dt to check (default: start of the replay)")
+    ap.add_argument("--start", default="2026-03-25", help="first dt to check (default: 2026 opening day)")
     ap.add_argument("--gold-delta", action="store_true",
                     help="read gold from its Delta tables on the Volume, not the UC tables")
     ap.add_argument("--only", default="", help="comma-separated check names to run (default: all)")
