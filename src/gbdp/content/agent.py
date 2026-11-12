@@ -150,7 +150,11 @@ def coverage(as_of: Optional[str]) -> Dict[str, Any]:
     partial season a season."""
     from gbdp.serve.db import run_sql
 
-    year = (as_of or date.today().isoformat())[:4]
+    if as_of:
+        year = as_of[:4]
+    else:  # the newest season gold holds (a local 2025 build, run in 2026)
+        latest = run_sql("SELECT max(dt) AS dt FROM fact_game", limit=1)
+        year = str((latest[0].get("dt") if latest else None) or date.today().isoformat())[:4]
     rows = run_sql(f"SELECT min(dt) AS start, max(dt) AS end FROM fact_game "
                    f"WHERE dt >= '{year}-01-01' AND dt <= '{as_of or year + '-12-31'}'", limit=1)
     return rows[0] if rows else {"start": None, "end": None}

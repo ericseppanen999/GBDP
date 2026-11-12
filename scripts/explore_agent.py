@@ -26,6 +26,9 @@ def main() -> int:
     ap.add_argument("--list-lenses", action="store_true")
     ap.add_argument("--findings", type=int, default=3, help="stop after this many accepted findings")
     ap.add_argument("--max-steps", type=int, default=40, help="tool-call budget")
+    ap.add_argument("--max-tokens", type=int, default=400_000,
+                    help="hard cap on the tokens the run spends (input + output, from the API's usage); "
+                         "the run stops before any call that could pass it")
     ap.add_argument("--seed", type=int, help="seed for the lens pick")
     ap.add_argument("--out", default="content_queue")
     ap.add_argument("--cloud", action="store_true", help="read production UC through the databricks CLI")
@@ -56,12 +59,14 @@ def main() -> int:
 
     if args.backend == "groq":
         # A free tier's 8k tokens a minute: few rows per result, one full result in context.
-        backend = explorer.OpenAICompatBackend(model=args.model or "openai/gpt-oss-120b")
+        backend = explorer.OpenAICompatBackend(model=args.model or "openai/gpt-oss-120b", max_chars=22000,
+                                               budget=args.max_tokens)
         sizes = {"keep_full": 2, "rows_shown": 15, "chars": 2500}
     else:
         import anthropic
 
-        backend = explorer.ClaudeBackend(anthropic.Anthropic(), model=args.model or explorer.agent.MODEL)
+        backend = explorer.ClaudeBackend(anthropic.Anthropic(), model=args.model or explorer.agent.MODEL,
+                                         budget=args.max_tokens)
         sizes = {}
     path = explorer.explore(backend, as_of=args.as_of, out_dir=Path(args.out), lens=args.lens,
                             findings=args.findings, max_steps=args.max_steps, seed=args.seed, **sizes)

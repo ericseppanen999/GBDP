@@ -100,3 +100,49 @@ def test_an_api_error_mid_run_keeps_what_was_found(sql, tmp_path, monkeypatch):
     out = json.loads(path.with_suffix(".json").read_text())
     assert "tokens per day" in out["stopped"] and out["queries"][0]["query_id"] == "q1"
     assert (tmp_path / "explore_2025-08-31.steps.jsonl").read_text().count("\n") == 1
+
+
+def test_compact_shrinks_old_turns_and_keeps_the_newest():
+    big = "SELECT " + "x, " * 500 + "1"
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "task"}]
+    for k in range(6):
+        msgs.append({"role": "assistant", "content": "thinking " * 50, "tool_calls": [
+            {"id": f"c{k}", "type": "function", "function": {"name": "query", "arguments": json.dumps({"sql": big, "purpose": "p"})}}]})
+        msgs.append({"role": "tool", "tool_call_id": f"c{k}", "content": "row\n" * 300})
+    ex.compact(msgs, 6000)
+    assert len(json.dumps(msgs)) < 6000 + 2 * (len(big) + 1500)
+    assert json.loads(msgs[-2]["tool_calls"][0]["function"]["arguments"])["sql"] == big  # the newest call stays whole
+    assert json.loads(msgs[2]["tool_calls"][0]["function"]["arguments"])["sql"].endswith(" ...")
+    assert msgs[1]["content"] == "task"
+
+
+def test_the_token_budget_stops_the_run_before_a_call_that_could_pass_it(sql, tmp_path, monkeypatch):
+    monkeypatch.setattr(ex.agent, "coverage", lambda as_of: {"start": "2025-03-27", "end": "2025-08-31"})
+    sent = []
+
+    class Usage:
+        input_tokens, output_tokens = 9000, 1000
+
+    class Block:
+        type, id, name, input = "tool_use", "t", "list_tables", {}
+
+    class Resp:
+        stop_reason = "tool_use"
+        usage = Usage()
+        content = [Block()]
+
+    class Messages:
+        @staticmethod
+        def create(**kw):
+            sent.append(kw)
+            return Resp()
+
+    class Client:
+        messages = Messages()
+
+    backend = ex.ClaudeBackend(Client(), max_tokens=4000, budget=30_000)
+    monkeypatch.setattr(ex, "execute", lambda *a, **k: "[]")
+    path = ex.explore(backend, as_of="2025-08-31", out_dir=tmp_path, lens="teams", run_sql=sql, max_steps=50)
+    out = json.loads(path.with_suffix(".json").read_text())
+    assert "token budget spent" in out["stopped"]
+    assert backend.meter.spent <= 30_000 and len(sent) == backend.meter.calls

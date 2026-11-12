@@ -173,6 +173,7 @@ class Exploration:
     findings: List[Finding] = field(default_factory=list)
     finished: bool = False
     stopped: str = ""
+    spent: str = ""
 
     @property
     def accepted(self) -> List[Finding]:
@@ -348,12 +349,46 @@ def _stub(name: str, args: Dict[str, Any], result: str) -> str:
 
 # ---------------------------------------------------------- the backends ---
 
+class BudgetSpent(RuntimeError):
+    """The run's token budget is spent; nothing more is sent."""
+
+
+class TokenMeter:
+    """A hard cap on the tokens one run may spend, counted from the API's own
+    usage numbers. Before each call it reserves a deliberately high estimate
+    of the request (a token per 3 characters, where English runs nearer 4)
+    plus the call's whole output allowance, and refuses the call if that
+    could pass the budget, so a run can't go over it, even by one call."""
+
+    def __init__(self, budget: int):
+        self.budget, self.spent, self.calls = int(budget), 0, 0
+
+    def reserve(self, request: Any, max_output: int) -> None:
+        estimate = len(json.dumps(request, ensure_ascii=False, default=str)) // 3 + max_output
+        if self.spent + estimate > self.budget:
+            raise BudgetSpent(f"token budget spent: {self.spent:,} of {self.budget:,} used, "
+                              f"the next call could take up to {estimate:,}")
+
+    def add(self, input_tokens: int, output_tokens: int) -> None:
+        self.spent += int(input_tokens or 0) + int(output_tokens or 0)
+        self.calls += 1
+
+
+def _claude_usage(response) -> tuple:
+    u = getattr(response, "usage", None)
+    if u is None:
+        return 0, 0
+    read = sum(int(getattr(u, k, 0) or 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+    return read, int(getattr(u, "output_tokens", 0) or 0)
+
+
 class ClaudeBackend:
     """The Anthropic SDK, with adaptive thinking. Assistant turns go back
     verbatim (thinking blocks included); only tool results get trimmed."""
 
-    def __init__(self, client, model: str = agent.MODEL, max_tokens: int = 16000):
+    def __init__(self, client, model: str = agent.MODEL, max_tokens: int = 16000, budget: int = 400_000):
         self.client, self.model, self.max_tokens = client, model, max_tokens
+        self.meter = TokenMeter(budget)
 
     def step(self, system: str, first: str, turns: List[Dict[str, Any]]):
         messages: List[Dict[str, Any]] = [{"role": "user", "content": first}]
@@ -365,9 +400,11 @@ class ClaudeBackend:
                     {"type": "tool_result", "tool_use_id": r["id"], "content": r["shown"]} for r in t["results"]]})
             else:
                 messages.append({"role": "user", "content": t["text"]})
+        self.meter.reserve([system, anthropic_tools(), messages], self.max_tokens)
         response = self.client.messages.create(model=self.model, max_tokens=self.max_tokens, system=system,
                                                tools=anthropic_tools(), thinking={"type": "adaptive"},
                                                messages=messages)
+        self.meter.add(*_claude_usage(response))
         if response.stop_reason == "refusal":
             raise RuntimeError("the model declined")
         calls = [{"id": b.id, "name": b.name, "args": dict(b.input)} for b in response.content if b.type == "tool_use"]
@@ -375,10 +412,12 @@ class ClaudeBackend:
         return response.content, calls, text
 
     def json_call(self, system: str, user: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+        self.meter.reserve([system, user, schema], 4000)
         response = self.client.beta.messages.create(
             model=self.model, max_tokens=4000, system=system,
             output_config={"effort": "medium", "format": {"type": "json_schema", "schema": schema}},
             messages=[{"role": "user", "content": user}])
+        self.meter.add(*_claude_usage(response))
         if response.stop_reason == "refusal":
             raise RuntimeError("the reviewer declined")
         return json.loads(next(b.text for b in response.content if b.type == "text"))
@@ -388,21 +427,30 @@ class OpenAICompatBackend:
     """Tool calling on an OpenAI-compatible chat API (Groq by default)."""
 
     def __init__(self, model: str = "openai/gpt-oss-120b", base_url: str = "https://api.groq.com/openai/v1",
-                 api_key_env: str = "GROQ_API_KEY", max_tokens: int = 2500, timeout: float = 300.0):
+                 api_key_env: str = "GROQ_API_KEY", max_tokens: int = 2500, timeout: float = 300.0,
+                 max_chars: Optional[int] = None, budget: int = 400_000):
         key = os.environ.get(api_key_env)
         if not key:
             raise RuntimeError(f"{api_key_env} is not set")
         self.model, self.url, self.max_tokens, self.timeout = model, f"{base_url.rstrip('/')}/chat/completions", max_tokens, timeout
         self.headers = {"Authorization": f"Bearer {key}"}
+        # A request-size cap (characters of messages and tools, ~4 per
+        # token): Groq's free tier refuses a request over ~7k input tokens.
+        self.max_chars = max_chars
+        self.meter = TokenMeter(budget)
 
     def _post(self, body: Dict[str, Any]) -> Dict[str, Any]:
         import requests
 
+        self.meter.reserve(body, int(body.get("max_tokens") or 0))
         r = agent._post_with_retry(requests, self.url, self.headers, body, self.timeout, attempts=8,
                                    give_up=lambda resp: "per day" in resp.text)
         if r.status_code >= 400:
             raise RuntimeError(f"{r.status_code}: {r.text[:400]}")
-        return r.json()
+        out = r.json()
+        usage = out.get("usage") or {}
+        self.meter.add(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+        return out
 
     def step(self, system: str, first: str, turns: List[Dict[str, Any]]):
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": first}]
@@ -413,6 +461,8 @@ class OpenAICompatBackend:
                 messages += [{"role": "tool", "tool_call_id": r["id"], "content": r["shown"]} for r in t["results"]]
             else:
                 messages.append({"role": "user", "content": t["text"]})
+        if self.max_chars:
+            compact(messages, self.max_chars - len(json.dumps(openai_tools())))
         msg = self._post({"model": self.model, "messages": messages, "tools": openai_tools(), "tool_choice": "auto",
                           "temperature": 0.7, "max_tokens": self.max_tokens})["choices"][0]["message"]
         calls = []
@@ -441,6 +491,31 @@ class OpenAICompatBackend:
             body["messages"][1]["content"] += "\n\nAnswer with JSON matching this schema:\n" + json.dumps(schema)
             out = self._post(body)
         return json.loads(out["choices"][0]["message"]["content"])
+
+
+def compact(messages: List[Dict[str, Any]], budget: int) -> None:
+    """Shrink an OpenAI-format conversation under `budget` characters, oldest
+    first: an assistant turn's text, then its calls' long arguments (a query's
+    SQL becomes a pointer; show_query has the rows), then tool results to
+    their first line. The system prompt, the task and the newest exchange stay."""
+    def size() -> int:
+        return len(json.dumps(messages, ensure_ascii=False))
+
+    last_assistant = max((i for i, m in enumerate(messages) if m.get("role") == "assistant"), default=-1)
+    for i, m in enumerate(messages[:last_assistant]):
+        if size() <= budget:
+            return
+        if m.get("role") == "assistant":
+            m["content"] = (m.get("content") or "")[:150]
+            for c in m.get("tool_calls") or []:
+                try:
+                    args = json.loads(c["function"]["arguments"] or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                c["function"]["arguments"] = json.dumps(
+                    {k: (v[:100] + " ..." if isinstance(v, str) and len(v) > 100 else v) for k, v in args.items()})
+        elif m.get("role") == "tool":
+            m["content"] = str(m.get("content") or "").split("\n")[0][:200]
 
 
 # --------------------------------------------------------------- the run ---
@@ -494,6 +569,9 @@ def explore(backend, as_of: Optional[str] = None, out_dir: Path = Path("content_
         steps = sum(len(t["results"]) for t in turns if t["kind"] == "results")
     finally:
         log.close()
+    meter = getattr(backend, "meter", None)
+    if meter:
+        ex.spent = f"{meter.spent:,} of {meter.budget:,} tokens in {meter.calls} calls"
     return write_explore(ex, out_dir, steps)
 
 
@@ -546,7 +624,8 @@ def write_explore(ex: Exploration, out_dir: Path, steps: int) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     lines = [f"# Explorer findings as of {ex.as_of}", "",
              f"Lens: {ex.lens}. {len(ex.accepted)} accepted, {len(ex.findings) - len(ex.accepted)} rejected; "
-             f"{len(ex.queries)} queries, {steps} tool calls." + (f" {ex.stopped}." if ex.stopped else ""), ""]
+             f"{len(ex.queries)} queries, {steps} tool calls" + (f", {ex.spent}" if ex.spent else "") + "."
+             + (f" {ex.stopped}." if ex.stopped else ""), ""]
     for title, keep in (("Accepted", True), ("Rejected", False)):
         group = [f for f in ex.findings if f.ok is keep]
         if not group:
@@ -564,7 +643,7 @@ def write_explore(ex: Exploration, out_dir: Path, steps: int) -> Path:
     path = out_dir / f"explore_{ex.as_of}.md"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     (out_dir / f"explore_{ex.as_of}.json").write_text(json.dumps({
-        "as_of": ex.as_of, "lens": ex.lens, "coverage": ex.coverage, "stopped": ex.stopped,
+        "as_of": ex.as_of, "lens": ex.lens, "coverage": ex.coverage, "stopped": ex.stopped, "spent": ex.spent,
         "accepted": [f.__dict__ | {"queries": [ex.queries[i].__dict__ for i in f.query_ids if i in ex.queries]}
                      for f in ex.accepted],
         "rejected": [f.__dict__ for f in ex.findings if not f.ok],
