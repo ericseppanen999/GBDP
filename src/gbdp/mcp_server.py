@@ -187,7 +187,10 @@ def find_insights(
     detectors (table insight_candidates): active hitting streaks
     (hitting_streak), a batter's last 14 days vs his own season
     (change_vs_baseline), a league's month vs its previous month
-    (league_month_shift) and MLB vs NPB (cross_league_gap).
+    (league_month_shift), MLB vs NPB (cross_league_gap), wOBA far from
+    xwOBA (luck_gap), a pitcher's new pitch (new_pitch) and a fastball
+    velocity change (velocity_change). MLB player insights carry
+    facts.drivers: the Statcast components that explain them.
 
     Each result has the headline numbers (value, baseline, delta,
     sample_size), a score (bigger = stronger within its detector) and facts

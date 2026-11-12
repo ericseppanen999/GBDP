@@ -84,6 +84,15 @@ Style: write for a baseball fan scrolling past, not a data dictionary.
   3.1%). Never also print the raw fraction.
 - One or two sentences. Vary the openings across posts.
 
+Shape: each insight carries `post_format`; write its post in that shape, so a
+day's posts don't all read "X posted a .xxx wOBA over his last 14 days":
+- number_first: open with the one striking number, then who and why.
+- question: open with a short question a fan would ask; answer it with the data.
+- contrast: two numbers side by side (then and now, or him and the league).
+- under_the_hood: the surface result in a few words, then what's driving it.
+- scouting_note: terse, a scout's notebook - the skill or habit first, the result after.
+- plain_story: one conversational sentence with the player as its subject.
+
 Examples of the tone (their numbers are made up; yours must come from the data):
 - "Jane Doe has been on fire: a .512 wOBA over his last 14 days (51 PA), against .298 before that."
 - "Since May 13, MLB hitters have homered on 3.1% of plate appearances; in NPB it's 2.3%." """
@@ -147,13 +156,50 @@ def coverage(as_of: Optional[str]) -> Dict[str, Any]:
     return rows[0] if rows else {"start": None, "end": None}
 
 
-def gather(as_of: Optional[str] = None, limit: int = 12, evidence_rows: int = 10) -> List[Dict[str, Any]]:
-    """The best insights, interleaved across detectors, each with its evidence."""
+# The shapes a post can take (SYSTEM describes each). gather hands them out
+# so one batch never repeats a shape until it has used them all.
+FORMATS = ("number_first", "question", "contrast", "under_the_hood", "scouting_note", "plain_story")
+
+
+def assign_formats(insights: List[Dict[str, Any]], as_of: Optional[str]) -> None:
+    """A shape for each insight: every format once (in a per-day order)
+    before any repeats, so neither the day nor the week reads the same."""
+    import random
+
+    order = list(FORMATS)
+    random.Random(as_of or "").shuffle(order)
+    for k, ins in enumerate(insights):
+        ins["post_format"] = order[k % len(order)]
+
+
+def recently_posted(out_dir: Optional[Path], as_of: Optional[str], days: int = 7) -> Set[tuple]:
+    """(detector, subject_id) of the posts that passed in the `days` before
+    as_of, from the queue's own drafts_<dt>.json files."""
+    from datetime import timedelta
+
+    if not out_dir or not as_of or not Path(out_dir).exists():
+        return set()
+    cutoff = (date.fromisoformat(as_of) - timedelta(days=days)).isoformat()
+    seen: Set[tuple] = set()
+    for p in Path(out_dir).glob("drafts_*.json"):
+        if cutoff <= p.stem[len("drafts_"):] < as_of:
+            for d in json.loads(p.read_text(encoding="utf-8")):
+                if d.get("ok") and d.get("subject_id"):
+                    seen.add((d.get("detector"), d["subject_id"]))
+    return seen
+
+
+def gather(as_of: Optional[str] = None, limit: int = 12, evidence_rows: int = 10,
+           skip: Optional[Set[tuple]] = None) -> List[Dict[str, Any]]:
+    """The best insights, interleaved across detectors, each with its evidence;
+    a (detector, subject) in `skip` (posted this week) makes way for the next."""
     from gbdp import mcp_server as tools
 
-    found = tools.find_insights(as_of=as_of, limit=limit)
+    skip = skip or set()
+    found = tools.find_insights(as_of=as_of, limit=limit + 3 * len(skip) if skip else limit)
     if found and "error" in found[0]:
         raise RuntimeError(found[0]["error"])
+    found = [i for i in found if (i.get("detector"), i.get("subject_id")) not in skip][:limit]
     out = []
     for ins in found:
         detail = tools.explain_insight(ins["insight_id"], as_of=as_of)
@@ -162,6 +208,7 @@ def gather(as_of: Optional[str] = None, limit: int = 12, evidence_rows: int = 10
         rows = detail.get("evidence_rows") or []
         out.append({k: v for k, v in detail.items() if k not in ("evidence_sql", "evidence_rows")}
                    | {"evidence_rows": rows[:evidence_rows]})
+    assign_formats(out, as_of)
     if out:
         out[0]["_coverage"] = coverage(as_of)
     return out
@@ -224,14 +271,15 @@ def draft_ollama(insights: List[Dict[str, Any]], model: str = "qwen2.5:3b",
     return [Draft(str(p.get("insight_id", "")), str(p.get("text", "")), list(p.get("claims") or [])) for p in posts]
 
 
-def _post_with_retry(requests, url, headers, body, timeout, attempts: int = 4):
+def _post_with_retry(requests, url, headers, body, timeout, attempts: int = 4, give_up=None):
     """POST, waiting out 429s (free tiers rate-limit tokens per minute) for
-    the server's retry-after, or 20 s, up to `attempts` times."""
+    the server's retry-after, or 20 s, up to `attempts` times. give_up(r):
+    a 429 not worth waiting for (a daily cap), returned at once."""
     import time
 
     for i in range(attempts):
         r = requests.post(url, headers=headers, json=body, timeout=timeout)
-        if r.status_code != 429 or i == attempts - 1:
+        if r.status_code != 429 or i == attempts - 1 or (give_up and give_up(r)):
             return r
         wait = float(r.headers.get("retry-after") or 20)
         logger.info("rate limited; retrying in %.0fs", wait)
@@ -396,6 +444,14 @@ def verify(drafts: List[Draft], insights: List[Dict[str, Any]], as_of: Optional[
             d.problems.append(f"league-wide rate without its window (data starts {start}: say 'since ...')")
         if len(d.text) > 280:
             d.problems.append(f"too long ({len(d.text)} characters)")
+    # The same first three words as an earlier post reads like a template.
+    openings: Dict[str, str] = {}
+    for d in drafts:
+        words = re.findall(r"[a-z']+", d.text.lower())
+        key = " ".join(words[:3])
+        if len(words) >= 3 and key in openings and openings[key] != d.insight_id:
+            d.problems.append(f"opens like another post ({key!r}...); start it differently")
+        openings.setdefault(key, d.insight_id)
     return drafts
 
 
@@ -423,7 +479,9 @@ def write_queue(drafts: List[Draft], insights: List[Dict[str, Any]], out_dir: Pa
     path = out_dir / f"drafts_{as_of}.md"
     path.write_text("\n".join(lines), encoding="utf-8")
     (out_dir / f"drafts_{as_of}.json").write_text(json.dumps(
-        [{"insight_id": d.insight_id, "text": d.text, "claims": d.claims, "ok": d.ok, "problems": d.problems}
+        [{"insight_id": d.insight_id, "text": d.text, "claims": d.claims, "ok": d.ok, "problems": d.problems,
+          **{k: by_id.get(d.insight_id, {}).get(k) for k in ("detector", "subject_type", "subject_id", "subject_name",
+                                                             "league_code", "post_format")}}
          for d in drafts], ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
@@ -433,7 +491,7 @@ def run(client, as_of: Optional[str], out_dir: Path, limit: int = 12, model: str
     """backend "claude" (client: an anthropic.Anthropic), "groq" (an
     open-weights model on Groq; GROQ_API_KEY) or "ollama" (a local model);
     client is unused for the last two."""
-    insights = gather(as_of, limit)
+    insights = gather(as_of, limit, skip=recently_posted(out_dir, as_of))
     as_of = as_of or (str(insights[0].get("dt")) if insights else date.today().isoformat())
 
     def draft_one(chunk):

@@ -109,7 +109,7 @@ python -m gbdp.cli run --start ... --end ... --stages ml_publish     # rescore: 
 
 ## Insights and automated content
 
-`insight_candidates` (nightly, `src/gbdp/insights/`) holds patterns worth writing about, found by deterministic detectors with sample-size and score thresholds (`configs/insights.yaml`): active hitting streaks, a batter's last 14 days against his own season, a league's latest month against the one before, and MLB against NPB. Each row has its numbers and `evidence_sql` that re-derives them. On 2026-08-31 they found, among others, Shohei Ohtani's .237 wOBA over 14 days against .430 for his season, Cal Raleigh's .521 against .261, Junior Caminero's 14-game streak, and MLB hitting home runs 38% more often per PA than NPB (3.14% vs 2.28%).
+`insight_candidates` (nightly, `src/gbdp/insights/`) holds patterns worth writing about, found by deterministic detectors with sample-size and score thresholds (`configs/insights.yaml`): active hitting streaks, a batter's last 14 days against his own season, a league's latest month against the one before, MLB against NPB, wOBA far from xwOBA (batted-ball luck), a pitcher's new pitch, and a fastball velocity change. MLB player insights also carry `drivers` (`insights/drivers.py`): the Statcast components behind the storyline, such as chase rate, barrels, pull-side air contact or results by pitch group, scored against noise, against his own past or against the league. Each row has its numbers and `evidence_sql` that re-derives them. On 2026-08-31 they found, among others, Shohei Ohtani's .237 wOBA over 14 days against .430 for his season, Cal Raleigh's .521 against .261, Junior Caminero's 14-game streak, and MLB hitting home runs 38% more often per PA than NPB (3.14% vs 2.28%).
 
 The MCP server exposes them to any LLM client: `find_insights`, `explain_insight` (the evidence rows) and `verify_claim` (re-derives a stated number from gold).
 
@@ -118,6 +118,16 @@ The MCP server exposes them to any LLM client: `find_insights`, `explain_insight
 ```bash
 export ANTHROPIC_API_KEY=...
 python scripts/content_agent.py --cloud --as-of 2026-08-31   # production, via the databricks CLI login
+python scripts/content_agent.py --backend groq --as-of 2025-08-31   # an open-weights model on Groq (GROQ_API_KEY)
+```
+
+Posts are built around the why (the drivers), each insight gets one of six shapes (number first, question, contrast, under the hood, scouting note, plain story) in a per-day order, posts that open alike go back for a rewrite, and a player posted on in the last week makes way for the next storyline.
+
+`scripts/explore_agent.py` is the open-ended half: a model gets the semantic layer, read-only SQL and a lens to start from (`--list-lenses`: one pitch, batted-ball profiles, plate discipline, situations, teams, MLB against NPB, anything), and finds its own stories. Every finding cites the queries behind it. Code re-runs them and rejects the finding unless every number and name in the post is in their rows (or a literal in their SQL), rankings come from a query over the whole population, and the house rules hold. A separate skeptic call then reads the SQL and rows for wrong denominators, double-counting joins, thin samples, cherry-picked windows and causal claims. A rejection goes back to the explorer as the tool's answer. Accepted findings go to `content_queue/explore_<as_of>.md` with their SQL.
+
+```bash
+python scripts/explore_agent.py --cloud --lens arsenal          # Claude, production
+python scripts/explore_agent.py --backend groq --lens teams     # Groq, local gold
 ```
 
 ## Design decisions worth knowing

@@ -184,3 +184,28 @@ def test_a_tie_rounds_either_way_and_a_comparison_with_the_league_is_not_a_trend
     assert agent._rounds_to(56.25, 56.3) and agent._rounds_to(56.25, 56.2)
     assert not agent._rounds_to(56.25, 56.4)
     assert "down from" in agent._TREND_WORDS and "up from" in agent._TREND_WORDS
+
+
+def test_formats_rotate_and_this_weeks_subjects_make_way(tmp_path):
+    ins = [{"insight_id": str(k)} for k in range(8)]
+    agent.assign_formats(ins, "2025-08-31")
+    shapes = [i["post_format"] for i in ins]
+    assert sorted(shapes[:6]) == sorted(agent.FORMATS) and shapes[6:] == shapes[:2]
+    (tmp_path / "drafts_2025-08-28.json").write_text(json.dumps([
+        {"ok": True, "detector": "luck_gap", "subject_id": "W"},
+        {"ok": False, "detector": "luck_gap", "subject_id": "R"}]))
+    (tmp_path / "drafts_2025-08-01.json").write_text(json.dumps([{"ok": True, "detector": "luck_gap", "subject_id": "OLD"}]))
+    assert agent.recently_posted(tmp_path, "2025-08-31") == {("luck_gap", "W")}
+
+
+def test_two_posts_that_open_alike_send_the_second_back():
+    ins = [{"insight_id": i, "value": 0.5, "facts": {}, "evidence_rows": []} for i in ("a", "b")]
+    drafts = [agent.Draft(i, "Jacob Wilson has been lucky lately.", [{"insight_id": i, "value": 0.5}]) for i in ("a", "b")]
+    import gbdp.mcp_server as tools
+    orig = tools.verify_claim
+    tools.verify_claim = lambda *a, **k: {"verified": True}
+    try:
+        out = agent.verify(drafts, ins)
+    finally:
+        tools.verify_claim = orig
+    assert out[0].ok and any("opens like another post" in p for p in out[1].problems)
