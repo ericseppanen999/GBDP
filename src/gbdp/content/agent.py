@@ -23,11 +23,15 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 
 MODEL = "claude-opus-5-5"
 
+from gbdp.utils.logging import get_logger  # noqa: E402
+
+logger = get_logger("gbdp.content")
+
 SYSTEM = """You write short social posts about baseball data from the Global Baseball Data Platform.
 
 Each insight you get was found by a deterministic detector over a season of
-reconciled MLB and NPB data. Write one post per insight you find worth posting
-(skip weak or repetitive ones). Rules:
+reconciled MLB and NPB data. Write one post for each insight (skip one only
+if it repeats another post's point). Rules:
 - State only numbers that appear in that insight's data (value, baseline,
   delta, sample_size, facts, evidence rows). Never compute a new number, and
   never bring in outside stats or history.
@@ -131,7 +135,7 @@ def coverage(as_of: Optional[str]) -> Dict[str, Any]:
     return rows[0] if rows else {"start": None, "end": None}
 
 
-def gather(as_of: Optional[str] = None, limit: int = 12, evidence_rows: int = 30) -> List[Dict[str, Any]]:
+def gather(as_of: Optional[str] = None, limit: int = 12, evidence_rows: int = 10) -> List[Dict[str, Any]]:
     """The best insights, interleaved across detectors, each with its evidence."""
     from gbdp import mcp_server as tools
 
@@ -208,6 +212,21 @@ def draft_ollama(insights: List[Dict[str, Any]], model: str = "qwen2.5:3b",
     return [Draft(str(p.get("insight_id", "")), str(p.get("text", "")), list(p.get("claims") or [])) for p in posts]
 
 
+def _post_with_retry(requests, url, headers, body, timeout, attempts: int = 4):
+    """POST, waiting out 429s (free tiers rate-limit tokens per minute) for
+    the server's retry-after, or 20 s, up to `attempts` times."""
+    import time
+
+    for i in range(attempts):
+        r = requests.post(url, headers=headers, json=body, timeout=timeout)
+        if r.status_code != 429 or i == attempts - 1:
+            return r
+        wait = float(r.headers.get("retry-after") or 20)
+        logger.info("rate limited; retrying in %.0fs", wait)
+        time.sleep(min(wait, 120))
+    return r
+
+
 def draft_openai_compat(insights: List[Dict[str, Any]], model: str = "openai/gpt-oss-120b",
                         base_url: str = "https://api.groq.com/openai/v1", api_key_env: str = "GROQ_API_KEY",
                         timeout: float = 300.0) -> List[Draft]:
@@ -231,12 +250,12 @@ def draft_openai_compat(insights: List[Dict[str, Any]], model: str = "openai/gpt
     headers = {"Authorization": f"Bearer {key}"}
     body = {"model": model, "temperature": 0, "messages": messages,
             "response_format": {"type": "json_schema", "json_schema": {"name": "posts", "strict": True, "schema": SCHEMA}}}
-    r = requests.post(url, headers=headers, json=body, timeout=timeout)
+    r = _post_with_retry(requests, url, headers, body, timeout)
     if r.status_code == 400:
         schema_note = "\n\nAnswer with JSON matching this schema:\n" + json.dumps(SCHEMA)
         body = {"model": model, "temperature": 0, "response_format": {"type": "json_object"},
                 "messages": [messages[0], {"role": "user", "content": messages[1]["content"] + schema_note}]}
-        r = requests.post(url, headers=headers, json=body, timeout=timeout)
+        r = _post_with_retry(requests, url, headers, body, timeout)
     r.raise_for_status()
     content = r.json()["choices"][0]["message"]["content"]
     posts = json.loads(content).get("posts", [])
@@ -245,7 +264,8 @@ def draft_openai_compat(insights: List[Dict[str, Any]], model: str = "openai/gpt
 
 # ---------------------------------------------------------------- verify ---
 
-_NUMBER = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?|\.\d+)(%?)")
+# 11,432 is one number; .521 and 22.3% are numbers too.
+_NUMBER = re.compile(r"(?<![\w.,])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)(%?)")
 
 
 def _numbers(value: Any) -> Iterable[float]:
@@ -292,7 +312,7 @@ def text_numbers(text: str) -> List[tuple]:
     out = []
     for m in _NUMBER.finditer(text):
         raw, pct = m.group(1), m.group(2) == "%"
-        out.append((float(raw), pct, raw + m.group(2)))
+        out.append((float(raw.replace(",", "")), pct, raw + m.group(2)))
     return out
 
 
@@ -300,6 +320,14 @@ _SUPERLATIVES = ("longest", "shortest", "best", "worst", "most", "least", "highe
                  "first", "only", "top", "leads", "leading")
 _TREND_WORDS = ("rose", "rising", "climbed", "climbing", "jumped", "fell", "falling", "dropped", "surged",
                 "plunged", "increased", "decreased", "edging")
+
+
+def _is_detector_fact(claim: Dict[str, Any], insight: Dict[str, Any]) -> bool:
+    """A claimed number the detector itself stated in facts (exactly, to 4
+    places: facts are rounded there), as opposed to a made-up one."""
+    facts = set(_numbers(insight.get("facts") or {}))
+    stated = [claim.get("value")] + ([claim["baseline"]] if claim.get("baseline") is not None else [])
+    return all(isinstance(v, (int, float)) and any(abs(v - f) < 5e-5 for f in facts) for v in stated)
 
 
 def verify(drafts: List[Draft], insights: List[Dict[str, Any]], as_of: Optional[str] = None) -> List[Draft]:
@@ -323,6 +351,11 @@ def verify(drafts: List[Draft], insights: List[Dict[str, Any]], as_of: Optional[
                 d.problems.append(f"claim names another insight {c['insight_id']}")
                 continue
             check = tools.verify_claim(c["insight_id"], value=c["value"], baseline=c.get("baseline"), as_of=as_of)
+            if not check.get("verified") and c.get("baseline") is not None:
+                # The headline pair stated the other way round (xwOBA first).
+                check = tools.verify_claim(c["insight_id"], value=c["baseline"], baseline=c["value"], as_of=as_of)
+            if not check.get("verified") and _is_detector_fact(c, ins):
+                continue  # a supporting number from the insight's facts (a whiff rate before/since, ...)
             if not check.get("verified"):
                 d.problems.append(f"claim not verified: {json.dumps(check, default=str)}")
         allowed = allowed_numbers(ins)
@@ -383,19 +416,32 @@ def write_queue(drafts: List[Draft], insights: List[Dict[str, Any]], out_dir: Pa
 
 
 def run(client, as_of: Optional[str], out_dir: Path, limit: int = 12, model: str = MODEL,
-        backend: str = "claude") -> Path:
+        backend: str = "claude", batch: int = 0) -> Path:
     """backend "claude" (client: an anthropic.Anthropic), "groq" (an
     open-weights model on Groq; GROQ_API_KEY) or "ollama" (a local model);
     client is unused for the last two."""
     insights = gather(as_of, limit)
     as_of = as_of or (str(insights[0].get("dt")) if insights else date.today().isoformat())
 
-    def drafting(batch):
+    def draft_one(chunk):
         if backend == "ollama":
-            return draft_ollama(batch, model=model)
+            return draft_ollama(chunk, model=model)
         if backend == "groq":
-            return draft_openai_compat(batch, model=model)
-        return draft(client, batch, model=model)
+            return draft_openai_compat(chunk, model=model)
+        return draft(client, chunk, model=model)
+
+    def drafting(items):
+        # batch > 0: several smaller calls (free tiers cap request size and
+        # tokens per minute); each chunk carries the coverage window.
+        size = batch or len(items) or 1
+        cov = next((i.get("_coverage") for i in items if i.get("_coverage")), None)
+        out: List[Draft] = []
+        for k in range(0, len(items), size):
+            chunk = [dict(i) for i in items[k:k + size]]
+            if cov:
+                chunk[0]["_coverage"] = cov
+            out += draft_one(chunk)
+        return out
 
     drafts = verify(drafting(insights), insights, as_of=as_of)
     drafts = revise_once(drafts, insights, drafting, as_of)

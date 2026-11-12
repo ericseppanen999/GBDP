@@ -2,7 +2,7 @@
 
     python scripts/content_agent.py --cloud --as-of 2026-08-31     # production UC, via the databricks CLI login
     python scripts/content_agent.py --as-of 2025-08-31             # local gold (GBDP_GOLD_ROOT)
-    python scripts/content_agent.py --cloud --backend ollama --model qwen2.5:3b   # a local open model, no API key
+    python scripts/content_agent.py --cloud --backend groq       # an open-weights model on Groq (GROQ_API_KEY)
 
 Needs Claude API credentials (ANTHROPIC_API_KEY, or an `ant auth login`
 profile). Writes content_queue/drafts_<as_of>.md (+ .json) for a human to
@@ -27,9 +27,10 @@ def main() -> int:
     ap.add_argument("--out", default="content_queue")
     ap.add_argument("--cloud", action="store_true", help="read production UC through the databricks CLI")
     ap.add_argument("--profile", help="databricks CLI profile (with --cloud)")
-    ap.add_argument("--backend", choices=["claude", "ollama"], default="claude",
-                    help="ollama: a local open-source model, for testing without a Claude API key")
-    ap.add_argument("--model", help="model name (default claude-opus-5-5; for ollama e.g. qwen2.5:3b)")
+    ap.add_argument("--backend", choices=["claude", "groq", "ollama"], default="claude",
+                    help="groq: an open-weights model on Groq (GROQ_API_KEY); ollama: a local model")
+    ap.add_argument("--model", help="default claude-opus-5-5; groq openai/gpt-oss-120b; ollama qwen2.5:3b")
+    ap.add_argument("--batch", type=int, help="insights per model call (default: all for claude, 5 for groq/ollama)")
     args = ap.parse_args()
 
     if args.cloud:
@@ -48,12 +49,15 @@ def main() -> int:
 
     from gbdp.content.agent import MODEL, run
 
-    if args.backend == "ollama":
-        path = run(None, args.as_of, Path(args.out), limit=args.limit, model=args.model or "qwen2.5:3b", backend="ollama")
+    if args.backend in ("groq", "ollama"):
+        default = {"groq": "openai/gpt-oss-120b", "ollama": "qwen2.5:3b"}[args.backend]
+        path = run(None, args.as_of, Path(args.out), limit=args.limit, model=args.model or default, backend=args.backend,
+                   batch=args.batch or 5)
     else:
         import anthropic
 
-        path = run(anthropic.Anthropic(), args.as_of, Path(args.out), limit=args.limit, model=args.model or MODEL)
+        path = run(anthropic.Anthropic(), args.as_of, Path(args.out), limit=args.limit, model=args.model or MODEL,
+                   batch=args.batch or 0)
     print(f"wrote {path}")
     print(path.read_text(encoding="utf-8").split("\n")[2])
     return 0
