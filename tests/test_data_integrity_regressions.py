@@ -945,3 +945,10 @@ def test_audit_quality_pct_is_pinned_to_double_and_standings_pct_is_not():
     # Old audit_quality files hold pct = 0 as BIGINT; the UC table is DOUBLE.
     assert _type_pins("gbdp.gold_gbdp.audit_quality") == {"pct": "double", "threshold": "double"}
     assert _type_pins("gbdp.gold_gbdp.fact_standings") == {}
+
+
+def test_kbo_game_ids_are_pinned_whole_numbers():
+    from gbdp.catalog.managed_publish import _type_pins
+
+    pins = _type_pins("gbdp.bronze_gbdp.kbo_api_games")
+    assert pins["SV_PIT_P_ID"] == "bigint" and pins["W_PIT_P_ID"] == "bigint" and "G_ID" not in pins

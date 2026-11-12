@@ -439,8 +439,14 @@ def _write_managed(spark, df, full_name: str, dt: date, end: date | None = None)
 # the float fix stored a 0 as BIGINT, and _lossless_cast (rightly, in general)
 # won't widen bigint into the table's DOUBLE, so those dts failed to register.
 # Per table, not by column name: gold's standings `pct` is a string.
+# kbo_api_games mirrors KBO's API through pandas, so an ID column that is
+# null in some rows (no save, no decision pitcher) is float64 that day and
+# int64 the next, and an all-null day made the UC columns STRING (2026-09-12
+# failed register_uc on SV_PIT_P_ID). IDs are whole numbers: pinned bigint.
 _TABLE_TYPE_PINS: Dict[str, Dict[str, str]] = {
     "audit_quality": {"pct": "double", "threshold": "double"},
+    "kbo_api_games": {c: "bigint" for c in ("T_PIT_P_ID", "B_PIT_P_ID", "W_PIT_P_ID", "SV_PIT_P_ID", "L_PIT_P_ID",
+                                            "T_D_PIT_P_ID", "B_D_PIT_P_ID", "T_P_ID", "B_P_ID")},
 }
 
 
