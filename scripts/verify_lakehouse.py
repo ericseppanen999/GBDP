@@ -106,7 +106,8 @@ BRONZE_ENTITIES = [
     ("mlb_statsapi", "schedule", 500),  # the All-Star Game day has a single game
     ("mlb_statsapi", "rosters", 50_000),
     ("mlb_statsapi", "teams", 20_000),
-    ("mlb_statsapi", "transactions", 500),
+    # A day with no transactions is real (most of October): status checks only.
+    ("mlb_statsapi", "transactions", 0),
     ("mlb_statsapi", "boxscore", 50_000),
     ("mlb_statsapi", "player_bios", 100_000),
     ("mlb_statcast", "pitches", 100_000),
@@ -125,6 +126,11 @@ def check_bronze(wh: Warehouse, rep: Report, start: str) -> None:
     """Every raw payload records its HTTP status, so fetch health is auditable from bronze alone."""
     off_days: dict = {}
     loaded: dict = {}
+    # Statcast has nothing on a day with no MLB game played: the All-Star
+    # break, playoff off days, after the World Series (and a rained-out game
+    # still counts in the schedule's totalGames, so that alone isn't enough).
+    mlb_played = _game_days(wh, start)["MLB"]
+    kbo_idle = _kbo_idle_days(wh, start)
     for source, entity, min_bytes in BRONZE_ENTITIES:
         path = f"{BRONZE_VOL}/raw/{source}/{entity}"
         try:
@@ -146,6 +152,10 @@ def check_bronze(wh: Warehouse, rep: Report, start: str) -> None:
         in_season = [r for r in rows if date.fromisoformat(r[0]).month in SEASON_MONTHS]
         bad_status = [r[0] for r in rows if r[1] is not None and int(r[1]) != 200]
         thin = [r[0] for r in in_season if int(r[2] or 0) < min_bytes and r[0] not in off_days.get(source, set())]
+        if source == "mlb_statcast":
+            thin = [d for d in thin if d in mlb_played]
+        if source == "kbo_api":
+            thin = [d for d in thin if d not in kbo_idle]
         if entity == "schedule" and source == "mlb_statsapi":
             # MLB no-game days (All-Star break, offseason): totalGames = 0.
             played = wh.query(f"""
@@ -199,6 +209,22 @@ def check_bronze(wh: Warehouse, rep: Report, start: str) -> None:
                   + (f" (+{len(missing) - 4})" if len(missing) > 4 else "")
                   + f"; non-200: {bad_status[:5] or 'none'}; in-season under {min_bytes:,} bytes: {thin[:6] or 'none'}")
         rep.line("FAIL" if bad_status or thin or missing else "PASS", f"bronze {source}/{entity}", detail)
+
+
+def _kbo_idle_days(wh: Warehouse, start: str) -> set:
+    """Dates both KBO feeds came back empty: preseason, Mondays, rainouts. The
+    check is for one feed missing while the other has the day (May-June games
+    were missing while their box scores were there), not for days off."""
+    sizes: dict = {}
+    for entity in ("games", "boxscore"):
+        for dt, n in wh.query(f"""
+            SELECT dt, max_by(bytes, mt) FROM (
+              SELECT regexp_extract(_metadata.file_path, 'dt=([0-9-]+)', 1) AS dt,
+                     _metadata.file_modification_time AS mt, length(body_text) AS bytes
+              FROM read_files('{BRONZE_VOL}/raw/kbo_api/{entity}', format => 'json'))
+            WHERE dt >= '{start}' GROUP BY dt"""):
+            sizes.setdefault(dt, []).append(int(n or 0))
+    return {d for d, ns in sizes.items() if len(ns) == 2 and max(ns) < 100}
 
 
 def _game_days(wh: Warehouse, start: str) -> dict:
@@ -379,7 +405,9 @@ def check_silver_statcast(wh: Warehouse, rep: Report, start: str) -> None:
         SELECT dt, count(game_pk) FROM {_silver('mlb_statcast', 'pitches')}
         WHERE dt >= '{start}' GROUP BY dt ORDER BY dt""")
     # A full MLB slate is ~4,000 pitches; even a 2-game day is several hundred.
-    thin = [r[0] for r in rows if date.fromisoformat(r[0]).month in SEASON_MONTHS and int(r[1]) < 200]
+    # Days no MLB game was played (All-Star break, playoff off days) have none.
+    played = _game_days(wh, start)["MLB"]
+    thin = [r[0] for r in rows if r[0] in played and int(r[1]) < 200]
     shown = ", ".join(thin[:8]) + (f" (+{len(thin) - 8} more)" if len(thin) > 8 else "")
     rep.line("FAIL" if thin else "PASS", "silver Statcast pitches per date",
              f"{len(rows)} dates; in-season dates under 200 pitches: {shown or 'none'}")
