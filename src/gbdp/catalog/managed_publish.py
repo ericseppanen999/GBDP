@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import List
+from typing import Dict, List
 import os
 import re
 
@@ -373,6 +373,7 @@ def _write_managed(spark, df, full_name: str, dt: date, end: date | None = None)
 
     # Make UC-safe (fix invalid columns + stabilize complex types)
     df = _sanitize_for_uc(df)
+    df = _apply_type_pins(df, full_name)
 
     # Create table if missing
     if not _table_exists(spark, full_name):
@@ -431,6 +432,29 @@ def _write_managed(spark, df, full_name: str, dt: date, end: date | None = None)
             return
 
         raise
+
+
+# Columns whose type is decided here, per table, because older files on disk
+# disagree. audit_quality.pct is a fraction, but quality checks written before
+# the float fix stored a 0 as BIGINT, and _lossless_cast (rightly, in general)
+# won't widen bigint into the table's DOUBLE, so those dts failed to register.
+# Per table, not by column name: gold's standings `pct` is a string.
+_TABLE_TYPE_PINS: Dict[str, Dict[str, str]] = {
+    "audit_quality": {"pct": "double", "threshold": "double"},
+}
+
+
+def _type_pins(full_name: str) -> Dict[str, str]:
+    return _TABLE_TYPE_PINS.get(full_name.rsplit(".", 1)[-1], {})
+
+
+def _apply_type_pins(df, full_name: str):
+    pins = {c: t for c, t in _type_pins(full_name).items() if c in df.columns}
+    if not pins:
+        return df
+    from pyspark.sql import functions as F
+
+    return df.select(*[F.col(f"`{c}`").cast(pins[c]).alias(c) if c in pins else F.col(f"`{c}`") for c in df.columns])
 
 
 def _lossless_cast(target, incoming) -> bool:

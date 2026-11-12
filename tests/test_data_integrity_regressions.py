@@ -937,3 +937,11 @@ def test_the_last_pa_of_a_half_still_reads_its_own_post_bat_score():
         {},
     )
     assert rows[0]["runs_scored_on_play"] == 1
+
+
+def test_audit_quality_pct_is_pinned_to_double_and_standings_pct_is_not():
+    from gbdp.catalog.managed_publish import _type_pins
+
+    # Old audit_quality files hold pct = 0 as BIGINT; the UC table is DOUBLE.
+    assert _type_pins("gbdp.gold_gbdp.audit_quality") == {"pct": "double", "threshold": "double"}
+    assert _type_pins("gbdp.gold_gbdp.fact_standings") == {}
