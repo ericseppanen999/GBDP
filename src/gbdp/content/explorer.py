@@ -174,6 +174,7 @@ class Exploration:
     finished: bool = False
     stopped: str = ""
     columns: Dict[str, List[str]] = field(default_factory=dict)
+    asked: Dict[str, int] = field(default_factory=dict)
     spent: str = ""
 
     @property
@@ -652,9 +653,16 @@ def _loop(backend, ex: Exploration, first: str, turns: List[Dict[str, Any]], ske
         results = []
         for c in calls:
             steps += 1
+            key = json.dumps([c["name"], c["args"]], sort_keys=True, default=str)
             if "_bad_json" in c["args"]:
                 out = "ERROR: the arguments weren't valid JSON"
+            elif key in ex.asked and c["name"] in ("list_tables", "describe_table", "list_metrics", "describe_metric"):
+                # Small models re-describe the same tables in a loop; the answer
+                # is already in the conversation, so say so instead of paying again.
+                out = (f"Already answered at step {ex.asked[key]}: nothing has changed. Use what you have and run a "
+                       f"query.")
             else:
+                ex.asked.setdefault(key, steps)
                 out = execute(ex, c["name"], c["args"], skeptic, rows_shown, chars)
             left = max_steps - steps
             if left <= 5:

@@ -171,3 +171,19 @@ def test_a_views_columns_come_from_one_row(sql, monkeypatch):
     monkeypatch.setattr(tools, "describe_table", lambda t: {"table": t, "category": "view", "sql": "SELECT ..."})
     e = _ex(sql)
     assert ex.columns_of(e, "t") == ["name", "pa", "woba"]
+
+
+def test_a_repeated_describe_is_answered_from_memory(sql, tmp_path, monkeypatch):
+    monkeypatch.setattr(ex.agent, "coverage", lambda as_of: {"start": "2025-03-27", "end": "2025-08-31"})
+    calls = []
+    monkeypatch.setattr(ex, "execute", lambda e, name, args, *a: calls.append(name) or "{}")
+
+    class Loops:
+        n = 0
+
+        def step(self, system, first, turns):
+            Loops.n += 1
+            return {}, [{"id": f"c{Loops.n}", "name": "describe_table", "args": {"table": "v_pitch"}}], ""
+
+    ex.explore(Loops(), as_of="2025-08-31", out_dir=tmp_path, lens="teams", run_sql=sql, max_steps=4)
+    assert calls == ["describe_table"]
