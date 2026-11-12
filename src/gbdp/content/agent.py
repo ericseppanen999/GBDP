@@ -46,7 +46,24 @@ reconciled MLB and NPB data. Write one post per insight you find worth posting
   league_month_shift, which compare two periods; a cross-league gap or a
   streak is a single fact.
 - In `claims`, list every headline number the post states, as the data's raw
-  fractions or counts: value, and baseline when the post states it."""
+  fractions or counts: value, and baseline when the post states it.
+
+Revisions: an insight with `revise_previous_draft` was drafted before and
+rejected by the fact-checker; write that post again, fixing every listed
+problem, and keep everything else that was right.
+
+Style: write for a baseball fan scrolling past, not a data dictionary.
+- Lead with the player (or the two leagues) and the striking fact; give the
+  window in plain words (facts.recent_days, facts.recent_pa: "over his last
+  14 days (48 PA)"), the dates of a streak, the months of a league shift.
+- Each number once, in its natural form: wOBA as .521 (round to three
+  decimals: 0.5208 is .521), rates as a percentage with one decimal (0.0314 is
+  3.1%). Never also print the raw fraction.
+- One or two sentences. Vary the openings across posts.
+
+Examples of the tone (their numbers are made up; yours must come from the data):
+- "Jane Doe has been on fire: a .512 wOBA over his last 14 days (51 PA), against .298 before that."
+- "Since May 13, MLB hitters have homered on 3.1% of plate appearances; in NPB it's 2.3%." """
 
 SCHEMA = {
     "type": "object",
@@ -132,7 +149,8 @@ def gather(as_of: Optional[str] = None, limit: int = 12, evidence_rows: int = 30
 def _payload(insights: List[Dict[str, Any]]) -> str:
     cov = next((i.get("_coverage") for i in insights if i.get("_coverage")), None)
     body = {"coverage": cov or {"start": None, "end": None},
-            "insights": [{k: v for k, v in i.items() if k != "_coverage"} for i in insights]}
+            "insights": [{("revise_previous_draft" if k == "_revise" else k): v
+                          for k, v in i.items() if k != "_coverage"} for i in insights]}
     return json.dumps(body, ensure_ascii=False, default=str, sort_keys=True)
 
 def draft(client, insights: List[Dict[str, Any]], model: str = MODEL) -> List[Draft]:
@@ -301,6 +319,9 @@ def verify(drafts: List[Draft], insights: List[Dict[str, Any]], as_of: Optional[
             if not check.get("verified"):
                 d.problems.append(f"claim not verified: {json.dumps(check, default=str)}")
         allowed = allowed_numbers(ins)
+        # "since May 13": the dates of the coverage window are the data's too.
+        cov_window = next((i.get("_coverage") for i in insights if i.get("_coverage")), None) or {}
+        allowed |= set(_numbers([cov_window.get("start"), cov_window.get("end")]))
         for number, pct, written in text_numbers(d.text):
             if not any(_rounds_to(a, number) for a in allowed):
                 d.problems.append(f"number in text not in the data: {written}")
@@ -316,6 +337,10 @@ def verify(drafts: List[Draft], insights: List[Dict[str, Any]], as_of: Optional[
         start = str(cov.get("start") or "")
         if start and not start.endswith(("-03-25", "-03-26", "-03-27", "-03-28")) and re.search(r"\bseason\b|\bin 20\d\d\b", low):
             d.problems.append(f"says 'season' but the data starts {start}")
+        # A league-wide rate needs its window, or a reader takes it for the season.
+        partial = start and not start.endswith(("-03-25", "-03-26", "-03-27", "-03-28"))
+        if partial and ins.get("detector") == "cross_league_gap" and "since" not in low:
+            d.problems.append(f"league-wide rate without its window (data starts {start}: say 'since ...')")
         if len(d.text) > 280:
             d.problems.append(f"too long ({len(d.text)} characters)")
     return drafts
@@ -357,11 +382,44 @@ def run(client, as_of: Optional[str], out_dir: Path, limit: int = 12, model: str
     client is unused for the last two."""
     insights = gather(as_of, limit)
     as_of = as_of or (str(insights[0].get("dt")) if insights else date.today().isoformat())
-    if backend == "ollama":
-        drafted = draft_ollama(insights, model=model)
-    elif backend == "groq":
-        drafted = draft_openai_compat(insights, model=model)
-    else:
-        drafted = draft(client, insights, model=model)
-    drafts = verify(drafted, insights, as_of=as_of)
+
+    def drafting(batch):
+        if backend == "ollama":
+            return draft_ollama(batch, model=model)
+        if backend == "groq":
+            return draft_openai_compat(batch, model=model)
+        return draft(client, batch, model=model)
+
+    drafts = verify(drafting(insights), insights, as_of=as_of)
+    drafts = revise_once(drafts, insights, drafting, as_of)
     return write_queue(drafts, insights, out_dir, as_of)
+
+
+def revise_once(drafts: List[Draft], insights: List[Dict[str, Any]], drafting, as_of: Optional[str]) -> List[Draft]:
+    """One revision pass: each rejected draft goes back with the checker's
+    problems, and its rewrite has to pass the same checks. A draft that still
+    fails stays rejected, with both rounds' problems."""
+    by_id = {i["insight_id"]: i for i in insights}
+    rejected = [d for d in drafts if not d.ok and d.insight_id in by_id]
+    if not rejected:
+        return drafts
+    cov = next((i.get("_coverage") for i in insights if i.get("_coverage")), None)
+    batch = []
+    for d in rejected:
+        ins = {k: v for k, v in by_id[d.insight_id].items() if k != "_coverage"}
+        ins["_revise"] = {"previous": d.text, "problems": d.problems}
+        batch.append(ins)
+    if cov:
+        batch[0]["_coverage"] = cov
+    revised = {r.insight_id: r for r in verify(drafting(batch), batch, as_of=as_of)}
+    out = []
+    for d in drafts:
+        r = revised.get(d.insight_id) if d in rejected else None
+        if r is None:
+            out.append(d)
+        elif r.ok:
+            out.append(r)
+        else:
+            r.problems = [f"first draft: {p}" for p in d.problems] + [f"revision: {p}" for p in r.problems]
+            out.append(r)
+    return out

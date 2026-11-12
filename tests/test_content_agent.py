@@ -141,3 +141,39 @@ def test_the_prompt_carries_the_coverage(semantic_gold):
     body = json.loads(client.requests[0]["messages"][0]["content"].split("\n", 1)[1])
     assert set(body["coverage"]) == {"start", "end"} and body["coverage"]["start"]
     assert all("_coverage" not in i for i in body["insights"])
+
+
+def test_a_league_wide_rate_needs_its_window_and_may_name_the_start_date(semantic_gold):
+    insights = agent.gather(limit=50)
+    gap = next((i for i in insights if i["detector"] == "cross_league_gap"), None)
+    if gap is None:
+        pytest.skip("fixture has no cross-league insight")
+    gid = gap["insight_id"]
+    claim = [{"insight_id": gid, "value": gap["value"], "baseline": gap["baseline"]}]
+    v, b = round(gap["value"] * 100, 1), round(gap["baseline"] * 100, 1)
+    insights[0]["_coverage"] = {"start": "2026-05-13", "end": "2026-11-04"}
+    posts = [{"insight_id": gid, "text": f"MLB: {v}% vs NPB {b}%.", "claims": claim},
+             {"insight_id": gid, "text": f"Since May 13, MLB: {v}% vs NPB {b}%.", "claims": claim}]
+    bare, windowed = agent.verify(agent.draft(_FakeClient(lambda _: posts), insights), insights)
+    assert any("without its window" in p for p in bare.problems)
+    assert windowed.ok, windowed.problems
+
+
+def test_a_rejected_draft_gets_one_revision_with_its_problems(semantic_gold):
+    insights = agent.gather(limit=50)
+    streak = next(i for i in insights if i["detector"] == "hitting_streak")
+    sid, n = streak["insight_id"], int(streak["value"])
+    claim = [{"insight_id": sid, "value": streak["value"], "baseline": None}]
+    seen = []
+
+    def drafting(batch):
+        seen.append(batch)
+        if len(seen) == 1:
+            return [agent.Draft(sid, f"{n} straight games, the longest active streak.", claim)]
+        assert batch[0]["_revise"]["problems"] and "longest" in batch[0]["_revise"]["previous"]
+        return [agent.Draft(sid, f"{n} straight games with a hit.", claim)]
+
+    drafts = agent.verify(drafting(insights), insights)
+    assert not drafts[0].ok
+    out = agent.revise_once(drafts, insights, drafting, None)
+    assert out[0].ok and out[0].text.endswith("with a hit.") and len(seen) == 2
