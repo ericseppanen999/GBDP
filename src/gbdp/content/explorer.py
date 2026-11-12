@@ -523,8 +523,19 @@ class OpenAICompatBackend:
                 messages.append({"role": "user", "content": t["text"]})
         if self.max_chars:
             compact(messages, self.max_chars - len(json.dumps(openai_tools())))
-        msg = self._post({"model": self.model, "messages": messages, "tools": openai_tools(), "tool_choice": "auto",
-                          "temperature": 0.7, "max_tokens": self.max_tokens})["choices"][0]["message"]
+        body = {"model": self.model, "messages": messages, "tools": openai_tools(), "tool_choice": "auto",
+                "temperature": 0.7, "max_tokens": self.max_tokens}
+        for attempt in range(3):
+            try:
+                msg = self._post(body)["choices"][0]["message"]
+                break
+            except RuntimeError as exc:
+                # The server rejects a sample whose tool-call JSON doesn't parse
+                # (tool_use_failed); another sample usually parses. Anything else,
+                # or a third bad sample, ends the run.
+                if "tool_use_failed" not in str(exc) or attempt == 2:
+                    raise
+                logger.info("malformed tool call from the model; sampling again")
         calls = []
         for c in msg.get("tool_calls") or []:
             try:

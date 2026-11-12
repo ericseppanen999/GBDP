@@ -187,3 +187,20 @@ def test_a_repeated_describe_is_answered_from_memory(sql, tmp_path, monkeypatch)
 
     ex.explore(Loops(), as_of="2025-08-31", out_dir=tmp_path, lens="teams", run_sql=sql, max_steps=4)
     assert calls == ["describe_table"]
+
+
+def test_a_malformed_tool_call_is_sampled_again(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    b = ex.OpenAICompatBackend()
+    answers = [RuntimeError('400: {"code":"tool_use_failed"}'),
+               {"choices": [{"message": {"content": "", "tool_calls": [
+                   {"id": "1", "function": {"name": "list_tables", "arguments": "{}"}}]}}]}]
+
+    def post(body):
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+    monkeypatch.setattr(b, "_post", post)
+    _, calls, _ = b.step("s", "task", [])
+    assert calls[0]["name"] == "list_tables"
