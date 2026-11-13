@@ -43,4 +43,6 @@ def test_register_uc_gold_publishes_gold_only(monkeypatch):
     calls.clear()
     runner._stage_register_uc("2026-05-13", "2026-05-13", {}, None, None, False)
     assert calls == ["gold", "silver", "bronze_parsed", "bronze_requests"]
-    assert "register_uc_gold" in runner._pipeline_stages() and "register_uc_gold" in runner._OPT_IN_STAGES
+    assert "register_uc_gold" in runner._pipeline_stages() and "register_uc_gold" not in runner._OPT_IN_STAGES
+    # The nightly (no --stages) publishes gold only; bronze/silver UC copies are by hand.
+    assert "register_uc" in runner._OPT_IN_STAGES

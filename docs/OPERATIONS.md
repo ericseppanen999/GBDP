@@ -27,7 +27,7 @@ GBDP_UC_GOLD_SCHEMA=gold_gbdp
 GBDP_UC_MODE=external
 ```
 
-The pipeline runs the `register_uc` stage automatically. In **managed** mode it writes UC-managed tables; in **external** mode it registers LOCATION-based tables.
+The pipeline runs the `register_uc_gold` stage automatically (gold only). The UC copies of bronze and silver are browse-only and refreshed by hand with `--stages register_uc`; two of them (`silver_gbdp.mlb_statcast_pitches`, `bronze_gbdp.kbo_api_games`) have STRING columns from their first write and must be dropped and re-registered before that works again. In **managed** mode it writes UC-managed tables; in **external** mode it registers LOCATION-based tables.
 
 ## 2) Required Volume Layout
 

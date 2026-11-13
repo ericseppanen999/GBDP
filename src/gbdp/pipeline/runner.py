@@ -124,7 +124,13 @@ def run_pipeline(
     return results
 
 
-_OPT_IN_STAGES = {"ml_publish", "register_uc_gold"}
+# A run without --stages (the nightly) publishes only gold to Unity Catalog.
+# The UC copies of bronze and silver are for browsing only; nothing reads them,
+# and two of them were born with STRING columns the data holds as numbers
+# (silver mlb_statcast_pitches, bronze kbo_api_games), which failed every
+# September nightly with a game in it. `--stages register_uc` still refreshes
+# all three layers by hand.
+_OPT_IN_STAGES = {"ml_publish", "register_uc"}
 
 
 def _pipeline_stages() -> Dict[str, Callable]:

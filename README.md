@@ -52,7 +52,7 @@ flowchart LR
     GD --> API[FastAPI + SQL]
 ```
 
-Each day (`dt`) flows through 16 stages: `fetch_*` → `silver_normalize` → `identity_resolve` → `gold_publish` → `quality_checks` → `audit_report` → `register_uc`. Any range of days can be re-run at any time; re-running is idempotent.
+Each day (`dt`) flows through 16 stages: `fetch_*` → `silver_normalize` → `identity_resolve` → `gold_publish` → `quality_checks` → `audit_report` → `register_uc_gold`. The nightly publishes only gold to Unity Catalog; `--stages register_uc` also refreshes the browse-only bronze and silver copies. Any range of days can be re-run at any time; re-running is idempotent.
 
 ## Gold data model
 
