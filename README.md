@@ -130,6 +130,8 @@ python scripts/explore_agent.py --cloud --lens arsenal          # Claude, produc
 python scripts/explore_agent.py --backend groq --lens teams     # Groq, local gold
 ```
 
+`scripts/explore_session.py` puts the same tools on a command line, with the state in a session file, for an agent that drives itself (a Claude Code subagent on the Claude Code plan, no API key). `submit` runs the same code checks; a finding counts only after a second, independent agent records a pass with `review`.
+
 ## Design decisions worth knowing
 
 - **Stable IDs.** Every canonical ID is a hash of a source key (`game:mlb_statsapi:778563`), so the same player, team or game gets the same ID on every run and on every machine. An earlier version mixed the date into the hash; 0 of 2,369 entities kept their ID from one day to the next.
